@@ -690,7 +690,9 @@ function startingXI(club, matchday) {
   });
   const totalSlots = Object.values(slots).reduce((a, b) => a + b, 0);
   if (chosen.length < totalSlots) {
-    const remaining = available.filter((p) => !chosenIds.has(p.id)).sort((a, b) => lineupScore(mode, b) - lineupScore(mode, a));
+    // backfill only from outfield players — a reserve keeper should never
+    // end up filling an outfield slot just because he's next-best-rated
+    const remaining = available.filter((p) => !chosenIds.has(p.id) && p.position !== "GK").sort((a, b) => lineupScore(mode, b) - lineupScore(mode, a));
     for (const p of remaining) {
       if (chosen.length >= totalSlots) break;
       chosen.push(p);
@@ -955,6 +957,32 @@ function distributePrizeMoney(table, poolAmount) {
   return amounts;
 }
 
+// Real-calibrated season-end bonuses for Pro/Executive mode. For MLS this is
+// currently Shield-style money (best regular-season record) — the actual
+// MLS Cup / conference / playoff-qualifier bonuses layer in once playoffs
+// exist, since those are genuinely playoff-outcome money, not table money.
+// USL League Two is intentionally all zeros — amateur status, no bonuses.
+const SEASON_BONUS = [
+  { champion: 55_000, runnerUp: 20_000, midBand: 8_000, rest: 2_000 }, // MLS
+  { champion: 40_000, runnerUp: 15_000, midBand: 5_000, rest: 1_000 }, // USL Championship
+  { champion: 20_000, runnerUp: 8_000, midBand: 2_500, rest: 500 }, // USL League One
+  { champion: 0, runnerUp: 0, midBand: 0, rest: 0 }, // USL League Two
+];
+
+function computeEventBonuses(table, tierIdx) {
+  const cfg = SEASON_BONUS[tierIdx];
+  const amounts = {};
+  table.forEach((row, i) => {
+    let amt;
+    if (i === 0) amt = cfg.champion;
+    else if (i === 1) amt = cfg.runnerUp;
+    else if (i < 8) amt = cfg.midBand;
+    else amt = cfg.rest;
+    amounts[row.clubId] = amt;
+  });
+  return amounts;
+}
+
 // Decays each tier's pool, then floors it against the tier below — the
 // lowest tier's pool is the floor for the tier above it, cascading upward,
 // so promotion never leaves a club worse off than it would have been had it
@@ -1007,10 +1035,15 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty) {
     promoted.forEach((id) => events.push({ clubId: id, clubName: clubsById[id].name, from: i + 1, to: i, type: "promoted" }));
   }
 
-  // Prize money: distributed by final standing, paid from a per-tier pool
-  // that shrinks a little every season (floored so it never dries up and
-  // never lets a higher tier pay less than the one below it).
-  const prizeAmountsByTier = tables.map((table, i) => distributePrizeMoney(table, prizePools[i]));
+  // Prize money: on Rookie, distributed by final standing from a per-tier
+  // pool that shrinks a little every season (simple, no real-world figures
+  // needed). On Pro/Executive, real-world-calibrated season bonuses apply
+  // instead — Shield-style money for now; once playoffs exist, MLS Cup /
+  // conference / playoff-qualifier bonuses layer in on top of this.
+  const eventBonusesOn = DIFFICULTY_MODES[difficulty]?.eventBonuses;
+  const prizeAmountsByTier = tables.map((table, i) =>
+    eventBonusesOn ? computeEventBonuses(table, i) : distributePrizeMoney(table, prizePools[i])
+  );
   const newPrizePools = decayPrizePools(prizePools);
   let userPrize = 0;
   prizeAmountsByTier.forEach((amounts) => { if (amounts[userClubId] != null) userPrize = amounts[userClubId]; });
@@ -1109,10 +1142,10 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty) {
 const MID_SEASON_WINDOW_MATCHDAY = 10; // window opens once matchday 9 is complete
 
 function marketValue(p) {
-  // steeper exponential curve: a mid-tier lower-league player is still
-  // cheap, but a genuine first-team-quality player (mid-70s overall, prime
-  // age) lands around $15-20M, and MVP-caliber talent (85+) climbs into
-  // real nine-figure territory before age/form adjustments.
+  // a mid-tier lower-league player is cheap, a genuine first-team-quality
+  // player (mid-70s overall, prime age) lands around $15-20M, and true
+  // MVP-caliber talent (85+) climbs high — but caps out around $55-60M,
+  // since that's the ceiling even the biggest deals in this world hit
   const base = 59 * Math.pow(1.1825, p.overall);
   let ageFactor = p.age <= 23 ? 1.5 : p.age <= 26 ? 1.2 : p.age <= 29 ? 1.0 : p.age <= 32 ? 0.55 : 0.25;
   // true megastars keep real commercial/marquee value even late in their
@@ -1122,22 +1155,23 @@ function marketValue(p) {
   // form: we don't track a separate running form stat, but morale already
   // reflects recent results for this exact player, so it doubles as one
   const formFactor = 0.85 + (p.morale / 100) * 0.3;
-  return Math.round((base * ageFactor * potFactor * formFactor) / 1000) * 1000;
+  const raw = base * ageFactor * potFactor * formFactor;
+  return Math.min(58_000_000, Math.round(raw / 1000) * 1000);
 }
 
 // Renewals aren't free or unlimited: a very unhappy player just says no, a
-// merely unhappy one will only re-sign for a much bigger bonus, and it always
+// merely unhappy one will only re-sign for a bigger bonus, and it always
 // comes out of the budget.
 function renewalOutcome(p, budget) {
   if (p.morale < 20) {
     return { accepted: false, reason: "too unhappy to even discuss an extension right now" };
   }
-  const baseCost = Math.round(marketValue(p) * 0.10);
+  const baseCost = Math.round(marketValue(p) * 0.06);
   let moraleFactor;
   if (p.morale >= 70) moraleFactor = 1.0;
-  else if (p.morale >= 50) moraleFactor = 1.3;
-  else if (p.morale >= 30) moraleFactor = 1.8;
-  else moraleFactor = 2.5;
+  else if (p.morale >= 50) moraleFactor = 1.2;
+  else if (p.morale >= 30) moraleFactor = 1.6;
+  else moraleFactor = 2.0;
   const cost = Math.round(baseCost * moraleFactor);
   if (budget < cost) {
     return { accepted: false, reason: "you can't afford the deal they're asking for", cost };
@@ -2248,8 +2282,13 @@ function getCurrentMatchday(next) {
   return remaining.length ? remaining[0].matchday : null;
 }
 
+// Per-win bonus paid directly into a club's budget on Pro/Executive — real
+// figures scale down tier by tier; League Two is amateur and pays nothing.
+const WIN_BONUS = [7_500, 3_000, 1_500, 0];
+
 function simulateMatchdayAcrossTiers(next, currentMatchday) {
   const matches = [];
+  const eventBonusesOn = DIFFICULTY_MODES[next.difficulty]?.eventBonuses;
   next.tiers.forEach((t) => {
     // recovery between matchdays for the whole squad — starters net a small
     // amount of fatigue, rested players climb back toward full fitness
@@ -2261,6 +2300,10 @@ function simulateMatchdayAcrossTiers(next, currentMatchday) {
       const away = t.clubs.find((c) => c.id === fx.awayClubId);
       if (!home || !away) return;
       const result = simulateMatch(fx, home, away, currentMatchday);
+      if (eventBonusesOn && WIN_BONUS[t.id] > 0) {
+        if (fx.homeScore > fx.awayScore) home.budget += WIN_BONUS[t.id];
+        else if (fx.awayScore > fx.homeScore) away.budget += WIN_BONUS[t.id];
+      }
       if (t.id === next.userTierId) matches.push(result);
     });
     // light responsiveness pass: an already-listed player might get snapped up between windows
