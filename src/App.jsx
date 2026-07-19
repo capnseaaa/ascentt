@@ -174,6 +174,42 @@ function growPlayer(p) {
   };
 }
 
+/* ============================================================
+   DIFFICULTY MODES & REALISTIC WAGES
+   ============================================================ */
+
+const DIFFICULTY_MODES = {
+  rookie: { label: "Rookie", wagesDeducted: false, eventBonuses: false, boardPressure: false, dps: false },
+  pro: { label: "Pro", wagesDeducted: true, eventBonuses: true, boardPressure: false, dps: false },
+  executive: { label: "Executive", wagesDeducted: true, eventBonuses: true, boardPressure: true, dps: true },
+};
+
+// Annual wage bands per tier, loosely calibrated to real USL/MLS CBA figures.
+// USL League Two pays nothing — it's amateur/NCAA-eligible status, by rule.
+const WAGE_BANDS = [
+  { young: 90_000, senior: 126_000, vetLow: 250_000, vetHigh: 600_000, starLow: 1_000_000, starHigh: 30_000_000 }, // MLS
+  { young: 34_000, senior: 42_000, vetLow: 50_000, vetHigh: 60_000, starLow: 96_000, starHigh: 180_000 }, // USL Championship
+  { young: 15_000, senior: 20_000, vetLow: 24_000, vetHigh: 36_000, starLow: 36_000, starHigh: 55_000 }, // USL League One
+  { young: 0, senior: 0, vetLow: 0, vetHigh: 0, starLow: 0, starHigh: 0 }, // USL League Two — amateur
+];
+
+function computeRealisticWage(overall, age, tierIdx) {
+  const b = WAGE_BANDS[tierIdx] ?? WAGE_BANDS[3];
+  if (b.starHigh === 0) return 0;
+  if (overall >= 82) {
+    const t = clamp((overall - 82) / 13, 0, 1);
+    return Math.round(b.starLow + t * (b.starHigh - b.starLow));
+  }
+  if (age <= 23) return b.young;
+  if (overall <= 65) return b.senior;
+  const t = clamp((overall - 65) / 17, 0, 1);
+  return Math.round(b.vetLow + t * (b.vetHigh - b.vetLow));
+}
+
+function squadPayroll(squad) {
+  return squad.reduce((s, p) => s + (p.wage || 0), 0);
+}
+
 function makePlayer(position, overall, usedNames) {
   const rating = clamp(overall, 35, 95);
   const age = randomPlayerAge();
@@ -945,7 +981,7 @@ function trimSquad(squad) {
   return scored.slice(0, MAX_SQUAD_SIZE).map((s) => s.p);
 }
 
-function rolloverSeason(tiers, userClubId, prizePools) {
+function rolloverSeason(tiers, userClubId, prizePools, difficulty) {
   const tables = tiers.map(computeTable);
   const newTierClubIds = tiers.map((t) => t.clubs.map((c) => c.id));
   const clubsById = {};
@@ -1032,10 +1068,15 @@ function rolloverSeason(tiers, userClubId, prizePools) {
       }
       const prize = prizeAmountsByTier[i][id] ?? 0;
       const youthPlayers = (club.youthPlayers || []).map((p) => growYouthProspect(p, club.academyStars || 0));
+      // wages always reflect the tier a club is about to play in (a promoted
+      // club's players get raises, a relegated club's take pay cuts) — but
+      // payroll is only actually deducted from the budget on Pro/Executive
+      squad = squad.map((p) => ({ ...p, wage: computeRealisticWage(p.overall, p.age, i) }));
+      const payroll = DIFFICULTY_MODES[difficulty]?.wagesDeducted ? squadPayroll(squad) : 0;
       return {
         ...club,
         squad,
-        budget: club.budget + prize + OWNERSHIP_DEPOSIT[i],
+        budget: club.budget + prize + OWNERSHIP_DEPOSIT[i] - payroll,
         academyEligible: !!club.academyEligible || i <= 1,
         youthPlayers,
         tryoutCandidates: [], // last window's tryout candidates don't carry over — sign or lose them
@@ -1047,6 +1088,8 @@ function rolloverSeason(tiers, userClubId, prizePools) {
   const windowResult = runTransferWindow(newTiers, userClubId);
   const userDraftPicks = runDraft(tables, newTiers, userClubId);
 
+  const userClubAfter = newTiers.flatMap((t) => t.clubs).find((c) => c.id === userClubId);
+  const userPayroll = DIFFICULTY_MODES[difficulty]?.wagesDeducted && userClubAfter ? squadPayroll(userClubAfter.squad) : 0;
   // Draft additions are the one pure-growth step with no natural release —
   // cap every club (except the user's, whose picks aren't applied until
   // they choose Keep) so the world can't balloon season over season.
@@ -1056,7 +1099,7 @@ function rolloverSeason(tiers, userClubId, prizePools) {
     });
   });
 
-  return { newTiers, events, tables, windowResult, newPrizePools, userPrize, userRetirements, userDraftPicks };
+  return { newTiers, events, tables, windowResult, newPrizePools, userPrize, userRetirements, userDraftPicks, userPayroll };
 }
 
 /* ============================================================
@@ -1233,6 +1276,63 @@ function formatMoney(amount) {
   return `$${Math.round(amount / 1000)}K`;
 }
 
+function DifficultySelectScreen({ onChoose }) {
+  const modes = [
+    {
+      key: "rookie",
+      title: "Rookie",
+      tagline: "Learn the game",
+      points: ["No payroll to manage", "Simple end-of-season prize money", "No board pressure — just play"],
+    },
+    {
+      key: "pro",
+      title: "Pro",
+      tagline: "Run a real budget",
+      points: ["Real wages, tier-scaled, paid every season", "Event-driven bonuses — per-win, shield, cup, playoffs", "Still no board looking over your shoulder"],
+    },
+    {
+      key: "executive",
+      title: "Executive",
+      tagline: "The full front office",
+      points: ["Everything in Pro, plus:", "Designated Players & a salary cap (MLS)", "Board objectives, sacking risk, and a career-long happiness score"],
+    },
+  ];
+  return (
+    <div style={{ minHeight: "100vh", background: PALETTE.pitchDark, ...serif }}>
+      <style>{FONT_IMPORT}</style>
+      <div style={{ maxWidth: 900, margin: "0 auto", padding: "56px 20px 80px" }}>
+        <div style={{ textAlign: "center", marginBottom: 40 }}>
+          <div style={{ ...display, fontSize: 44, fontWeight: 700, color: PALETTE.parchment, lineHeight: 1 }}>
+            ASCENT
+          </div>
+          <div style={{ color: PALETTE.gold, fontSize: 14, marginTop: 10, letterSpacing: "0.08em", textTransform: "uppercase", ...display }}>
+            Choose your difficulty
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16 }}>
+          {modes.map((m) => (
+            <button
+              key={m.key}
+              onClick={() => onChoose(m.key)}
+              style={{
+                textAlign: "left", background: PALETTE.pitch, border: `1px solid ${PALETTE.gold}55`, borderRadius: 12,
+                padding: 20, cursor: "pointer", color: PALETTE.parchment, display: "flex", flexDirection: "column", gap: 10,
+              }}
+            >
+              <div style={{ ...display, fontSize: 22, fontWeight: 700, color: PALETTE.gold }}>{m.title}</div>
+              <div style={{ ...display, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.05em", opacity: 0.8 }}>{m.tagline}</div>
+              <div style={{ height: 1, background: `${PALETTE.gold}33`, margin: "4px 0" }} />
+              {m.points.map((pt, i) => (
+                <div key={i} style={{ fontSize: 13, ...serif, opacity: 0.9 }}>{pt}</div>
+              ))}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ClubSelectScreen({ world, onPick, saveWasReset }) {
   const [openTier, setOpenTier] = useState(0);
 
@@ -1319,7 +1419,7 @@ function ClubSelectScreen({ world, onPick, saveWasReset }) {
    SEASON ROLLOVER CEREMONY
    ============================================================ */
 
-function RolloverModal({ events, userClubId, seasonNumber, windowResult, userPrize, ownershipDeposit, userRetirements, onContinue }) {
+function RolloverModal({ events, userClubId, seasonNumber, windowResult, userPrize, ownershipDeposit, userRetirements, userPayroll, onContinue }) {
   const champions = events.filter((e) => e.type === "champion");
   const moves = events.filter((e) => e.type !== "champion");
   const userMove = moves.find((e) => e.clubId === userClubId);
@@ -1365,6 +1465,12 @@ function RolloverModal({ events, userClubId, seasonNumber, windowResult, userPri
         {(userPrize > 0 || ownershipDeposit > 0) && (
           <div style={{ background: "#E8E2CE", borderRadius: 8, padding: 12, marginBottom: 16, ...serif, fontSize: 14, color: PALETTE.ink }}>
             💰 Ownership deposit: <strong>${ownershipDeposit.toLocaleString()}</strong>{userPrize > 0 && <> · League finish bonus: <strong>${userPrize.toLocaleString()}</strong></>} added to your budget.
+          </div>
+        )}
+
+        {userPayroll > 0 && (
+          <div style={{ background: "#F0E4D8", borderRadius: 8, padding: 12, marginBottom: 16, ...serif, fontSize: 14, color: PALETTE.ink }}>
+            🧾 Payroll for the season ahead: <strong>-${userPayroll.toLocaleString()}</strong> deducted from your budget.
           </div>
         )}
 
@@ -2246,7 +2352,7 @@ function Dashboard({ state, setState, onNewGame }) {
   };
 
   const doRollover = () => {
-    const { newTiers, events, windowResult, newPrizePools, userPrize, userRetirements, userDraftPicks } = rolloverSeason(state.tiers, state.userClubId, state.prizePools);
+    const { newTiers, events, windowResult, newPrizePools, userPrize, userRetirements, userDraftPicks, userPayroll } = rolloverSeason(state.tiers, state.userClubId, state.prizePools, state.difficulty);
     const userMove = events.find((e) => e.clubId === state.userClubId && e.type !== "champion");
     const userChamp = events.find((e) => e.clubId === state.userClubId && e.type === "champion");
     const trophyEntries = [];
@@ -2262,7 +2368,7 @@ function Dashboard({ state, setState, onNewGame }) {
       midWindowSeason: prev.midWindowSeason,
       prizePools: newPrizePools,
     }));
-    setRollover({ events, seasonNumber: state.seasonNumber, windowResult, userPrize, ownershipDeposit: OWNERSHIP_DEPOSIT[state.userTierId], userRetirements });
+    setRollover({ events, seasonNumber: state.seasonNumber, windowResult, userPrize, ownershipDeposit: OWNERSHIP_DEPOSIT[state.userTierId], userRetirements, userPayroll });
     if (userDraftPicks && userDraftPicks.length) setDraftPicks(userDraftPicks);
   };
 
@@ -2467,7 +2573,7 @@ function Dashboard({ state, setState, onNewGame }) {
           <div>
             <div style={{ ...display, fontSize: 20, fontWeight: 700 }}>{userClub.name}</div>
             <div style={{ fontSize: 12, opacity: 0.8, display: "flex", gap: 8, alignItems: "center" }}>
-              <TierBadge tierId={state.userTierId} /> OVR {avgOvr} · ${userClub.budget.toLocaleString()}
+              <TierBadge tierId={state.userTierId} /> {DIFFICULTY_MODES[state.difficulty]?.label ?? "Rookie"} · OVR {avgOvr} · ${userClub.budget.toLocaleString()}
             </div>
           </div>
         </div>
@@ -2572,6 +2678,7 @@ function Dashboard({ state, setState, onNewGame }) {
           userPrize={rollover.userPrize}
           ownershipDeposit={rollover.ownershipDeposit}
           userRetirements={rollover.userRetirements}
+          userPayroll={rollover.userPayroll}
           onContinue={() => setRollover(null)}
         />
       )}
@@ -2604,6 +2711,7 @@ export default function App() {
   const [state, setState] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [saveWasReset, setSaveWasReset] = useState(false);
+  const [pendingDifficulty, setPendingDifficulty] = useState(null);
 
   useEffect(() => {
     try {
@@ -2641,6 +2749,7 @@ export default function App() {
       localStorage.removeItem(STORAGE_KEY);
     } catch (e) {}
     setState(null);
+    setPendingDifficulty(null);
   };
 
   if (!loaded) {
@@ -2648,20 +2757,24 @@ export default function App() {
   }
 
   if (!state) {
+    if (!pendingDifficulty) {
+      return <DifficultySelectScreen onChoose={setPendingDifficulty} />;
+    }
     const previewWorld = buildInitialWorld();
     previewWorld.forEach((t) => { t.fixtures = generateRoundRobin(t.clubs.map((c) => c.id)); });
     return <ClubSelectScreen world={previewWorld} saveWasReset={saveWasReset} onPick={(tierId, clubId) => {
       // re-derive the same picked club/tier from a freshly built world containing it
-      handlePickFromPreview(previewWorld, tierId, clubId, setState);
+      handlePickFromPreview(previewWorld, tierId, clubId, pendingDifficulty, setState);
     }} />;
   }
 
   return <Dashboard state={state} setState={setState} onNewGame={handleNewGame} />;
 }
 
-function handlePickFromPreview(previewWorld, tierId, clubId, setState) {
+function handlePickFromPreview(previewWorld, tierId, clubId, difficulty, setState) {
   setState({
     saveVersion: SAVE_VERSION,
+    difficulty,
     tiers: previewWorld,
     userTierId: tierId,
     userClubId: clubId,
