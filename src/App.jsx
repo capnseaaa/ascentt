@@ -1048,6 +1048,117 @@ function trimSquad(squad) {
   return scored.slice(0, MAX_SQUAD_SIZE).map((s) => s.p);
 }
 
+/* ============================================================
+   PLAYOFFS — MLS Cup bracket + lower-tier promotion playoffs
+   ============================================================ */
+
+// Real 2026 MLS conference alignment — used for playoff seeding only,
+// promotion/relegation between MLS and USL Championship stays table-based.
+const MLS_EAST_CLUBS = new Set([
+  "Atlanta United FC", "CF Montréal", "Charlotte FC", "Chicago Fire FC", "Columbus Crew",
+  "D.C. United", "FC Cincinnati", "Inter Miami CF", "Nashville SC", "New England Revolution",
+  "New York City FC", "New York Red Bulls", "Orlando City SC", "Philadelphia Union", "Toronto FC",
+]);
+
+function mlsConference(clubName) {
+  return MLS_EAST_CLUBS.has(clubName) ? "East" : "West";
+}
+
+// Resolves a single knockout match to a decisive winner — no draws allowed
+// in playoff football, so a tied 90 minutes goes to a simplified penalty
+// shootout weighted by relative squad strength rather than a full
+// kick-by-kick simulation.
+function resolveKnockoutMatch(home, away, matchday) {
+  const fixture = { homeScore: null, awayScore: null, played: false };
+  const result = simulateMatch(fixture, home, away, matchday);
+  if (fixture.homeScore === fixture.awayScore) {
+    const homeStrength = squadStrength(home, matchday);
+    const awayStrength = squadStrength(away, matchday);
+    const total = homeStrength + awayStrength;
+    const homeWinChance = total > 0 ? homeStrength / total : 0.5;
+    const homeWon = Math.random() < homeWinChance;
+    return { winner: homeWon ? home : away, result, wentToPenalties: true };
+  }
+  return { winner: fixture.homeScore > fixture.awayScore ? home : away, result, wentToPenalties: false };
+}
+
+// Best-of-three: higher seed hosts games 1 and 3, lower seed hosts game 2.
+// Each individual game still can't end level, so ties go to the same
+// simplified shootout as any other knockout match.
+function bestOfThreeSeries(higherSeed, lowerSeed, matchday) {
+  let hWins = 0, lWins = 0;
+  const games = [];
+  for (let g = 0; g < 3 && hWins < 2 && lWins < 2; g++) {
+    const homeIsHigher = g !== 1;
+    const home = homeIsHigher ? higherSeed : lowerSeed;
+    const away = homeIsHigher ? lowerSeed : higherSeed;
+    const outcome = resolveKnockoutMatch(home, away, matchday);
+    games.push(outcome);
+    if (outcome.winner.id === higherSeed.id) hWins++; else lWins++;
+  }
+  return { winner: hWins > lWins ? higherSeed : lowerSeed, games, hWins, lWins };
+}
+
+// Full 18-team MLS Cup Playoffs: wild card, best-of-three Round One, single-
+// elimination conference semis/finals, then the Cup final. Purely a trophy
+// and bonus exercise — it never affects promotion or relegation.
+function runMlsPlayoffs(mlsTable, mlsClubs, matchday) {
+  const clubById = (id) => mlsClubs.find((c) => c.id === id);
+
+  function runConference(conferenceName) {
+    const rows = mlsTable.filter((r) => mlsConference(clubById(r.clubId).name) === conferenceName);
+    if (rows.length < 9) return null;
+    const seeds = rows.slice(0, 9).map((r) => clubById(r.clubId));
+    const [s1, s2, s3, s4, s5, s6, s7, s8, s9] = seeds;
+    const wildcard = resolveKnockoutMatch(s8, s9, matchday);
+    const r1a = bestOfThreeSeries(s1, wildcard.winner, matchday);
+    const r1b = bestOfThreeSeries(s2, s7, matchday);
+    const r1c = bestOfThreeSeries(s3, s6, matchday);
+    const r1d = bestOfThreeSeries(s4, s5, matchday);
+    const semiA = resolveKnockoutMatch(r1a.winner, r1d.winner, matchday);
+    const semiB = resolveKnockoutMatch(r1b.winner, r1c.winner, matchday);
+    const confFinal = resolveKnockoutMatch(semiA.winner, semiB.winner, matchday);
+    return { champion: confFinal.winner, seeds, wildcard, r1a, r1b, r1c, r1d, semiA, semiB, confFinal };
+  }
+
+  const east = runConference("East");
+  const west = runConference("West");
+  if (!east || !west) return null;
+
+  const eastRank = mlsTable.findIndex((r) => r.clubId === east.champion.id);
+  const westRank = mlsTable.findIndex((r) => r.clubId === west.champion.id);
+  const finalHome = eastRank <= westRank ? east.champion : west.champion;
+  const finalAway = finalHome.id === east.champion.id ? west.champion : east.champion;
+  const finalResult = resolveKnockoutMatch(finalHome, finalAway, matchday);
+
+  const qualifiers = new Set([...east.seeds, ...west.seeds].map((c) => c.id));
+  const finalists = new Set([east.champion.id, west.champion.id]);
+  const otherQualifiers = [...qualifiers].filter((id) => !finalists.has(id));
+
+  return {
+    east, west,
+    champion: finalResult.winner,
+    runnerUp: finalResult.winner.id === east.champion.id ? west.champion : east.champion,
+    finalResult,
+    otherQualifiers,
+  };
+}
+
+// For USL Championship / League One / League Two→League One boundaries: top
+// 2 by table promote automatically, and the last spot goes to a 4-team
+// playoff among 3rd-6th place (3v6, 4v5 semis, then a final).
+function runPromotionPlayoff(lowerTable, lowerTierClubs, matchday) {
+  if (lowerTable.length < 6) return { autoPromoted: lowerTable.slice(0, 2).map((r) => r.clubId), playoffPromoted: lowerTable[2]?.clubId, bracket: null };
+  const clubById = (id) => lowerTierClubs.find((c) => c.id === id);
+  const autoPromoted = lowerTable.slice(0, 2).map((r) => r.clubId);
+  const s3 = clubById(lowerTable[2].clubId), s4 = clubById(lowerTable[3].clubId);
+  const s5 = clubById(lowerTable[4].clubId), s6 = clubById(lowerTable[5].clubId);
+  const semi1 = resolveKnockoutMatch(s3, s6, matchday);
+  const semi2 = resolveKnockoutMatch(s4, s5, matchday);
+  const final = resolveKnockoutMatch(semi1.winner, semi2.winner, matchday);
+  return { autoPromoted, playoffPromoted: final.winner.id, bracket: { semi1, semi2, final } };
+}
+
 function rolloverSeason(tiers, userClubId, prizePools, difficulty) {
   const tables = tiers.map(computeTable);
   const newTierClubIds = tiers.map((t) => t.clubs.map((c) => c.id));
@@ -1061,17 +1172,40 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty) {
     events.push({ clubId: champion.id, clubName: champion.name, tier: i, type: "champion" });
   }
 
+  const playoffMatchday = 9999; // sentinel — playoffs happen after the season, past any lingering injury/suspension cutoffs
+  const promotionPlayoffs = []; // tracked for the rollover summary UI
+
   for (let i = 0; i < tiers.length - 1; i++) {
     const upperTable = tables[i];
     const lowerTable = tables[i + 1];
     const relegated = upperTable.slice(-PROMOTE_RELEGATE_COUNT).map((r) => r.clubId);
-    const promoted = lowerTable.slice(0, PROMOTE_RELEGATE_COUNT).map((r) => r.clubId);
+
+    let promoted;
+    if (i === 0) {
+      // MLS <-> USL Championship: no real-world promotion into MLS, so this
+      // boundary stays simple table-based movement, same as always.
+      promoted = lowerTable.slice(0, PROMOTE_RELEGATE_COUNT).map((r) => r.clubId);
+    } else {
+      // Top 2 promote automatically; the last spot is decided by a 4-team
+      // playoff among 3rd-6th place, like most real pro/rel leagues do it.
+      const playoff = runPromotionPlayoff(lowerTable, tiers[i + 1].clubs, playoffMatchday);
+      promoted = [...playoff.autoPromoted, playoff.playoffPromoted];
+      promotionPlayoffs.push({ tierIdx: i + 1, ...playoff });
+    }
 
     newTierClubIds[i] = newTierClubIds[i].filter((id) => !relegated.includes(id)).concat(promoted);
     newTierClubIds[i + 1] = newTierClubIds[i + 1].filter((id) => !promoted.includes(id)).concat(relegated);
 
     relegated.forEach((id) => events.push({ clubId: id, clubName: clubsById[id].name, from: i, to: i + 1, type: "relegated" }));
     promoted.forEach((id) => events.push({ clubId: id, clubName: clubsById[id].name, from: i + 1, to: i, type: "promoted" }));
+  }
+
+  // MLS Cup Playoffs — trophy/bonus only, never affects promotion/relegation.
+  // Runs on Pro/Executive (where event bonuses are real) using the MLS table
+  // and clubs exactly as the regular season left them.
+  let mlsPlayoffResult = null;
+  if (DIFFICULTY_MODES[difficulty]?.eventBonuses) {
+    mlsPlayoffResult = runMlsPlayoffs(tables[0], tiers[0].clubs, playoffMatchday);
   }
 
   // Prize money: on Rookie, distributed by final standing from a per-tier
@@ -1160,6 +1294,25 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty) {
   const windowResult = runTransferWindow(newTiers, userClubId);
   const userDraftPicks = runDraft(tables, newTiers, userClubId);
 
+  // MLS Cup Playoffs payouts: champion/runner-up also banked their conference
+  // championship bonus on the way there; every other team that made the
+  // 18-team bracket gets a smaller qualifier bonus.
+  let userMlsPlayoff = null;
+  if (mlsPlayoffResult) {
+    const mlsClubsAfter = newTiers[0].clubs;
+    const payOut = (clubId, amount) => {
+      const c = mlsClubsAfter.find((cl) => cl.id === clubId);
+      if (c) c.budget += amount;
+    };
+    payOut(mlsPlayoffResult.champion.id, 300_000 + 35_000);
+    payOut(mlsPlayoffResult.runnerUp.id, 100_000 + 35_000);
+    mlsPlayoffResult.otherQualifiers.forEach((id) => payOut(id, 20_000));
+
+    if (userClubId === mlsPlayoffResult.champion.id) userMlsPlayoff = { result: "champion", amount: 335_000 };
+    else if (userClubId === mlsPlayoffResult.runnerUp.id) userMlsPlayoff = { result: "runner-up", amount: 135_000 };
+    else if (mlsPlayoffResult.otherQualifiers.includes(userClubId)) userMlsPlayoff = { result: "qualifier", amount: 20_000 };
+  }
+
   const userClubAfter = newTiers.flatMap((t) => t.clubs).find((c) => c.id === userClubId);
   const userPayroll = DIFFICULTY_MODES[difficulty]?.wagesDeducted && userClubAfter ? squadPayroll(userClubAfter.squad) : 0;
   // Draft additions are the one pure-growth step with no natural release —
@@ -1171,7 +1324,13 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty) {
     });
   });
 
-  return { newTiers, events, tables, windowResult, newPrizePools, userPrize, userRetirements, userDraftPicks, userPayroll };
+  const userOriginalTierIdx = tiers.findIndex((t) => t.clubs.some((c) => c.id === userClubId));
+  const userPromotionPlayoff = promotionPlayoffs.find((pp) => pp.tierIdx === userOriginalTierIdx);
+
+  return {
+    newTiers, events, tables, windowResult, newPrizePools, userPrize, userRetirements, userDraftPicks, userPayroll,
+    mlsPlayoffResult, userMlsPlayoff, promotionPlayoffs, userPromotionPlayoff,
+  };
 }
 
 /* ============================================================
@@ -1492,7 +1651,7 @@ function ClubSelectScreen({ world, onPick, saveWasReset }) {
    SEASON ROLLOVER CEREMONY
    ============================================================ */
 
-function RolloverModal({ events, userClubId, seasonNumber, windowResult, userPrize, ownershipDeposit, userRetirements, userPayroll, onContinue }) {
+function RolloverModal({ events, userClubId, seasonNumber, windowResult, userPrize, ownershipDeposit, userRetirements, userPayroll, mlsPlayoffResult, userMlsPlayoff, userPromotionPlayoff, onContinue }) {
   const champions = events.filter((e) => e.type === "champion");
   const moves = events.filter((e) => e.type !== "champion");
   const userMove = moves.find((e) => e.clubId === userClubId);
@@ -1544,6 +1703,28 @@ function RolloverModal({ events, userClubId, seasonNumber, windowResult, userPri
         {userPayroll > 0 && (
           <div style={{ background: "#F0E4D8", borderRadius: 8, padding: 12, marginBottom: 16, ...serif, fontSize: 14, color: PALETTE.ink }}>
             🧾 Payroll for the season ahead: <strong>-${userPayroll.toLocaleString()}</strong> deducted from your budget.
+          </div>
+        )}
+
+        {userMlsPlayoff && (
+          <div style={{ background: PALETTE.gold, borderRadius: 8, padding: 14, marginBottom: 16, display: "flex", alignItems: "center", gap: 10 }}>
+            <Trophy size={20} color={PALETTE.ink} />
+            <div style={{ ...display, fontWeight: 700, color: PALETTE.ink }}>
+              {userMlsPlayoff.result === "champion" ? "MLS Cup Champions!" : userMlsPlayoff.result === "runner-up" ? "MLS Cup runner-up" : "Made the MLS Cup Playoffs"} — ${userMlsPlayoff.amount.toLocaleString()} playoff bonus.
+            </div>
+          </div>
+        )}
+        {mlsPlayoffResult && !userMlsPlayoff && (
+          <div style={{ ...serif, fontSize: 13, color: PALETTE.inkSoft, marginBottom: 16 }}>
+            MLS Cup: {mlsPlayoffResult.champion.name} beat {mlsPlayoffResult.runnerUp.name} in the final.
+          </div>
+        )}
+
+        {userPromotionPlayoff && (
+          <div style={{ ...serif, fontSize: 13, color: PALETTE.inkSoft, marginBottom: 16 }}>
+            {userPromotionPlayoff.bracket
+              ? "The last promotion spot in your division went through a 3rd-6th place playoff this season."
+              : null}
           </div>
         )}
 
@@ -2484,12 +2665,14 @@ function Dashboard({ state, setState, onNewGame }) {
   };
 
   const doRollover = () => {
-    const { newTiers, events, windowResult, newPrizePools, userPrize, userRetirements, userDraftPicks, userPayroll } = rolloverSeason(state.tiers, state.userClubId, state.prizePools, state.difficulty);
+    const { newTiers, events, windowResult, newPrizePools, userPrize, userRetirements, userDraftPicks, userPayroll, mlsPlayoffResult, userMlsPlayoff, userPromotionPlayoff } = rolloverSeason(state.tiers, state.userClubId, state.prizePools, state.difficulty);
     const userMove = events.find((e) => e.clubId === state.userClubId && e.type !== "champion");
     const userChamp = events.find((e) => e.clubId === state.userClubId && e.type === "champion");
     const trophyEntries = [];
     if (userChamp) trophyEntries.push({ season: state.seasonNumber, note: `Won the ${TIER_META[userChamp.tier].name} title` });
     if (userMove) trophyEntries.push({ season: state.seasonNumber, note: userMove.type === "promoted" ? `Promoted to ${TIER_META[userMove.to].name}` : `Relegated to ${TIER_META[userMove.to].name}` });
+    if (userMlsPlayoff?.result === "champion") trophyEntries.push({ season: state.seasonNumber, note: "Won the MLS Cup" });
+    else if (userMlsPlayoff?.result === "runner-up") trophyEntries.push({ season: state.seasonNumber, note: "MLS Cup runner-up" });
 
     setState((prev) => ({
       ...prev,
@@ -2500,7 +2683,7 @@ function Dashboard({ state, setState, onNewGame }) {
       midWindowSeason: prev.midWindowSeason,
       prizePools: newPrizePools,
     }));
-    setRollover({ events, seasonNumber: state.seasonNumber, windowResult, userPrize, ownershipDeposit: OWNERSHIP_DEPOSIT[state.userTierId], userRetirements, userPayroll });
+    setRollover({ events, seasonNumber: state.seasonNumber, windowResult, userPrize, ownershipDeposit: OWNERSHIP_DEPOSIT[state.userTierId], userRetirements, userPayroll, mlsPlayoffResult, userMlsPlayoff, userPromotionPlayoff });
     if (userDraftPicks && userDraftPicks.length) setDraftPicks(userDraftPicks);
   };
 
@@ -2812,6 +2995,9 @@ function Dashboard({ state, setState, onNewGame }) {
           ownershipDeposit={rollover.ownershipDeposit}
           userRetirements={rollover.userRetirements}
           userPayroll={rollover.userPayroll}
+          mlsPlayoffResult={rollover.mlsPlayoffResult}
+          userMlsPlayoff={rollover.userMlsPlayoff}
+          userPromotionPlayoff={rollover.userPromotionPlayoff}
           onContinue={() => setRollover(null)}
         />
       )}
