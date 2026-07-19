@@ -1066,15 +1066,20 @@ function rolloverSeason(tiers, userClubId, prizePools) {
 const MID_SEASON_WINDOW_MATCHDAY = 10; // window opens once matchday 9 is complete
 
 function marketValue(p) {
-  // exponential curve: a 60 OVR squad player runs ~$1M, an 80 OVR quality
-  // starter ~$9M, a genuine 85+ OVR star well into eight figures
-  const base = 500 * Math.pow(1.135, p.overall);
+  // steeper exponential curve: a mid-tier lower-league player is still
+  // cheap, but a genuine first-team-quality player (mid-70s overall, prime
+  // age) lands around $15-20M, and MVP-caliber talent (85+) climbs into
+  // real nine-figure territory before age/form adjustments.
+  const base = 59 * Math.pow(1.1825, p.overall);
   let ageFactor = p.age <= 23 ? 1.5 : p.age <= 26 ? 1.2 : p.age <= 29 ? 1.0 : p.age <= 32 ? 0.55 : 0.25;
   // true megastars keep real commercial/marquee value even late in their
   // career — an aging legend doesn't collapse to bench-player money
   if (p.overall >= 85) ageFactor = Math.max(ageFactor, 0.6);
   const potFactor = 1 + (p.potential - p.overall) * 0.04;
-  return Math.round((base * ageFactor * potFactor) / 1000) * 1000;
+  // form: we don't track a separate running form stat, but morale already
+  // reflects recent results for this exact player, so it doubles as one
+  const formFactor = 0.85 + (p.morale / 100) * 0.3;
+  return Math.round((base * ageFactor * potFactor * formFactor) / 1000) * 1000;
 }
 
 // Renewals aren't free or unlimited: a very unhappy player just says no, a
