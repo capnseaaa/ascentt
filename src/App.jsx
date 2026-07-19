@@ -1199,7 +1199,7 @@ function formatMoney(amount) {
   return `$${Math.round(amount / 1000)}K`;
 }
 
-function ClubSelectScreen({ world, onPick }) {
+function ClubSelectScreen({ world, onPick, saveWasReset }) {
   const [openTier, setOpenTier] = useState(0);
 
   return (
@@ -1214,6 +1214,12 @@ function ClubSelectScreen({ world, onPick }) {
             Pick a club. Climb the pyramid. Become champions.
           </div>
         </div>
+
+        {saveWasReset && (
+          <div style={{ background: `${PALETTE.gold}22`, border: `1px solid ${PALETTE.gold}55`, borderRadius: 8, padding: 14, marginBottom: 24, ...serif, fontSize: 13, color: PALETTE.parchment }}>
+            The game's been updated since your last save, and your old save isn't compatible with this version — starting fresh. Sorry about that!
+          </div>
+        )}
 
         {TIER_META.map((meta) => {
           const tier = world[meta.id];
@@ -2544,17 +2550,45 @@ function Dashboard({ state, setState, onNewGame }) {
    ============================================================ */
 
 const STORAGE_KEY = "ascent_career_v1";
+// Bump this whenever a code change reshapes the save data (new required
+// fields on Club/Player, tier count changes, etc.). Old saves that don't
+// match get reset instead of crashing the app on load.
+const SAVE_VERSION = 1;
+
+function isValidSave(parsed) {
+  return (
+    parsed &&
+    parsed.saveVersion === SAVE_VERSION &&
+    Array.isArray(parsed.tiers) &&
+    parsed.tiers.length === 4 &&
+    typeof parsed.userClubId === "string" &&
+    typeof parsed.userTierId === "number"
+  );
+}
 
 export default function App() {
   const [state, setState] = useState(null);
   const [loaded, setLoaded] = useState(false);
+  const [saveWasReset, setSaveWasReset] = useState(false);
 
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) setState(JSON.parse(raw));
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (isValidSave(parsed)) {
+          setState(parsed);
+        } else {
+          // save exists but doesn't match what this version of the game
+          // expects — don't risk crashing on a half-matching shape
+          localStorage.removeItem(STORAGE_KEY);
+          setSaveWasReset(true);
+        }
+      }
     } catch (e) {
-      // no save yet, or storage unavailable — fine, start fresh
+      // corrupt/unreadable save — same treatment, start fresh
+      try { localStorage.removeItem(STORAGE_KEY); } catch (e2) {}
+      setSaveWasReset(true);
     }
     setLoaded(true);
   }, []);
@@ -2562,7 +2596,7 @@ export default function App() {
   useEffect(() => {
     if (!loaded || !state) return;
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, saveVersion: SAVE_VERSION }));
     } catch (e) {
       // best-effort — e.g. storage full or disabled
     }
@@ -2582,7 +2616,7 @@ export default function App() {
   if (!state) {
     const previewWorld = buildInitialWorld();
     previewWorld.forEach((t) => { t.fixtures = generateRoundRobin(t.clubs.map((c) => c.id)); });
-    return <ClubSelectScreen world={previewWorld} onPick={(tierId, clubId) => {
+    return <ClubSelectScreen world={previewWorld} saveWasReset={saveWasReset} onPick={(tierId, clubId) => {
       // re-derive the same picked club/tier from a freshly built world containing it
       handlePickFromPreview(previewWorld, tierId, clubId, setState);
     }} />;
@@ -2593,6 +2627,7 @@ export default function App() {
 
 function handlePickFromPreview(previewWorld, tierId, clubId, setState) {
   setState({
+    saveVersion: SAVE_VERSION,
     tiers: previewWorld,
     userTierId: tierId,
     userClubId: clubId,
