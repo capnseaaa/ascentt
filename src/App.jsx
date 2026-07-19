@@ -1010,7 +1010,21 @@ function rolloverSeason(tiers, userClubId, prizePools) {
       if (isUser) {
         squad = squad.filter((p) => p.contractYearsLeft > 0);
       } else {
-        squad = squad.map((p) => (p.contractYearsLeft <= 0 ? makePlayer(p.position, baseRating + randInt(-8, 8)) : p));
+        // AI renews its good players instead of always churning them for a
+        // random replacement — a club's best 1-2 players almost always get
+        // renewed, mid-tier squad players usually do, fringe players are the
+        // ones who actually turn over most seasons.
+        const byRank = [...squad].sort((a, b) => b.overall - a.overall);
+        const rankById = new Map(byRank.map((p, i) => [p.id, i]));
+        squad = squad.map((p) => {
+          if (p.contractYearsLeft > 0) return p;
+          const rank = rankById.get(p.id);
+          const renewChance = rank <= 1 ? 0.9 : rank <= 5 ? 0.7 : 0.4;
+          if (Math.random() < renewChance) {
+            return { ...p, contractYearsLeft: randInt(2, 4), wage: Math.round(p.wage * 1.05) };
+          }
+          return makePlayer(p.position, baseRating + randInt(-8, 8));
+        });
         // top back up to a full squad if retirements left an AI club short
         while (squad.length < 15) {
           squad.push(makePlayer(choice(["GK", "DEF", "MID", "FWD"]), baseRating + randInt(-8, 8)));
@@ -1055,7 +1069,10 @@ function marketValue(p) {
   // exponential curve: a 60 OVR squad player runs ~$1M, an 80 OVR quality
   // starter ~$9M, a genuine 85+ OVR star well into eight figures
   const base = 500 * Math.pow(1.135, p.overall);
-  const ageFactor = p.age <= 23 ? 1.5 : p.age <= 26 ? 1.2 : p.age <= 29 ? 1.0 : p.age <= 32 ? 0.55 : 0.25;
+  let ageFactor = p.age <= 23 ? 1.5 : p.age <= 26 ? 1.2 : p.age <= 29 ? 1.0 : p.age <= 32 ? 0.55 : 0.25;
+  // true megastars keep real commercial/marquee value even late in their
+  // career — an aging legend doesn't collapse to bench-player money
+  if (p.overall >= 85) ageFactor = Math.max(ageFactor, 0.6);
   const potFactor = 1 + (p.potential - p.overall) * 0.04;
   return Math.round((base * ageFactor * potFactor) / 1000) * 1000;
 }
@@ -1080,6 +1097,17 @@ function renewalOutcome(p, budget) {
   return { accepted: true, cost };
 }
 
+// A club's best couple of players are its "untouchables" — real clubs don't
+// routinely shop their two best players, and a DP-tier star getting listed
+// alongside squad filler at the same rate was the bug behind Inter Miami
+// casually selling Messi for pocket change. Rank 1-2 essentially never list;
+// rank 3 can, but rarely.
+function listingChance(rankAmongSquad) {
+  if (rankAmongSquad === 0 || rankAmongSquad === 1) return 0.01;
+  if (rankAmongSquad === 2) return 0.04;
+  return 0.18;
+}
+
 // Runs a batch of AI market activity: some non-user players go up for sale,
 // and some of those get bought by other AI clubs — so by the time the user
 // opens the Market tab there's actually something there, and the whole
@@ -1089,8 +1117,9 @@ function runTransferWindow(tiers, userClubId) {
   tiers.forEach((t) => {
     t.clubs.forEach((club) => {
       if (club.id === userClubId) return;
-      club.squad.forEach((p) => {
-        if (!p.transferListed && Math.random() < 0.18) {
+      const byRank = [...club.squad].sort((a, b) => b.overall - a.overall);
+      byRank.forEach((p, rank) => {
+        if (!p.transferListed && Math.random() < listingChance(rank)) {
           p.transferListed = true;
           p.askingPrice = Math.round(marketValue(p) * (1 + Math.random() * 0.3));
           listedCount++;
