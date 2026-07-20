@@ -2286,10 +2286,17 @@ function FormBadges({ form }) {
   );
 }
 
-function MatchLine({ label, outcome, userClubId }) {
+function MatchLine({ label, outcome, revealed = true }) {
   if (!outcome) return null;
+  if (!revealed) {
+    return (
+      <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 8px", fontSize: 12.5, ...serif, borderBottom: `1px solid ${PALETTE.parchmentDim}` }}>
+        <span style={{ color: PALETTE.inkSoft, ...mono, width: 90, flexShrink: 0 }}>{label}</span>
+        <span style={{ color: PALETTE.inkSoft, fontStyle: "italic" }}>TBD</span>
+      </div>
+    );
+  }
   const { result, wentToPenalties, winner } = outcome;
-  const homeIsUser = result.homeClub && false; // names only available on result; club id compare done by caller via winner
   return (
     <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 8px", fontSize: 12.5, ...serif, borderBottom: `1px solid ${PALETTE.parchmentDim}` }}>
       <span style={{ color: PALETTE.inkSoft, ...mono, width: 90, flexShrink: 0 }}>{label}</span>
@@ -2303,8 +2310,16 @@ function MatchLine({ label, outcome, userClubId }) {
   );
 }
 
-function SeriesLine({ label, series }) {
+function SeriesLine({ label, series, revealed = true }) {
   if (!series) return null;
+  if (!revealed) {
+    return (
+      <div style={{ padding: "6px 8px", fontSize: 12.5, ...serif, borderBottom: `1px solid ${PALETTE.parchmentDim}` }}>
+        <span style={{ color: PALETTE.inkSoft, ...mono, width: 90, display: "inline-block" }}>{label}</span>
+        <span style={{ color: PALETTE.inkSoft, fontStyle: "italic" }}>TBD</span>
+      </div>
+    );
+  }
   const loserWins = series.hWins > series.lWins ? series.lWins : series.hWins;
   const winnerWins = Math.max(series.hWins, series.lWins);
   return (
@@ -2316,58 +2331,89 @@ function SeriesLine({ label, series }) {
   );
 }
 
-function ConferenceBracket({ label, conf }) {
+function ConferenceBracket({ label, conf, revealedRounds }) {
   if (!conf) return null;
   return (
     <div style={{ marginBottom: 14 }}>
       <div style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase", marginBottom: 4 }}>{label}</div>
-      <MatchLine label="Wild Card" outcome={conf.wildcard} />
-      <SeriesLine label="1 seed" series={conf.r1a} />
-      <SeriesLine label="2 seed" series={conf.r1b} />
-      <SeriesLine label="3 seed" series={conf.r1c} />
-      <SeriesLine label="4 seed" series={conf.r1d} />
-      <MatchLine label="Semifinal" outcome={conf.semiA} />
-      <MatchLine label="Semifinal" outcome={conf.semiB} />
-      <MatchLine label="Conf Final" outcome={conf.confFinal} />
+      <MatchLine label="Wild Card" outcome={conf.wildcard} revealed={revealedRounds > 0} />
+      <SeriesLine label="1 seed" series={conf.r1a} revealed={revealedRounds > 1} />
+      <SeriesLine label="2 seed" series={conf.r1b} revealed={revealedRounds > 1} />
+      <SeriesLine label="3 seed" series={conf.r1c} revealed={revealedRounds > 1} />
+      <SeriesLine label="4 seed" series={conf.r1d} revealed={revealedRounds > 1} />
+      <MatchLine label="Semifinal" outcome={conf.semiA} revealed={revealedRounds > 2} />
+      <MatchLine label="Semifinal" outcome={conf.semiB} revealed={revealedRounds > 2} />
+      <MatchLine label="Conf Final" outcome={conf.confFinal} revealed={revealedRounds > 3} />
     </div>
   );
 }
 
-function PlayoffBracketSection({ seasonPlayoffs, tierId }) {
+// Total "rounds" per competition, for reveal-stepping purposes
+const MLS_TOTAL_ROUNDS = 5; // wildcard, round one, conf semis, conf final, cup final
+const USLC_TOTAL_ROUNDS = 3; // QF, SF, final
+const PROMO_TOTAL_ROUNDS = 2; // semis, final
+const MAX_POSTSEASON_ROUNDS = Math.max(MLS_TOTAL_ROUNDS, USLC_TOTAL_ROUNDS, PROMO_TOTAL_ROUNDS);
+
+function PlayoffBracketSection({ seasonPlayoffs, tierId, revealedRounds, onSimRound, onSimRest }) {
   if (!seasonPlayoffs) return null;
   const promo = seasonPlayoffs.promotionPlayoffs.find((pp) => pp.tierIdx === tierId);
   const showMls = tierId === 0 && seasonPlayoffs.mlsPlayoffResult;
   const showUslc = tierId === 1 && seasonPlayoffs.uslcPlayoffResult;
   if (!promo && !showMls && !showUslc) return null;
 
+  const myTotalRounds = showMls ? MLS_TOTAL_ROUNDS : showUslc ? USLC_TOTAL_ROUNDS : PROMO_TOTAL_ROUNDS;
+  const done = revealedRounds >= myTotalRounds;
+
   return (
-    <div style={{ marginTop: 24, paddingTop: 16, borderTop: `2px solid ${PALETTE.parchmentDim}` }}>
-      <div style={{ ...display, fontSize: 13, textTransform: "uppercase", letterSpacing: "0.06em", color: PALETTE.inkSoft, marginBottom: 12 }}>
-        Postseason
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ ...display, fontSize: 13, textTransform: "uppercase", letterSpacing: "0.06em", color: PALETTE.inkSoft }}>
+          Postseason
+        </div>
+        {!done && (
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={onSimRound}
+              style={{ ...display, fontSize: 12, fontWeight: 600, padding: "6px 12px", borderRadius: 6, border: "none", background: PALETTE.gold, color: PALETTE.ink, cursor: "pointer" }}
+            >
+              Sim Next Round
+            </button>
+            <button
+              onClick={onSimRest}
+              style={{ ...display, fontSize: 12, fontWeight: 600, padding: "6px 12px", borderRadius: 6, border: `1px solid ${PALETTE.ink}`, background: "none", color: PALETTE.ink, cursor: "pointer" }}
+            >
+              Sim Rest of Postseason
+            </button>
+          </div>
+        )}
       </div>
 
       {showMls && (
         <div>
-          <ConferenceBracket label="Eastern Conference" conf={seasonPlayoffs.mlsPlayoffResult.east} />
-          <ConferenceBracket label="Western Conference" conf={seasonPlayoffs.mlsPlayoffResult.west} />
-          <MatchLine label="MLS Cup" outcome={seasonPlayoffs.mlsPlayoffResult.finalResult} />
-          <div style={{ ...display, fontWeight: 700, fontSize: 14, color: PALETTE.gold, marginTop: 8 }}>
-            🏆 {seasonPlayoffs.mlsPlayoffResult.champion.name} win the MLS Cup
-          </div>
+          <ConferenceBracket label="Eastern Conference" conf={seasonPlayoffs.mlsPlayoffResult.east} revealedRounds={revealedRounds} />
+          <ConferenceBracket label="Western Conference" conf={seasonPlayoffs.mlsPlayoffResult.west} revealedRounds={revealedRounds} />
+          <MatchLine label="MLS Cup" outcome={seasonPlayoffs.mlsPlayoffResult.finalResult} revealed={revealedRounds > 4} />
+          {revealedRounds > 4 && (
+            <div style={{ ...display, fontWeight: 700, fontSize: 14, color: PALETTE.gold, marginTop: 8 }}>
+              🏆 {seasonPlayoffs.mlsPlayoffResult.champion.name} win the MLS Cup
+            </div>
+          )}
         </div>
       )}
 
       {showUslc && (
         <div>
           <div style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase", marginBottom: 4 }}>Quarterfinals</div>
-          {seasonPlayoffs.uslcPlayoffResult.rounds[0]?.map((o, i) => <MatchLine key={i} label={`QF${i + 1}`} outcome={o} />)}
+          {seasonPlayoffs.uslcPlayoffResult.rounds[0]?.map((o, i) => <MatchLine key={i} label={`QF${i + 1}`} outcome={o} revealed={revealedRounds > 0} />)}
           <div style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase", margin: "8px 0 4px" }}>Semifinals</div>
-          {seasonPlayoffs.uslcPlayoffResult.rounds[1]?.map((o, i) => <MatchLine key={i} label={`SF${i + 1}`} outcome={o} />)}
+          {seasonPlayoffs.uslcPlayoffResult.rounds[1]?.map((o, i) => <MatchLine key={i} label={`SF${i + 1}`} outcome={o} revealed={revealedRounds > 1} />)}
           <div style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase", margin: "8px 0 4px" }}>Final</div>
-          {seasonPlayoffs.uslcPlayoffResult.rounds[2]?.map((o, i) => <MatchLine key={i} label="Final" outcome={o} />)}
-          <div style={{ ...display, fontWeight: 700, fontSize: 14, color: PALETTE.gold, marginTop: 8 }}>
-            🏆 {seasonPlayoffs.uslcPlayoffResult.champion.name} win the USL Cup
-          </div>
+          {seasonPlayoffs.uslcPlayoffResult.rounds[2]?.map((o, i) => <MatchLine key={i} label="Final" outcome={o} revealed={revealedRounds > 2} />)}
+          {revealedRounds > 2 && (
+            <div style={{ ...display, fontWeight: 700, fontSize: 14, color: PALETTE.gold, marginTop: 8 }}>
+              🏆 {seasonPlayoffs.uslcPlayoffResult.champion.name} win the USL Cup
+            </div>
+          )}
         </div>
       )}
 
@@ -2378,12 +2424,14 @@ function PlayoffBracketSection({ seasonPlayoffs, tierId }) {
           </div>
           {promo.bracket ? (
             <>
-              <MatchLine label="Semifinal" outcome={promo.bracket.semi1} />
-              <MatchLine label="Semifinal" outcome={promo.bracket.semi2} />
-              <MatchLine label="Final" outcome={promo.bracket.final} />
-              <div style={{ ...display, fontWeight: 700, fontSize: 14, color: PALETTE.gold, marginTop: 8 }}>
-                ⬆️ {promo.bracket.final.winner.name} promoted
-              </div>
+              <MatchLine label="Semifinal" outcome={promo.bracket.semi1} revealed={revealedRounds > 0} />
+              <MatchLine label="Semifinal" outcome={promo.bracket.semi2} revealed={revealedRounds > 0} />
+              <MatchLine label="Final" outcome={promo.bracket.final} revealed={revealedRounds > 1} />
+              {revealedRounds > 1 && (
+                <div style={{ ...display, fontWeight: 700, fontSize: 14, color: PALETTE.gold, marginTop: 8 }}>
+                  ⬆️ {promo.bracket.final.winner.name} promoted
+                </div>
+              )}
             </>
           ) : (
             <div style={{ ...serif, fontSize: 12.5, color: PALETTE.inkSoft }}>Not enough clubs for a playoff this season.</div>
@@ -2394,40 +2442,108 @@ function PlayoffBracketSection({ seasonPlayoffs, tierId }) {
   );
 }
 
-function TableTab({ tier, userClubId, seasonPlayoffs }) {
+function StandingsTable({ table, userClubId }) {
+  return (
+    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, ...serif }}>
+      <thead>
+        <tr style={{ textAlign: "left", color: PALETTE.inkSoft, borderBottom: `2px solid ${PALETTE.parchmentDim}` }}>
+          {["#", "Club", "P", "W", "D", "L", "GF", "GA", "GD", "Pts", "Form"].map((h) => (
+            <th key={h} style={{ padding: "6px 8px", ...display, fontWeight: 600, fontSize: 11, textTransform: "uppercase" }}>{h}</th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {table.map((row, i) => (
+          <tr key={row.clubId} style={{
+            borderBottom: `1px solid ${PALETTE.parchmentDim}`,
+            background: row.clubId === userClubId ? `${PALETTE.gold}33` : "transparent",
+          }}>
+            <td style={{ padding: "6px 8px", ...mono }}>{i + 1}</td>
+            <td style={{ padding: "6px 8px", fontWeight: row.clubId === userClubId ? 700 : 400 }}>{row.club}</td>
+            <td style={{ padding: "6px 8px", ...mono }}>{row.played}</td>
+            <td style={{ padding: "6px 8px", ...mono }}>{row.won}</td>
+            <td style={{ padding: "6px 8px", ...mono }}>{row.drawn}</td>
+            <td style={{ padding: "6px 8px", ...mono }}>{row.lost}</td>
+            <td style={{ padding: "6px 8px", ...mono }}>{row.gf}</td>
+            <td style={{ padding: "6px 8px", ...mono }}>{row.ga}</td>
+            <td style={{ padding: "6px 8px", ...mono }}>{row.gf - row.ga}</td>
+            <td style={{ padding: "6px 8px", ...mono, fontWeight: 700 }}>{row.points}</td>
+            <td style={{ padding: "6px 8px" }}><FormBadges form={row.form} /></td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function TableTab({ tier, userClubId, seasonPlayoffs, revealedRounds, onSimRound, onSimRest }) {
+  const [view, setView] = useState("auto"); // "auto" picks bracket-if-postseason, else standings
+  const [mlsView, setMlsView] = useState("overall"); // "overall" (Shield standings) | "conference"
   const table = computeTable(tier);
+
+  const promo = seasonPlayoffs?.promotionPlayoffs.find((pp) => pp.tierIdx === tier.id);
+  const hasBracket = seasonPlayoffs && (
+    (tier.id === 0 && seasonPlayoffs.mlsPlayoffResult) ||
+    (tier.id === 1 && seasonPlayoffs.uslcPlayoffResult) ||
+    !!promo
+  );
+  const showingBracket = hasBracket && view !== "standings";
+
   return (
     <div style={{ overflowX: "auto" }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, ...serif }}>
-        <thead>
-          <tr style={{ textAlign: "left", color: PALETTE.inkSoft, borderBottom: `2px solid ${PALETTE.parchmentDim}` }}>
-            {["#", "Club", "P", "W", "D", "L", "GF", "GA", "GD", "Pts", "Form"].map((h) => (
-              <th key={h} style={{ padding: "6px 8px", ...display, fontWeight: 600, fontSize: 11, textTransform: "uppercase" }}>{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {table.map((row, i) => (
-            <tr key={row.clubId} style={{
-              borderBottom: `1px solid ${PALETTE.parchmentDim}`,
-              background: row.clubId === userClubId ? `${PALETTE.gold}33` : "transparent",
-            }}>
-              <td style={{ padding: "6px 8px", ...mono }}>{i + 1}</td>
-              <td style={{ padding: "6px 8px", fontWeight: row.clubId === userClubId ? 700 : 400 }}>{row.club}</td>
-              <td style={{ padding: "6px 8px", ...mono }}>{row.played}</td>
-              <td style={{ padding: "6px 8px", ...mono }}>{row.won}</td>
-              <td style={{ padding: "6px 8px", ...mono }}>{row.drawn}</td>
-              <td style={{ padding: "6px 8px", ...mono }}>{row.lost}</td>
-              <td style={{ padding: "6px 8px", ...mono }}>{row.gf}</td>
-              <td style={{ padding: "6px 8px", ...mono }}>{row.ga}</td>
-              <td style={{ padding: "6px 8px", ...mono }}>{row.gf - row.ga}</td>
-              <td style={{ padding: "6px 8px", ...mono, fontWeight: 700 }}>{row.points}</td>
-              <td style={{ padding: "6px 8px" }}><FormBadges form={row.form} /></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <PlayoffBracketSection seasonPlayoffs={seasonPlayoffs} tierId={tier.id} />
+      {hasBracket && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          <button
+            onClick={() => setView("auto")}
+            style={{ ...display, fontSize: 12, padding: "6px 12px", borderRadius: 6, cursor: "pointer", border: `1px solid ${PALETTE.ink}`, background: showingBracket ? PALETTE.ink : "none", color: showingBracket ? PALETTE.parchment : PALETTE.ink }}
+          >
+            Bracket
+          </button>
+          <button
+            onClick={() => setView("standings")}
+            style={{ ...display, fontSize: 12, padding: "6px 12px", borderRadius: 6, cursor: "pointer", border: `1px solid ${PALETTE.ink}`, background: !showingBracket ? PALETTE.ink : "none", color: !showingBracket ? PALETTE.parchment : PALETTE.ink }}
+          >
+            Final Standings
+          </button>
+        </div>
+      )}
+
+      {showingBracket ? (
+        <PlayoffBracketSection seasonPlayoffs={seasonPlayoffs} tierId={tier.id} revealedRounds={revealedRounds} onSimRound={onSimRound} onSimRest={onSimRest} />
+      ) : (
+        <>
+          {tier.id === 0 && !hasBracket && (
+            <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+              <button
+                onClick={() => setMlsView("overall")}
+                style={{ ...display, fontSize: 12, padding: "6px 12px", borderRadius: 6, cursor: "pointer", border: `1px solid ${PALETTE.ink}`, background: mlsView === "overall" ? PALETTE.ink : "none", color: mlsView === "overall" ? PALETTE.parchment : PALETTE.ink }}
+              >
+                Overall (Shield)
+              </button>
+              <button
+                onClick={() => setMlsView("conference")}
+                style={{ ...display, fontSize: 12, padding: "6px 12px", borderRadius: 6, cursor: "pointer", border: `1px solid ${PALETTE.ink}`, background: mlsView === "conference" ? PALETTE.ink : "none", color: mlsView === "conference" ? PALETTE.parchment : PALETTE.ink }}
+              >
+                By Conference
+              </button>
+            </div>
+          )}
+          {tier.id === 0 && mlsView === "conference" && !hasBracket ? (
+            <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: 320 }}>
+                <div style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase", marginBottom: 6 }}>Eastern Conference</div>
+                <StandingsTable table={table.filter((r) => mlsConference(r.club) === "East")} userClubId={userClubId} />
+              </div>
+              <div style={{ flex: 1, minWidth: 320 }}>
+                <div style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase", marginBottom: 6 }}>Western Conference</div>
+                <StandingsTable table={table.filter((r) => mlsConference(r.club) === "West")} userClubId={userClubId} />
+              </div>
+            </div>
+          ) : (
+            <StandingsTable table={table} userClubId={userClubId} />
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -3018,6 +3134,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
   const [draftPicks, setDraftPicks] = useState(null);
   const [infoNotice, setInfoNotice] = useState(null);
   const [seasonPlayoffs, setSeasonPlayoffs] = useState(null);
+  const [revealedRounds, setRevealedRounds] = useState(0);
   const [sackedNotice, setSackedNotice] = useState(null);
 
   const tier = state.tiers[state.userTierId];
@@ -3074,11 +3191,15 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
   const handleViewPostseason = () => {
     try {
       setSeasonPlayoffs(computeSeasonPlayoffs(state.tiers, state.userClubId, state.difficulty));
+      setRevealedRounds(0);
       setTab("table");
     } catch (e) {
       setInfoNotice(`Something went wrong computing the postseason (${e.message}). You can still continue to next season — the regular rollover doesn't depend on this.`);
     }
   };
+
+  const handleSimRound = () => setRevealedRounds((r) => Math.min(MAX_POSTSEASON_ROUNDS, r + 1));
+  const handleSimRestOfPostseason = () => setRevealedRounds(MAX_POSTSEASON_ROUNDS);
 
   const doRollover = () => {
     const { newTiers, events, tables, windowResult, newPrizePools, userPrize, userRetirements, userDraftPicks, userPayroll, mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, userPromotionPlayoff } = rolloverSeason(state.tiers, state.userClubId, state.prizePools, state.difficulty, seasonPlayoffs);
@@ -3145,6 +3266,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
     if (sackNotice) {
       setSackedNotice(sackNotice);
       setSeasonPlayoffs(null);
+    setRevealedRounds(0);
       return;
     }
 
@@ -3159,6 +3281,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
     setRollover({ events, seasonNumber: state.seasonNumber, windowResult, userPrize, ownershipDeposit: ownershipDepositFor(state.userTierId, state.difficulty), userRetirements, userPayroll, mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, userPromotionPlayoff });
     if (userDraftPicks && userDraftPicks.length) setDraftPicks(userDraftPicks);
     setSeasonPlayoffs(null);
+    setRevealedRounds(0);
   };
 
   const handleToggleList = (playerId) => {
@@ -3384,14 +3507,23 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
             Season {state.seasonNumber}<br />
             {seasonComplete ? "Season complete" : `Matchday ${currentMatchday}`}
           </div>
-          {seasonComplete ? (
-            <button
-              onClick={seasonPlayoffs ? doRollover : handleViewPostseason}
-              style={{ ...display, fontWeight: 600, fontSize: 13, background: PALETTE.gold, color: PALETTE.ink, border: "none", borderRadius: 6, padding: "10px 16px", cursor: "pointer" }}
-            >
-              {seasonPlayoffs ? "Continue to Next Season →" : "View Postseason"}
-            </button>
-          ) : (
+          {seasonComplete ? (() => {
+            const userHasBracket = seasonPlayoffs && (
+              (state.userTierId === 0 && seasonPlayoffs.mlsPlayoffResult) ||
+              (state.userTierId === 1 && seasonPlayoffs.uslcPlayoffResult) ||
+              seasonPlayoffs.promotionPlayoffs.some((pp) => pp.tierIdx === state.userTierId)
+            );
+            const userBracketTotalRounds = state.userTierId === 0 ? MLS_TOTAL_ROUNDS : state.userTierId === 1 ? USLC_TOTAL_ROUNDS : PROMO_TOTAL_ROUNDS;
+            const readyToContinue = !seasonPlayoffs || !userHasBracket || revealedRounds >= userBracketTotalRounds;
+            return (
+              <button
+                onClick={!seasonPlayoffs ? handleViewPostseason : readyToContinue ? doRollover : () => setTab("table")}
+                style={{ ...display, fontWeight: 600, fontSize: 13, background: PALETTE.gold, color: PALETTE.ink, border: "none", borderRadius: 6, padding: "10px 16px", cursor: "pointer" }}
+              >
+                {!seasonPlayoffs ? "View Postseason" : readyToContinue ? "Continue to Next Season →" : "Finish watching your bracket →"}
+              </button>
+            );
+          })() : (
             <>
               <button
                 onClick={simulateMatchday}
@@ -3444,7 +3576,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
       <div style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
         {tab === "squad" && <SquadTab club={userClub} matchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)} onToggleList={handleToggleList} onRenew={handleRenew} onSetCaptain={handleSetCaptain} tierId={state.userTierId} difficulty={state.difficulty} onToggleDP={handleToggleDP} />}
         {tab === "tactics" && <TacticsTab club={userClub} matchday={currentMatchday ?? 1} onChange={handleTacticsChange} />}
-        {tab === "table" && <TableTab tier={tier} userClubId={userClub.id} seasonPlayoffs={seasonPlayoffs} />}
+        {tab === "table" && <TableTab tier={tier} userClubId={userClub.id} seasonPlayoffs={seasonPlayoffs} revealedRounds={revealedRounds} onSimRound={handleSimRound} onSimRest={handleSimRestOfPostseason} />}
         {tab === "fixtures" && <FixturesTab tier={tier} userClubId={userClub.id} />}
         {tab === "market" && <MarketTab tiers={state.tiers} userClub={userClub} userTierId={state.userTierId} onBuy={handleBuy} />}
         {tab === "development" && (
