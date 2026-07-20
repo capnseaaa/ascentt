@@ -187,7 +187,7 @@ const DIFFICULTY_MODES = {
 // Annual wage bands per tier, loosely calibrated to real USL/MLS CBA figures.
 // USL League Two pays nothing — it's amateur/NCAA-eligible status, by rule.
 const WAGE_BANDS = [
-  { young: 90_000, senior: 126_000, vetLow: 250_000, vetHigh: 600_000, starLow: 1_000_000, starHigh: 30_000_000 }, // MLS
+  { young: 90_000, senior: 126_000, vetLow: 250_000, vetHigh: 600_000, starLow: 700_000, starHigh: 9_000_000 }, // MLS
   { young: 34_000, senior: 42_000, vetLow: 50_000, vetHigh: 60_000, starLow: 96_000, starHigh: 180_000 }, // USL Championship
   { young: 15_000, senior: 20_000, vetLow: 24_000, vetHigh: 36_000, starLow: 36_000, starHigh: 55_000 }, // USL League One
   { young: 0, senior: 0, vetLow: 0, vetHigh: 0, starLow: 0, starHigh: 0 }, // USL League Two — amateur
@@ -461,6 +461,7 @@ function computeHints(club, matchday) {
   if (club.academyStars > 0) {
     const ready = club.youthPlayers.filter((p) => p.age >= ACADEMY_PROMOTE_MIN_AGE);
     if (ready.length > 0) hints.push(`${ready.length} academy prospect${ready.length === 1 ? " is" : "s are"} old enough to promote to the first team.`);
+    if (club.academyStars < 5) hints.push(`Your academy is ${club.academyStars}-star — investing further would speed up development and raise the ceiling on new prospects.`);
   }
   if (club.academyEligible && club.academyStars === 0 && club.budget >= ACADEMY_START_COST) {
     hints.push("You're eligible to start an academy and can afford it — a long-term investment in your own talent pipeline.");
@@ -476,7 +477,23 @@ function computeHints(club, matchday) {
 
   if (club.budget < 300_000) hints.push("Budget is very low — selling a listed player or two could ease the pressure.");
 
-  if (hints.length === 0) hints.push("Nothing urgent — squad, contracts, and finances all look in order.");
+  const captain = club.squad.find((p) => p.id === club.captainId);
+  if (captain && captain.leadership < 55) hints.push(`Your captain (${captain.name}) has modest leadership (${captain.leadership}) — a more natural leader in your XI might lift team chemistry.`);
+
+  // These stay relevant even when nothing above fired — always leave the
+  // player with a next step rather than just "everything's fine."
+  const weakest = ["def", "mid", "att"].reduce((a, b) => (lineRatings[a] <= lineRatings[b] ? a : b));
+  const weakestLabel = { def: "defense", mid: "midfield", att: "attack" }[weakest];
+  hints.push(`Your ${weakestLabel} is your weakest line (${lineRatings[weakest]}★) — the Market tab is worth a scan even if nothing's urgent there.`);
+
+  if (club.tactics.lineupMode === "best") {
+    hints.push("You're on Best XI — switching to Auto occasionally keeps players fresher, or try Youth to develop your prospects faster.");
+  }
+
+  if (hints.length < 2) {
+    hints.push("Squad and finances look solid — a good time to check the Draft or Market for a squad upgrade before your rivals do.");
+  }
+
   return hints;
 }
 
@@ -578,6 +595,13 @@ function buildInitialWorld() {
       })
     );
   }
+  // Founding MLS clubs start with an already-established academy — a perk
+  // of being top-flight from day one. A club that gets promoted into MLS
+  // later doesn't get this for free; they have to build their own.
+  mlsClubs.forEach((c) => {
+    c.academyStars = randInt(2, 3);
+    c.academyInvested = ACADEMY_STAR_THRESHOLDS[c.academyStars];
+  });
 
   // Tier 1: USL Championship — real clubs, generated rosters
   const uslcClubs = USL_CHAMPIONSHIP_TEAMS.map((name) =>
@@ -976,6 +1000,14 @@ const MIN_PRIZE_POOL = [1_200_000, 600_000, 250_000, 100_000]; // hard floor per
 // standing — separate from performance bonuses, and sized so a typical squad
 // at that tier can actually afford to renew contracts even in a bad season.
 const OWNERSHIP_DEPOSIT = [5_000_000, 2_000_000, 900_000, 350_000];
+// On Pro/Executive, clubs actually have to fund a real payroll out of this
+// money, so the deposit scales up accordingly — mainly matters for MLS,
+// where wages can run high; the other tiers' payrolls were already roughly
+// in range of their Rookie-level deposit.
+const OWNERSHIP_DEPOSIT_WAGED = [16_000_000, 2_400_000, 1_000_000, 350_000];
+function ownershipDepositFor(tierIdx, difficulty) {
+  return DIFFICULTY_MODES[difficulty]?.wagesDeducted ? OWNERSHIP_DEPOSIT_WAGED[tierIdx] : OWNERSHIP_DEPOSIT[tierIdx];
+}
 
 function distributePrizeMoney(table, poolAmount) {
   const n = table.length;
@@ -1159,27 +1191,52 @@ function runPromotionPlayoff(lowerTable, lowerTierClubs, matchday) {
   return { autoPromoted, playoffPromoted: final.winner.id, bracket: { semi1, semi2, final } };
 }
 
-function rolloverSeason(tiers, userClubId, prizePools, difficulty) {
-  const tables = tiers.map(computeTable);
-  const newTierClubIds = tiers.map((t) => t.clubs.map((c) => c.id));
-  const clubsById = {};
-  tiers.forEach((t) => t.clubs.forEach((c) => (clubsById[c.id] = c)));
-
-  const events = []; // {clubName, from, to, type: 'promoted'|'relegated'|'champion'}
-
-  for (let i = 0; i < tiers.length; i++) {
-    const champion = clubsById[tables[i][0].clubId];
-    events.push({ clubId: champion.id, clubName: champion.name, tier: i, type: "champion" });
+// A flat (no conferences) single-elimination bracket seeded straight off the
+// table — used for USL Championship's real playoff, which crowns its own
+// champion separately from the regular-season "Players' Shield" table
+// topper, same relationship as MLS Cup vs Supporters' Shield.
+function runFlatPlayoffBracket(table, clubs, matchday, size) {
+  if (table.length < size) return null;
+  const clubById = (id) => clubs.find((c) => c.id === id);
+  const seeds = table.slice(0, size).map((r) => clubById(r.clubId));
+  const pairIndices = [];
+  for (let i = 0; i < size / 2; i++) pairIndices.push([i, size - 1 - i]);
+  let currentRound = pairIndices.map(([a, b]) => [seeds[a], seeds[b]]);
+  const rounds = [];
+  let finalMatchup = null;
+  let champion = null;
+  while (currentRound.length > 0) {
+    const results = currentRound.map(([home, away]) => resolveKnockoutMatch(home, away, matchday));
+    rounds.push(results);
+    if (results.length === 1) {
+      finalMatchup = currentRound[0];
+      champion = results[0].winner;
+      break;
+    }
+    const winners = results.map((r) => r.winner);
+    const nextPairs = [];
+    for (let i = 0; i < winners.length; i += 2) nextPairs.push([winners[i], winners[i + 1]]);
+    currentRound = nextPairs;
   }
+  const runnerUp = finalMatchup[0].id === champion.id ? finalMatchup[1] : finalMatchup[0];
+  return { champion, runnerUp, rounds, qualifiers: seeds.map((c) => c.id) };
+}
 
+// Computes everything playoff- and promotion-related from the CURRENT
+// (pre-rollover) standings — callable on its own once the regular season
+// ends, so the result can be displayed as a real postseason before the
+// player commits to rolling over. rolloverSeason() calls this itself if it
+// wasn't given a precomputed result, so behavior is identical either way.
+function computeSeasonPlayoffs(tiers, userClubId, difficulty) {
+  const tables = tiers.map(computeTable);
   const playoffMatchday = 9999; // sentinel — playoffs happen after the season, past any lingering injury/suspension cutoffs
-  const promotionPlayoffs = []; // tracked for the rollover summary UI
+  const promotionPlayoffs = [];
+  const movementByBoundary = [];
 
   for (let i = 0; i < tiers.length - 1; i++) {
     const upperTable = tables[i];
     const lowerTable = tables[i + 1];
     const relegated = upperTable.slice(-PROMOTE_RELEGATE_COUNT).map((r) => r.clubId);
-
     let promoted;
     if (i === 0) {
       // MLS <-> USL Championship: no real-world promotion into MLS, so this
@@ -1192,21 +1249,44 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty) {
       promoted = [...playoff.autoPromoted, playoff.playoffPromoted];
       promotionPlayoffs.push({ tierIdx: i + 1, ...playoff });
     }
+    movementByBoundary.push({ upperTierIdx: i, promoted, relegated });
+  }
 
+  // MLS Cup Playoffs — trophy/bonus only, never affects promotion/relegation.
+  let mlsPlayoffResult = null;
+  let uslcPlayoffResult = null;
+  if (DIFFICULTY_MODES[difficulty]?.eventBonuses) {
+    mlsPlayoffResult = runMlsPlayoffs(tables[0], tiers[0].clubs, playoffMatchday);
+    // USL Championship runs its own real playoff too — top 8, single
+    // elimination, no conferences. Crowns the USL Cup separately from the
+    // Players' Shield (the regular-season table topper).
+    uslcPlayoffResult = runFlatPlayoffBracket(tables[1], tiers[1].clubs, playoffMatchday, 8);
+  }
+
+  return { tables, movementByBoundary, promotionPlayoffs, mlsPlayoffResult, uslcPlayoffResult };
+}
+
+function rolloverSeason(tiers, userClubId, prizePools, difficulty, precomputedPlayoffs) {
+  const { tables, movementByBoundary, promotionPlayoffs, mlsPlayoffResult, uslcPlayoffResult } =
+    precomputedPlayoffs || computeSeasonPlayoffs(tiers, userClubId, difficulty);
+  const newTierClubIds = tiers.map((t) => t.clubs.map((c) => c.id));
+  const clubsById = {};
+  tiers.forEach((t) => t.clubs.forEach((c) => (clubsById[c.id] = c)));
+
+  const events = []; // {clubName, from, to, type: 'promoted'|'relegated'|'champion'}
+
+  for (let i = 0; i < tiers.length; i++) {
+    const champion = clubsById[tables[i][0].clubId];
+    events.push({ clubId: champion.id, clubName: champion.name, tier: i, type: "champion" });
+  }
+
+  movementByBoundary.forEach(({ upperTierIdx: i, promoted, relegated }) => {
     newTierClubIds[i] = newTierClubIds[i].filter((id) => !relegated.includes(id)).concat(promoted);
     newTierClubIds[i + 1] = newTierClubIds[i + 1].filter((id) => !promoted.includes(id)).concat(relegated);
 
     relegated.forEach((id) => events.push({ clubId: id, clubName: clubsById[id].name, from: i, to: i + 1, type: "relegated" }));
     promoted.forEach((id) => events.push({ clubId: id, clubName: clubsById[id].name, from: i + 1, to: i, type: "promoted" }));
-  }
-
-  // MLS Cup Playoffs — trophy/bonus only, never affects promotion/relegation.
-  // Runs on Pro/Executive (where event bonuses are real) using the MLS table
-  // and clubs exactly as the regular season left them.
-  let mlsPlayoffResult = null;
-  if (DIFFICULTY_MODES[difficulty]?.eventBonuses) {
-    mlsPlayoffResult = runMlsPlayoffs(tables[0], tiers[0].clubs, playoffMatchday);
-  }
+  });
 
   // Prize money: on Rookie, distributed by final standing from a per-tier
   // pool that shrinks a little every season (simple, no real-world figures
@@ -1265,6 +1345,14 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty) {
           if (Math.random() < renewChance) {
             return { ...p, contractYearsLeft: randInt(2, 4), wage: Math.round(p.wage * 1.05) };
           }
+          // MLS occasionally lands a marquee free-agent signing instead of
+          // just generating another academy-tier prospect — without this,
+          // the pool of genuinely elite (85+) players only ever shrinks as
+          // real stars age out, since replacements otherwise cluster near
+          // the tier's base rating.
+          if (i === 0 && Math.random() < 0.06) {
+            return makePlayer(p.position, baseRating + randInt(18, 30));
+          }
           return makePlayer(p.position, baseRating + randInt(-8, 8));
         });
         // top back up to a full squad if retirements left an AI club short
@@ -1282,7 +1370,7 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty) {
       return {
         ...club,
         squad,
-        budget: club.budget + prize + OWNERSHIP_DEPOSIT[i] - payroll,
+        budget: club.budget + prize + ownershipDepositFor(i, difficulty) - payroll,
         academyEligible: !!club.academyEligible || i <= 1,
         youthPlayers,
         tryoutCandidates: [], // last window's tryout candidates don't carry over — sign or lose them
@@ -1313,6 +1401,28 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty) {
     else if (mlsPlayoffResult.otherQualifiers.includes(userClubId)) userMlsPlayoff = { result: "qualifier", amount: 20_000 };
   }
 
+  // USL Championship's own playoff (real, separate from the promotion
+  // playoff below it): champion/runner-up money, small consolation for the
+  // rest of the bracket.
+  let userUslcPlayoff = null;
+  if (uslcPlayoffResult) {
+    const uslcClubsAfter = newTiers[1].clubs;
+    const payOutUslc = (clubId, amount) => {
+      const c = uslcClubsAfter.find((cl) => cl.id === clubId);
+      if (c) c.budget += amount;
+    };
+    const otherUslcQualifiers = uslcPlayoffResult.qualifiers.filter(
+      (id) => id !== uslcPlayoffResult.champion.id && id !== uslcPlayoffResult.runnerUp.id
+    );
+    payOutUslc(uslcPlayoffResult.champion.id, 40_000);
+    payOutUslc(uslcPlayoffResult.runnerUp.id, 15_000);
+    otherUslcQualifiers.forEach((id) => payOutUslc(id, 5_000));
+
+    if (userClubId === uslcPlayoffResult.champion.id) userUslcPlayoff = { result: "champion", amount: 40_000 };
+    else if (userClubId === uslcPlayoffResult.runnerUp.id) userUslcPlayoff = { result: "runner-up", amount: 15_000 };
+    else if (otherUslcQualifiers.includes(userClubId)) userUslcPlayoff = { result: "qualifier", amount: 5_000 };
+  }
+
   const userClubAfter = newTiers.flatMap((t) => t.clubs).find((c) => c.id === userClubId);
   const userPayroll = DIFFICULTY_MODES[difficulty]?.wagesDeducted && userClubAfter ? squadPayroll(userClubAfter.squad) : 0;
   // Draft additions are the one pure-growth step with no natural release —
@@ -1329,7 +1439,7 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty) {
 
   return {
     newTiers, events, tables, windowResult, newPrizePools, userPrize, userRetirements, userDraftPicks, userPayroll,
-    mlsPlayoffResult, userMlsPlayoff, promotionPlayoffs, userPromotionPlayoff,
+    mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, promotionPlayoffs, userPromotionPlayoff,
   };
 }
 
@@ -1340,11 +1450,11 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty) {
 const MID_SEASON_WINDOW_MATCHDAY = 10; // window opens once matchday 9 is complete
 
 function marketValue(p) {
-  // a mid-tier lower-league player is cheap, a genuine first-team-quality
-  // player (mid-70s overall, prime age) lands around $15-20M, and true
-  // MVP-caliber talent (85+) climbs high — but caps out around $55-60M,
-  // since that's the ceiling even the biggest deals in this world hit
-  const base = 59 * Math.pow(1.1825, p.overall);
+  // meaningfully gentler curve than before — a decent rotation player (65-70
+  // overall) should be a few hundred thousand to ~$2M, a genuine good starter
+  // (74-ish) a few million, and only real elite talent (85+) climbs into
+  // eight figures, capped around $55-60M for the very best.
+  const base = 140 * Math.pow(1.145, p.overall);
   let ageFactor = p.age <= 23 ? 1.5 : p.age <= 26 ? 1.2 : p.age <= 29 ? 1.0 : p.age <= 32 ? 0.55 : 0.25;
   // true megastars keep real commercial/marquee value even late in their
   // career — an aging legend doesn't collapse to bench-player money
@@ -1565,7 +1675,7 @@ function DifficultySelectScreen({ onChoose }) {
   );
 }
 
-function ClubSelectScreen({ world, onPick, saveWasReset }) {
+function ClubSelectScreen({ world, onPick, saveWasReset, difficulty }) {
   const [openTier, setOpenTier] = useState(0);
 
   return (
@@ -1606,7 +1716,7 @@ function ClubSelectScreen({ world, onPick, saveWasReset }) {
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
                   <span style={{ fontSize: 12.5, ...mono, opacity: 0.85, whiteSpace: "nowrap" }}>
-                    Funds: {formatMoney(OWNERSHIP_DEPOSIT[meta.id])}/season
+                    Funds: {formatMoney(ownershipDepositFor(meta.id, difficulty))}/season
                   </span>
                   <ChevronRight size={20} style={{ transform: isOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
                 </div>
@@ -1651,7 +1761,7 @@ function ClubSelectScreen({ world, onPick, saveWasReset }) {
    SEASON ROLLOVER CEREMONY
    ============================================================ */
 
-function RolloverModal({ events, userClubId, seasonNumber, windowResult, userPrize, ownershipDeposit, userRetirements, userPayroll, mlsPlayoffResult, userMlsPlayoff, userPromotionPlayoff, onContinue }) {
+function RolloverModal({ events, userClubId, seasonNumber, windowResult, userPrize, ownershipDeposit, userRetirements, userPayroll, mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, userPromotionPlayoff, onContinue }) {
   const champions = events.filter((e) => e.type === "champion");
   const moves = events.filter((e) => e.type !== "champion");
   const userMove = moves.find((e) => e.clubId === userClubId);
@@ -1717,6 +1827,20 @@ function RolloverModal({ events, userClubId, seasonNumber, windowResult, userPri
         {mlsPlayoffResult && !userMlsPlayoff && (
           <div style={{ ...serif, fontSize: 13, color: PALETTE.inkSoft, marginBottom: 16 }}>
             MLS Cup: {mlsPlayoffResult.champion.name} beat {mlsPlayoffResult.runnerUp.name} in the final.
+          </div>
+        )}
+
+        {userUslcPlayoff && (
+          <div style={{ background: PALETTE.silver, borderRadius: 8, padding: 14, marginBottom: 16, display: "flex", alignItems: "center", gap: 10 }}>
+            <Trophy size={20} color={PALETTE.ink} />
+            <div style={{ ...display, fontWeight: 700, color: PALETTE.ink }}>
+              {userUslcPlayoff.result === "champion" ? "USL Cup Champions!" : userUslcPlayoff.result === "runner-up" ? "USL Cup runner-up" : "Made the USL Championship Playoffs"} — ${userUslcPlayoff.amount.toLocaleString()} playoff bonus.
+            </div>
+          </div>
+        )}
+        {uslcPlayoffResult && !userUslcPlayoff && (
+          <div style={{ ...serif, fontSize: 13, color: PALETTE.inkSoft, marginBottom: 16 }}>
+            USL Cup: {uslcPlayoffResult.champion.name} beat {uslcPlayoffResult.runnerUp.name} in the final.
           </div>
         )}
 
@@ -2050,7 +2174,115 @@ function FormBadges({ form }) {
   );
 }
 
-function TableTab({ tier, userClubId }) {
+function MatchLine({ label, outcome, userClubId }) {
+  if (!outcome) return null;
+  const { result, wentToPenalties, winner } = outcome;
+  const homeIsUser = result.homeClub && false; // names only available on result; club id compare done by caller via winner
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 8px", fontSize: 12.5, ...serif, borderBottom: `1px solid ${PALETTE.parchmentDim}` }}>
+      <span style={{ color: PALETTE.inkSoft, ...mono, width: 90, flexShrink: 0 }}>{label}</span>
+      <span style={{ flex: 1 }}>
+        <span style={{ fontWeight: winner.name === result.homeClub ? 700 : 400 }}>{result.homeClub}</span>
+        {" "}<span style={{ ...mono }}>{result.homeScore}-{result.awayScore}</span>{" "}
+        <span style={{ fontWeight: winner.name === result.awayClub ? 700 : 400 }}>{result.awayClub}</span>
+        {wentToPenalties && <span style={{ color: PALETTE.inkSoft, fontSize: 11 }}> (pens)</span>}
+      </span>
+    </div>
+  );
+}
+
+function SeriesLine({ label, series }) {
+  if (!series) return null;
+  const loserWins = series.hWins > series.lWins ? series.lWins : series.hWins;
+  const winnerWins = Math.max(series.hWins, series.lWins);
+  return (
+    <div style={{ padding: "6px 8px", fontSize: 12.5, ...serif, borderBottom: `1px solid ${PALETTE.parchmentDim}` }}>
+      <span style={{ color: PALETTE.inkSoft, ...mono, width: 90, display: "inline-block" }}>{label}</span>
+      <span style={{ fontWeight: 700 }}>{series.winner.name}</span> wins series {winnerWins}-{loserWins}
+      <span style={{ color: PALETTE.inkSoft }}> ({series.games.map((g) => `${g.result.homeScore}-${g.result.awayScore}`).join(", ")})</span>
+    </div>
+  );
+}
+
+function ConferenceBracket({ label, conf }) {
+  if (!conf) return null;
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase", marginBottom: 4 }}>{label}</div>
+      <MatchLine label="Wild Card" outcome={conf.wildcard} />
+      <SeriesLine label="1 seed" series={conf.r1a} />
+      <SeriesLine label="2 seed" series={conf.r1b} />
+      <SeriesLine label="3 seed" series={conf.r1c} />
+      <SeriesLine label="4 seed" series={conf.r1d} />
+      <MatchLine label="Semifinal" outcome={conf.semiA} />
+      <MatchLine label="Semifinal" outcome={conf.semiB} />
+      <MatchLine label="Conf Final" outcome={conf.confFinal} />
+    </div>
+  );
+}
+
+function PlayoffBracketSection({ seasonPlayoffs, tierId }) {
+  if (!seasonPlayoffs) return null;
+  const promo = seasonPlayoffs.promotionPlayoffs.find((pp) => pp.tierIdx === tierId);
+  const showMls = tierId === 0 && seasonPlayoffs.mlsPlayoffResult;
+  const showUslc = tierId === 1 && seasonPlayoffs.uslcPlayoffResult;
+  if (!promo && !showMls && !showUslc) return null;
+
+  return (
+    <div style={{ marginTop: 24, paddingTop: 16, borderTop: `2px solid ${PALETTE.parchmentDim}` }}>
+      <div style={{ ...display, fontSize: 13, textTransform: "uppercase", letterSpacing: "0.06em", color: PALETTE.inkSoft, marginBottom: 12 }}>
+        Postseason
+      </div>
+
+      {showMls && (
+        <div>
+          <ConferenceBracket label="Eastern Conference" conf={seasonPlayoffs.mlsPlayoffResult.east} />
+          <ConferenceBracket label="Western Conference" conf={seasonPlayoffs.mlsPlayoffResult.west} />
+          <MatchLine label="MLS Cup" outcome={seasonPlayoffs.mlsPlayoffResult.finalResult} />
+          <div style={{ ...display, fontWeight: 700, fontSize: 14, color: PALETTE.gold, marginTop: 8 }}>
+            🏆 {seasonPlayoffs.mlsPlayoffResult.champion.name} win the MLS Cup
+          </div>
+        </div>
+      )}
+
+      {showUslc && (
+        <div>
+          <div style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase", marginBottom: 4 }}>Quarterfinals</div>
+          {seasonPlayoffs.uslcPlayoffResult.rounds[0]?.map((o, i) => <MatchLine key={i} label={`QF${i + 1}`} outcome={o} />)}
+          <div style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase", margin: "8px 0 4px" }}>Semifinals</div>
+          {seasonPlayoffs.uslcPlayoffResult.rounds[1]?.map((o, i) => <MatchLine key={i} label={`SF${i + 1}`} outcome={o} />)}
+          <div style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase", margin: "8px 0 4px" }}>Final</div>
+          {seasonPlayoffs.uslcPlayoffResult.rounds[2]?.map((o, i) => <MatchLine key={i} label="Final" outcome={o} />)}
+          <div style={{ ...display, fontWeight: 700, fontSize: 14, color: PALETTE.gold, marginTop: 8 }}>
+            🏆 {seasonPlayoffs.uslcPlayoffResult.champion.name} win the USL Cup
+          </div>
+        </div>
+      )}
+
+      {promo && (
+        <div>
+          <div style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase", marginBottom: 4 }}>
+            Promotion Playoff — final spot to {TIER_META[tierId - 1].name}
+          </div>
+          {promo.bracket ? (
+            <>
+              <MatchLine label="Semifinal" outcome={promo.bracket.semi1} />
+              <MatchLine label="Semifinal" outcome={promo.bracket.semi2} />
+              <MatchLine label="Final" outcome={promo.bracket.final} />
+              <div style={{ ...display, fontWeight: 700, fontSize: 14, color: PALETTE.gold, marginTop: 8 }}>
+                ⬆️ {promo.bracket.final.winner.name} promoted
+              </div>
+            </>
+          ) : (
+            <div style={{ ...serif, fontSize: 12.5, color: PALETTE.inkSoft }}>Not enough clubs for a playoff this season.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TableTab({ tier, userClubId, seasonPlayoffs }) {
   const table = computeTable(tier);
   return (
     <div style={{ overflowX: "auto" }}>
@@ -2083,6 +2315,7 @@ function TableTab({ tier, userClubId }) {
           ))}
         </tbody>
       </table>
+      <PlayoffBracketSection seasonPlayoffs={seasonPlayoffs} tierId={tier.id} />
     </div>
   );
 }
@@ -2227,20 +2460,55 @@ function MarketTab({ tiers, userClub, userTierId, onBuy }) {
   );
 }
 
-function TrophyTab({ trophyLog }) {
-  if (trophyLog.length === 0) {
-    return <div style={{ ...serif, color: PALETTE.inkSoft, fontSize: 13 }}>Nothing here yet — win something.</div>;
-  }
+function TrophyTab({ trophyLog, bestFinish }) {
+  const ordinal = (n) => {
+    const s = ["th", "st", "nd", "rd"];
+    const v = n % 100;
+    return n + (s[(v - 20) % 10] || s[v] || s[0]);
+  };
+  const mutedRed = "#9C6B62"; // on-palette, muted — informational, not alarm-red
+
   return (
     <div>
-      {[...trophyLog].reverse().map((t, i) => (
-        <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 4px", borderBottom: `1px solid ${PALETTE.parchmentDim}` }}>
-          <Award size={18} color={PALETTE.gold} />
-          <div style={{ ...serif, fontSize: 13 }}>
-            <span style={{ fontWeight: 700 }}>Season {t.season}</span> — {t.note}
+      <div style={{ ...display, fontSize: 13, textTransform: "uppercase", letterSpacing: "0.06em", color: PALETTE.inkSoft, marginBottom: 10 }}>
+        Career Highlights
+      </div>
+      {bestFinish ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", background: `${PALETTE.gold}22`, border: `1px solid ${PALETTE.gold}55`, borderRadius: 8, marginBottom: 20 }}>
+          <Trophy size={22} color={PALETTE.gold} />
+          <div>
+            <div style={{ ...display, fontWeight: 700, fontSize: 15, color: PALETTE.ink }}>
+              Highest finish: {ordinal(bestFinish.position)} place
+            </div>
+            <div style={{ ...serif, fontSize: 12.5, color: PALETTE.inkSoft }}>
+              {TIER_META[bestFinish.tierIdx].name} · Season {bestFinish.season}
+            </div>
           </div>
         </div>
-      ))}
+      ) : (
+        <div style={{ ...serif, color: PALETTE.inkSoft, fontSize: 13, marginBottom: 20 }}>No seasons completed yet.</div>
+      )}
+
+      <div style={{ height: 1, background: PALETTE.parchmentDim, margin: "4px 0 16px" }} />
+
+      <div style={{ ...display, fontSize: 13, textTransform: "uppercase", letterSpacing: "0.06em", color: PALETTE.inkSoft, marginBottom: 10 }}>
+        History
+      </div>
+      {trophyLog.length === 0 ? (
+        <div style={{ ...serif, color: PALETTE.inkSoft, fontSize: 13 }}>Nothing here yet — win something.</div>
+      ) : (
+        [...trophyLog].reverse().map((t, i) => {
+          const isRelegation = t.type === "relegation";
+          return (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 4px", borderBottom: `1px solid ${PALETTE.parchmentDim}` }}>
+              {isRelegation ? <TrendingDown size={18} color={mutedRed} /> : <Award size={18} color={PALETTE.gold} />}
+              <div style={{ ...serif, fontSize: 13, color: isRelegation ? mutedRed : PALETTE.ink }}>
+                <span style={{ fontWeight: 700 }}>Season {t.season}</span> — {t.note}
+              </div>
+            </div>
+          );
+        })
+      )}
     </div>
   );
 }
@@ -2612,6 +2880,7 @@ function Dashboard({ state, setState, onNewGame }) {
   const [renewalNotice, setRenewalNotice] = useState(null);
   const [draftPicks, setDraftPicks] = useState(null);
   const [infoNotice, setInfoNotice] = useState(null);
+  const [seasonPlayoffs, setSeasonPlayoffs] = useState(null);
 
   const tier = state.tiers[state.userTierId];
   const userClub = tier.clubs.find((c) => c.id === state.userClubId);
@@ -2664,15 +2933,36 @@ function Dashboard({ state, setState, onNewGame }) {
     });
   };
 
+  const handleViewPostseason = () => {
+    setSeasonPlayoffs(computeSeasonPlayoffs(state.tiers, state.userClubId, state.difficulty));
+    setTab("table");
+  };
+
   const doRollover = () => {
-    const { newTiers, events, windowResult, newPrizePools, userPrize, userRetirements, userDraftPicks, userPayroll, mlsPlayoffResult, userMlsPlayoff, userPromotionPlayoff } = rolloverSeason(state.tiers, state.userClubId, state.prizePools, state.difficulty);
+    const { newTiers, events, tables, windowResult, newPrizePools, userPrize, userRetirements, userDraftPicks, userPayroll, mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, userPromotionPlayoff } = rolloverSeason(state.tiers, state.userClubId, state.prizePools, state.difficulty, seasonPlayoffs);
     const userMove = events.find((e) => e.clubId === state.userClubId && e.type !== "champion");
     const userChamp = events.find((e) => e.clubId === state.userClubId && e.type === "champion");
     const trophyEntries = [];
-    if (userChamp) trophyEntries.push({ season: state.seasonNumber, note: `Won the ${TIER_META[userChamp.tier].name} title` });
-    if (userMove) trophyEntries.push({ season: state.seasonNumber, note: userMove.type === "promoted" ? `Promoted to ${TIER_META[userMove.to].name}` : `Relegated to ${TIER_META[userMove.to].name}` });
-    if (userMlsPlayoff?.result === "champion") trophyEntries.push({ season: state.seasonNumber, note: "Won the MLS Cup" });
-    else if (userMlsPlayoff?.result === "runner-up") trophyEntries.push({ season: state.seasonNumber, note: "MLS Cup runner-up" });
+    if (userChamp) trophyEntries.push({ season: state.seasonNumber, note: `Won the ${TIER_META[userChamp.tier].name} title`, type: "trophy" });
+    if (userMove) trophyEntries.push({
+      season: state.seasonNumber,
+      note: userMove.type === "promoted" ? `Promoted to ${TIER_META[userMove.to].name}` : `Relegated to ${TIER_META[userMove.to].name}`,
+      type: userMove.type === "promoted" ? "promotion" : "relegation",
+    });
+    if (userMlsPlayoff?.result === "champion") trophyEntries.push({ season: state.seasonNumber, note: "Won the MLS Cup", type: "trophy" });
+    else if (userMlsPlayoff?.result === "runner-up") trophyEntries.push({ season: state.seasonNumber, note: "MLS Cup runner-up", type: "trophy" });
+    if (userUslcPlayoff?.result === "champion") trophyEntries.push({ season: state.seasonNumber, note: "Won the USL Cup", type: "trophy" });
+    else if (userUslcPlayoff?.result === "runner-up") trophyEntries.push({ season: state.seasonNumber, note: "USL Cup runner-up", type: "trophy" });
+
+    // Track the best league finish this club has ever recorded, across
+    // every tier it's ever played in — this is permanent career history,
+    // shown separately from the season-by-season log.
+    const userTable = tables[state.userTierId];
+    const position = userTable.findIndex((r) => r.clubId === state.userClubId) + 1;
+    const isBetter = !state.bestFinish
+      || position < state.bestFinish.position
+      || (position === state.bestFinish.position && state.userTierId < state.bestFinish.tierIdx);
+    const bestFinish = isBetter ? { position, tierIdx: state.userTierId, season: state.seasonNumber } : state.bestFinish;
 
     setState((prev) => ({
       ...prev,
@@ -2680,11 +2970,13 @@ function Dashboard({ state, setState, onNewGame }) {
       userTierId: userMove ? userMove.to : prev.userTierId,
       seasonNumber: prev.seasonNumber + 1,
       trophyLog: [...prev.trophyLog, ...trophyEntries],
+      bestFinish,
       midWindowSeason: prev.midWindowSeason,
       prizePools: newPrizePools,
     }));
-    setRollover({ events, seasonNumber: state.seasonNumber, windowResult, userPrize, ownershipDeposit: OWNERSHIP_DEPOSIT[state.userTierId], userRetirements, userPayroll, mlsPlayoffResult, userMlsPlayoff, userPromotionPlayoff });
+    setRollover({ events, seasonNumber: state.seasonNumber, windowResult, userPrize, ownershipDeposit: ownershipDepositFor(state.userTierId, state.difficulty), userRetirements, userPayroll, mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, userPromotionPlayoff });
     if (userDraftPicks && userDraftPicks.length) setDraftPicks(userDraftPicks);
+    setSeasonPlayoffs(null);
   };
 
   const handleToggleList = (playerId) => {
@@ -2899,10 +3191,10 @@ function Dashboard({ state, setState, onNewGame }) {
           </div>
           {seasonComplete ? (
             <button
-              onClick={doRollover}
+              onClick={seasonPlayoffs ? doRollover : handleViewPostseason}
               style={{ ...display, fontWeight: 600, fontSize: 13, background: PALETTE.gold, color: PALETTE.ink, border: "none", borderRadius: 6, padding: "10px 16px", cursor: "pointer" }}
             >
-              Roll over season →
+              {seasonPlayoffs ? "Continue to Next Season →" : "View Postseason"}
             </button>
           ) : (
             <>
@@ -2957,7 +3249,7 @@ function Dashboard({ state, setState, onNewGame }) {
       <div style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
         {tab === "squad" && <SquadTab club={userClub} matchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)} onToggleList={handleToggleList} onRenew={handleRenew} onSetCaptain={handleSetCaptain} />}
         {tab === "tactics" && <TacticsTab club={userClub} matchday={currentMatchday ?? 1} onChange={handleTacticsChange} />}
-        {tab === "table" && <TableTab tier={tier} userClubId={userClub.id} />}
+        {tab === "table" && <TableTab tier={tier} userClubId={userClub.id} seasonPlayoffs={seasonPlayoffs} />}
         {tab === "fixtures" && <FixturesTab tier={tier} userClubId={userClub.id} />}
         {tab === "market" && <MarketTab tiers={state.tiers} userClub={userClub} userTierId={state.userTierId} onBuy={handleBuy} />}
         {tab === "development" && (
@@ -2974,7 +3266,7 @@ function Dashboard({ state, setState, onNewGame }) {
             onDismissTryouts={handleDismissTryouts}
           />
         )}
-        {tab === "trophies" && <TrophyTab trophyLog={state.trophyLog} />}
+        {tab === "trophies" && <TrophyTab trophyLog={state.trophyLog} bestFinish={state.bestFinish} />}
       </div>
 
       {recap && <MatchdayRecap results={recap} userClubName={userClub.name} onClose={() => setRecap(null)} />}
@@ -2997,6 +3289,8 @@ function Dashboard({ state, setState, onNewGame }) {
           userPayroll={rollover.userPayroll}
           mlsPlayoffResult={rollover.mlsPlayoffResult}
           userMlsPlayoff={rollover.userMlsPlayoff}
+          uslcPlayoffResult={rollover.uslcPlayoffResult}
+          userUslcPlayoff={rollover.userUslcPlayoff}
           userPromotionPlayoff={rollover.userPromotionPlayoff}
           onContinue={() => setRollover(null)}
         />
@@ -3081,7 +3375,7 @@ export default function App() {
     }
     const previewWorld = buildInitialWorld();
     previewWorld.forEach((t) => { t.fixtures = generateRoundRobin(t.clubs.map((c) => c.id)); });
-    return <ClubSelectScreen world={previewWorld} saveWasReset={saveWasReset} onPick={(tierId, clubId) => {
+    return <ClubSelectScreen world={previewWorld} saveWasReset={saveWasReset} difficulty={pendingDifficulty} onPick={(tierId, clubId) => {
       // re-derive the same picked club/tier from a freshly built world containing it
       handlePickFromPreview(previewWorld, tierId, clubId, pendingDifficulty, setState);
     }} />;
@@ -3099,6 +3393,7 @@ function handlePickFromPreview(previewWorld, tierId, clubId, difficulty, setStat
     userClubId: clubId,
     seasonNumber: 1,
     trophyLog: [],
+    bestFinish: null,
     midWindowSeason: 0,
     prizePools: [3_000_000, 1_200_000, 500_000, 200_000],
   });
