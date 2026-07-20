@@ -280,6 +280,15 @@ function defaultCaptain(squad) {
   return [...squad].sort((a, b) => b.leadership - a.leadership)[0].id;
 }
 
+// Reputation isn't flat — a club built around real quality talent starts
+// with real prestige/expectations attached, same as a legacy big-market club
+// vs a scrappy newly-promoted side in real life.
+function computeReputation(squad) {
+  if (!squad.length) return 50;
+  const avgOverall = squad.reduce((s, p) => s + p.overall, 0) / squad.length;
+  return clamp(Math.round((avgOverall - 60) * 4 + 50), 20, 95);
+}
+
 function makeClub({ name, squad, isReal, budget, academyEligible }) {
   return {
     id: uid(),
@@ -289,12 +298,16 @@ function makeClub({ name, squad, isReal, budget, academyEligible }) {
     captainId: defaultCaptain(squad),
     tactics: { formation: "4-4-2", style: "balanced", press: "medium", lineupMode: "best" },
     budget: budget ?? randInt(3_000_000, 8_000_000),
-    reputation: 50,
+    reputation: computeReputation(squad),
     academyEligible: !!academyEligible,
     academyStars: 0,
     academyInvested: 0,
     youthPlayers: [],
     tryoutCandidates: [],
+    boardHappiness: 60,
+    boardObjective: null,
+    designatedPlayerIds: [],
+    conference: null,
   };
 }
 
@@ -601,7 +614,9 @@ function buildInitialWorld() {
   mlsClubs.forEach((c) => {
     c.academyStars = randInt(2, 3);
     c.academyInvested = ACADEMY_STAR_THRESHOLDS[c.academyStars];
+    c.conference = initialMlsConference(c.name);
   });
+  ensureMlsConferences(mlsClubs); // balances any expansion filler clubs that aren't real East/West members
 
   // Tier 1: USL Championship — real clubs, generated rosters
   const uslcClubs = USL_CHAMPIONSHIP_TEAMS.map((name) =>
@@ -1084,16 +1099,33 @@ function trimSquad(squad) {
    PLAYOFFS — MLS Cup bracket + lower-tier promotion playoffs
    ============================================================ */
 
-// Real 2026 MLS conference alignment — used for playoff seeding only,
-// promotion/relegation between MLS and USL Championship stays table-based.
+// Real 2026 MLS conference alignment for the 30 original clubs. Any club
+// that enters MLS later (promoted from USL Championship, or an expansion
+// filler) doesn't have a real-world conference, so it gets assigned
+// whichever side is currently smaller — and that assignment sticks on the
+// club from then on, so the split can't silently drift lopsided over a long
+// save (which used to make the whole bracket function bail out entirely).
 const MLS_EAST_CLUBS = new Set([
   "Atlanta United FC", "CF Montréal", "Charlotte FC", "Chicago Fire FC", "Columbus Crew",
   "D.C. United", "FC Cincinnati", "Inter Miami CF", "Nashville SC", "New England Revolution",
   "New York City FC", "New York Red Bulls", "Orlando City SC", "Philadelphia Union", "Toronto FC",
 ]);
 
-function mlsConference(clubName) {
-  return MLS_EAST_CLUBS.has(clubName) ? "East" : "West";
+function initialMlsConference(clubName) {
+  return MLS_EAST_CLUBS.has(clubName) ? "East" : null; // null = not an original club, needs balancing
+}
+
+// Ensures every MLS club has a sticky conference, self-balancing any club
+// that doesn't have a real-world one yet (new expansion filler, or a club
+// freshly promoted from USL Championship).
+function ensureMlsConferences(mlsClubs) {
+  mlsClubs.forEach((c) => {
+    if (c.conference !== "East" && c.conference !== "West") {
+      const eastCount = mlsClubs.filter((x) => x.conference === "East").length;
+      const westCount = mlsClubs.filter((x) => x.conference === "West").length;
+      c.conference = eastCount <= westCount ? "East" : "West";
+    }
+  });
 }
 
 // Resolves a single knockout match to a decisive winner — no draws allowed
@@ -1135,12 +1167,14 @@ function bestOfThreeSeries(higherSeed, lowerSeed, matchday) {
 // elimination conference semis/finals, then the Cup final. Purely a trophy
 // and bonus exercise — it never affects promotion or relegation.
 function runMlsPlayoffs(mlsTable, mlsClubs, matchday) {
+  ensureMlsConferences(mlsClubs);
   const clubById = (id) => mlsClubs.find((c) => c.id === id);
 
   function runConference(conferenceName) {
-    const rows = mlsTable.filter((r) => mlsConference(clubById(r.clubId).name) === conferenceName);
+    const rows = mlsTable.filter((r) => clubById(r.clubId)?.conference === conferenceName);
     if (rows.length < 9) return null;
-    const seeds = rows.slice(0, 9).map((r) => clubById(r.clubId));
+    const seeds = rows.slice(0, 9).map((r) => clubById(r.clubId)).filter(Boolean);
+    if (seeds.length < 9) return null;
     const [s1, s2, s3, s4, s5, s6, s7, s8, s9] = seeds;
     const wildcard = resolveKnockoutMatch(s8, s9, matchday);
     const r1a = bestOfThreeSeries(s1, wildcard.winner, matchday);
@@ -1222,6 +1256,48 @@ function runFlatPlayoffBracket(table, clubs, matchday, size) {
   return { champion, runnerUp, rounds, qualifiers: seeds.map((c) => c.id) };
 }
 
+/* ============================================================
+   BOARD PRESSURE — Executive mode only
+   ============================================================ */
+
+// Higher-reputation clubs get more demanding objectives, same way a
+// legacy contender's board expects more than a newly-promoted club's does.
+function generateBoardObjective(reputation, tierIdx, tierSize) {
+  if (reputation >= 75) {
+    return { type: "title", description: `Win the ${TIER_META[tierIdx].name} title`, targetPosition: 1 };
+  }
+  if (reputation >= 55) {
+    return { type: "top_half", description: "Finish in the top half of the table", targetPosition: Math.ceil(tierSize / 2) };
+  }
+  if (reputation >= 35) {
+    return { type: "mid_table", description: "Finish mid-table, clear of any relegation trouble", targetPosition: tierSize - PROMOTE_RELEGATE_COUNT - 2 };
+  }
+  return { type: "avoid_relegation", description: "Avoid relegation", targetPosition: tierSize - PROMOTE_RELEGATE_COUNT };
+}
+
+function boardHappinessDelta(objective, finishPosition, relegated, promoted, budget) {
+  let delta = 0;
+  if (objective) {
+    const met = finishPosition <= objective.targetPosition;
+    delta += met ? 12 : -15;
+  }
+  if (relegated) delta -= 25;
+  if (promoted) delta += 15;
+  if (budget < 0) delta -= 10;
+  return delta;
+}
+
+const SACK_THRESHOLD = 10;
+const MAX_DESIGNATED_PLAYERS = 3;
+
+// Designated Players' real wages don't count against effective payroll —
+// mirrors how real MLS DP salaries are mostly exempt from the roster budget.
+// Everyone else's wage counts normally.
+function effectivePayroll(squad, designatedPlayerIds) {
+  const dpSet = new Set(designatedPlayerIds || []);
+  return squad.reduce((s, p) => s + (dpSet.has(p.id) ? Math.min(p.wage, 200_000) : p.wage), 0);
+}
+
 // Computes everything playoff- and promotion-related from the CURRENT
 // (pre-rollover) standings — callable on its own once the regular season
 // ends, so the result can be displayed as a real postseason before the
@@ -1252,16 +1328,15 @@ function computeSeasonPlayoffs(tiers, userClubId, difficulty) {
     movementByBoundary.push({ upperTierIdx: i, promoted, relegated });
   }
 
-  // MLS Cup Playoffs — trophy/bonus only, never affects promotion/relegation.
-  let mlsPlayoffResult = null;
-  let uslcPlayoffResult = null;
-  if (DIFFICULTY_MODES[difficulty]?.eventBonuses) {
-    mlsPlayoffResult = runMlsPlayoffs(tables[0], tiers[0].clubs, playoffMatchday);
-    // USL Championship runs its own real playoff too — top 8, single
-    // elimination, no conferences. Crowns the USL Cup separately from the
-    // Players' Shield (the regular-season table topper).
-    uslcPlayoffResult = runFlatPlayoffBracket(tables[1], tiers[1].clubs, playoffMatchday, 8);
-  }
+  // MLS Cup Playoffs & USL Championship playoff always happen — the sporting
+  // outcome (who wins the Cup) isn't an economic feature, so it shouldn't be
+  // tied to difficulty mode. Only the real-dollar bonuses tied to results
+  // are Pro/Executive-exclusive (handled separately, in rolloverSeason).
+  const mlsPlayoffResult = runMlsPlayoffs(tables[0], tiers[0].clubs, playoffMatchday);
+  // USL Championship runs its own real playoff too — top 8, single
+  // elimination, no conferences. Crowns the USL Cup separately from the
+  // Players' Shield (the regular-season table topper).
+  const uslcPlayoffResult = runFlatPlayoffBracket(tables[1], tiers[1].clubs, playoffMatchday, 8);
 
   return { tables, movementByBoundary, promotionPlayoffs, mlsPlayoffResult, uslcPlayoffResult };
 }
@@ -1366,7 +1441,7 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty, precomputedPl
       // club's players get raises, a relegated club's take pay cuts) — but
       // payroll is only actually deducted from the budget on Pro/Executive
       squad = squad.map((p) => ({ ...p, wage: computeRealisticWage(p.overall, p.age, i) }));
-      const payroll = DIFFICULTY_MODES[difficulty]?.wagesDeducted ? squadPayroll(squad) : 0;
+      const payroll = DIFFICULTY_MODES[difficulty]?.wagesDeducted ? effectivePayroll(squad, club.designatedPlayerIds) : 0;
       return {
         ...club,
         squad,
@@ -1384,7 +1459,9 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty, precomputedPl
 
   // MLS Cup Playoffs payouts: champion/runner-up also banked their conference
   // championship bonus on the way there; every other team that made the
-  // 18-team bracket gets a smaller qualifier bonus.
+  // 18-team bracket gets a smaller qualifier bonus. Winners get paid
+  // regardless of difficulty mode — this money is separate from the
+  // per-win/wage economics that Pro/Executive add.
   let userMlsPlayoff = null;
   if (mlsPlayoffResult) {
     const mlsClubsAfter = newTiers[0].clubs;
@@ -1403,7 +1480,7 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty, precomputedPl
 
   // USL Championship's own playoff (real, separate from the promotion
   // playoff below it): champion/runner-up money, small consolation for the
-  // rest of the bracket.
+  // rest of the bracket. Paid out regardless of difficulty, same as MLS.
   let userUslcPlayoff = null;
   if (uslcPlayoffResult) {
     const uslcClubsAfter = newTiers[1].clubs;
@@ -1424,7 +1501,7 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty, precomputedPl
   }
 
   const userClubAfter = newTiers.flatMap((t) => t.clubs).find((c) => c.id === userClubId);
-  const userPayroll = DIFFICULTY_MODES[difficulty]?.wagesDeducted && userClubAfter ? squadPayroll(userClubAfter.squad) : 0;
+  const userPayroll = DIFFICULTY_MODES[difficulty]?.wagesDeducted && userClubAfter ? effectivePayroll(userClubAfter.squad, userClubAfter.designatedPlayerIds) : 0;
   // Draft additions are the one pure-growth step with no natural release —
   // cap every club (except the user's, whose picks aren't applied until
   // they choose Keep) so the world can't balloon season over season.
@@ -1781,7 +1858,7 @@ function RolloverModal({ events, userClubId, seasonNumber, windowResult, userPri
           <div style={{ background: PALETTE.gold, borderRadius: 8, padding: 14, marginBottom: 16, display: "flex", alignItems: "center", gap: 10 }}>
             <Trophy size={22} color={PALETTE.ink} />
             <div style={{ ...display, fontWeight: 700, color: PALETTE.ink }}>
-              You won the {TIER_META[userChamp.tier].name} title!
+              {userChamp.tier === 0 ? "You won the Supporters' Shield!" : userChamp.tier === 1 ? "You won the Players' Shield!" : `You won the ${TIER_META[userChamp.tier].name} title!`}
             </div>
           </div>
         )}
@@ -1955,7 +2032,7 @@ function MatchdayRecap({ results, userClubName, onClose }) {
    DASHBOARD TABS
    ============================================================ */
 
-function SquadTab({ club, matchday, onToggleList, onRenew, onSetCaptain }) {
+function SquadTab({ club, matchday, onToggleList, onRenew, onSetCaptain, tierId, difficulty, onToggleDP }) {
   const [lineupOpen, setLineupOpen] = useState(false);
   const xi = startingXI(club, matchday);
   const xiIds = new Set(xi.map((p) => p.id));
@@ -1965,6 +2042,8 @@ function SquadTab({ club, matchday, onToggleList, onRenew, onSetCaptain }) {
   const sorted = [...club.squad].sort((a, b) => posOrder[a.position] - posOrder[b.position] || b.overall - a.overall);
   const captainOnPitch = xi.some((p) => p.id === club.captainId);
   const lineRatings = clubLineRatings(club);
+  const dpEnabled = tierId === 0 && DIFFICULTY_MODES[difficulty]?.dps;
+  const dpIds = new Set(club.designatedPlayerIds || []);
 
   return (
     <div>
@@ -1979,6 +2058,26 @@ function SquadTab({ club, matchday, onToggleList, onRenew, onSetCaptain }) {
           (whole squad — see Tactics tab for your current XI's rating)
         </span>
       </div>
+
+      {DIFFICULTY_MODES[difficulty]?.boardPressure && (
+        <div style={{ border: `1px solid ${PALETTE.parchmentDim}`, borderRadius: 8, padding: "10px 14px", marginBottom: 16, display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+          <div>
+            <span style={{ ...display, fontSize: 11, textTransform: "uppercase", color: PALETTE.inkSoft, letterSpacing: "0.05em" }}>Board happiness</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
+              <div style={{ width: 100, height: 8, background: PALETTE.parchmentDim, borderRadius: 4, overflow: "hidden" }}>
+                <div style={{ width: `${club.boardHappiness ?? 60}%`, height: "100%", background: (club.boardHappiness ?? 60) < 25 ? PALETTE.crimson : (club.boardHappiness ?? 60) < 50 ? PALETTE.bronze : "#2E7D32" }} />
+              </div>
+              <span style={{ ...mono, fontSize: 12, color: PALETTE.ink }}>{club.boardHappiness ?? 60}</span>
+            </div>
+          </div>
+          {club.boardObjective && (
+            <div>
+              <span style={{ ...display, fontSize: 11, textTransform: "uppercase", color: PALETTE.inkSoft, letterSpacing: "0.05em" }}>Objective</span>
+              <div style={{ ...serif, fontSize: 13, color: PALETTE.ink }}>{club.boardObjective.description}</div>
+            </div>
+          )}
+        </div>
+      )}
 
       <div style={{ marginBottom: 16, border: `1px solid ${PALETTE.parchmentDim}`, borderRadius: 8 }}>
         <button
@@ -2070,6 +2169,19 @@ function SquadTab({ club, matchday, onToggleList, onRenew, onSetCaptain }) {
                         style={{ fontSize: 11, padding: "4px 8px", borderRadius: 5, border: `1px solid ${PALETTE.inkSoft}`, background: "none", color: PALETTE.inkSoft, cursor: "pointer", ...display }}
                       >
                         Make captain
+                      </button>
+                    )}
+                    {dpEnabled && (dpIds.has(p.id) || dpIds.size < MAX_DESIGNATED_PLAYERS) && (
+                      <button
+                        onClick={() => onToggleDP(p.id)}
+                        title="Designated Player — wage exempt from payroll"
+                        style={{
+                          fontSize: 11, padding: "4px 8px", borderRadius: 5, cursor: "pointer", ...display,
+                          border: `1px solid ${PALETTE.gold}`, background: dpIds.has(p.id) ? PALETTE.gold : "none",
+                          color: dpIds.has(p.id) ? PALETTE.ink : PALETTE.gold, fontWeight: dpIds.has(p.id) ? 700 : 400,
+                        }}
+                      >
+                        {dpIds.has(p.id) ? "DP ✓" : "Make DP"}
                       </button>
                     )}
                   </td>
@@ -2665,6 +2777,31 @@ const TABS = [
   { id: "trophies", label: "Trophy Room", icon: Award },
 ];
 
+function SackedScreen({ notice, onContinue }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: PALETTE.pitchDark, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 20 }}>
+      <style>{FONT_IMPORT}</style>
+      <div style={{ maxWidth: 440, width: "100%", textAlign: "center" }}>
+        <div style={{ ...display, fontSize: 40, fontWeight: 700, color: PALETTE.crimson, marginBottom: 12 }}>
+          You've been sacked
+        </div>
+        <div style={{ ...serif, fontSize: 15, color: PALETTE.parchment, opacity: 0.85, marginBottom: 8 }}>
+          {notice.clubName}'s board has let you go.
+        </div>
+        <div style={{ ...serif, fontSize: 13, color: PALETTE.parchment, opacity: 0.7, marginBottom: 32 }}>
+          {notice.reason}
+        </div>
+        <button
+          onClick={onContinue}
+          style={{ background: PALETTE.gold, color: PALETTE.ink, border: "none", borderRadius: 8, padding: "12px 24px", fontSize: 14, fontWeight: 600, cursor: "pointer", ...display }}
+        >
+          Find a new club →
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function DraftModal({ picks, onKeep, onSell }) {
   if (!picks || picks.length === 0) return null;
   return (
@@ -2872,7 +3009,7 @@ function maybeTriggerMidWindow(next, justPlayedMatchday) {
   return result;
 }
 
-function Dashboard({ state, setState, onNewGame }) {
+function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setManagerHistory }) {
   const [tab, setTab] = useState("squad");
   const [recap, setRecap] = useState(null);
   const [windowNotice, setWindowNotice] = useState(null);
@@ -2881,6 +3018,7 @@ function Dashboard({ state, setState, onNewGame }) {
   const [draftPicks, setDraftPicks] = useState(null);
   const [infoNotice, setInfoNotice] = useState(null);
   const [seasonPlayoffs, setSeasonPlayoffs] = useState(null);
+  const [sackedNotice, setSackedNotice] = useState(null);
 
   const tier = state.tiers[state.userTierId];
   const userClub = tier.clubs.find((c) => c.id === state.userClubId);
@@ -2934,8 +3072,12 @@ function Dashboard({ state, setState, onNewGame }) {
   };
 
   const handleViewPostseason = () => {
-    setSeasonPlayoffs(computeSeasonPlayoffs(state.tiers, state.userClubId, state.difficulty));
-    setTab("table");
+    try {
+      setSeasonPlayoffs(computeSeasonPlayoffs(state.tiers, state.userClubId, state.difficulty));
+      setTab("table");
+    } catch (e) {
+      setInfoNotice(`Something went wrong computing the postseason (${e.message}). You can still continue to next season — the regular rollover doesn't depend on this.`);
+    }
   };
 
   const doRollover = () => {
@@ -2943,7 +3085,12 @@ function Dashboard({ state, setState, onNewGame }) {
     const userMove = events.find((e) => e.clubId === state.userClubId && e.type !== "champion");
     const userChamp = events.find((e) => e.clubId === state.userClubId && e.type === "champion");
     const trophyEntries = [];
-    if (userChamp) trophyEntries.push({ season: state.seasonNumber, note: `Won the ${TIER_META[userChamp.tier].name} title`, type: "trophy" });
+    if (userChamp) {
+      const shieldNote = userChamp.tier === 0 ? "Won the Supporters' Shield (best regular-season record)"
+        : userChamp.tier === 1 ? "Won the Players' Shield (best regular-season record)"
+        : `Won the ${TIER_META[userChamp.tier].name} title`;
+      trophyEntries.push({ season: state.seasonNumber, note: shieldNote, type: "trophy" });
+    }
     if (userMove) trophyEntries.push({
       season: state.seasonNumber,
       note: userMove.type === "promoted" ? `Promoted to ${TIER_META[userMove.to].name}` : `Relegated to ${TIER_META[userMove.to].name}`,
@@ -2954,23 +3101,58 @@ function Dashboard({ state, setState, onNewGame }) {
     if (userUslcPlayoff?.result === "champion") trophyEntries.push({ season: state.seasonNumber, note: "Won the USL Cup", type: "trophy" });
     else if (userUslcPlayoff?.result === "runner-up") trophyEntries.push({ season: state.seasonNumber, note: "USL Cup runner-up", type: "trophy" });
 
-    // Track the best league finish this club has ever recorded, across
-    // every tier it's ever played in — this is permanent career history,
-    // shown separately from the season-by-season log.
+    // Track the best league finish this manager has ever recorded, across
+    // every club and every tier — permanent career history, not tied to
+    // whichever club you're currently at.
     const userTable = tables[state.userTierId];
     const position = userTable.findIndex((r) => r.clubId === state.userClubId) + 1;
-    const isBetter = !state.bestFinish
-      || position < state.bestFinish.position
-      || (position === state.bestFinish.position && state.userTierId < state.bestFinish.tierIdx);
-    const bestFinish = isBetter ? { position, tierIdx: state.userTierId, season: state.seasonNumber } : state.bestFinish;
+    const isBetter = !managerHistory.bestFinish
+      || position < managerHistory.bestFinish.position
+      || (position === managerHistory.bestFinish.position && state.userTierId < managerHistory.bestFinish.tierIdx);
+    const bestFinish = isBetter ? { position, tierIdx: state.userTierId, season: state.seasonNumber } : managerHistory.bestFinish;
+
+    // Board pressure — Executive mode only. Evaluate the objective the board
+    // set last time, move happiness accordingly, and set the next one.
+    let sackNotice = null;
+    if (DIFFICULTY_MODES[state.difficulty]?.boardPressure) {
+      const userClubPre = state.tiers[state.userTierId].clubs.find((c) => c.id === state.userClubId);
+      const currentObjective = userClubPre.boardObjective;
+      const nextTierIdx = userMove ? userMove.to : state.userTierId;
+      const userClubPost = newTiers[nextTierIdx].clubs.find((c) => c.id === state.userClubId);
+      const delta = boardHappinessDelta(currentObjective, position, userMove?.type === "relegated", userMove?.type === "promoted", userClubPost.budget);
+      const newHappiness = clamp((userClubPre.boardHappiness ?? 60) + delta, 0, 100);
+      const sacked = newHappiness <= SACK_THRESHOLD;
+      const nextObjective = generateBoardObjective(userClubPre.reputation, nextTierIdx, newTiers[nextTierIdx].clubs.length);
+      const idx = newTiers[nextTierIdx].clubs.findIndex((c) => c.id === state.userClubId);
+      if (idx >= 0) {
+        newTiers[nextTierIdx].clubs[idx] = { ...newTiers[nextTierIdx].clubs[idx], boardHappiness: newHappiness, boardObjective: nextObjective };
+      }
+      if (sacked) {
+        sackNotice = {
+          clubName: userClubPre.name,
+          reason: currentObjective ? `The board wanted: ${currentObjective.description}. You finished ${position}${position === 1 ? "st" : position === 2 ? "nd" : position === 3 ? "rd" : "th"}.` : "The board has lost confidence in your management.",
+        };
+      }
+    }
+
+    // The trophy case belongs to the manager, not the club — record this
+    // season's results either way, sacked or not.
+    setManagerHistory((prev) => ({
+      trophyLog: [...prev.trophyLog, ...trophyEntries],
+      bestFinish,
+    }));
+
+    if (sackNotice) {
+      setSackedNotice(sackNotice);
+      setSeasonPlayoffs(null);
+      return;
+    }
 
     setState((prev) => ({
       ...prev,
       tiers: newTiers,
       userTierId: userMove ? userMove.to : prev.userTierId,
       seasonNumber: prev.seasonNumber + 1,
-      trophyLog: [...prev.trophyLog, ...trophyEntries],
-      bestFinish,
       midWindowSeason: prev.midWindowSeason,
       prizePools: newPrizePools,
     }));
@@ -3012,6 +3194,19 @@ function Dashboard({ state, setState, onNewGame }) {
       const t = next.tiers[next.userTierId];
       const club = t.clubs.find((c) => c.id === next.userClubId);
       club.captainId = playerId;
+    });
+  };
+
+  const handleToggleDP = (playerId) => {
+    mutateAndSave((next) => {
+      const t = next.tiers[next.userTierId];
+      const club = t.clubs.find((c) => c.id === next.userClubId);
+      const current = club.designatedPlayerIds || [];
+      if (current.includes(playerId)) {
+        club.designatedPlayerIds = current.filter((id) => id !== playerId);
+      } else if (current.length < MAX_DESIGNATED_PLAYERS) {
+        club.designatedPlayerIds = [...current, playerId];
+      }
     });
   };
 
@@ -3247,7 +3442,7 @@ function Dashboard({ state, setState, onNewGame }) {
       </div>
 
       <div style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
-        {tab === "squad" && <SquadTab club={userClub} matchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)} onToggleList={handleToggleList} onRenew={handleRenew} onSetCaptain={handleSetCaptain} />}
+        {tab === "squad" && <SquadTab club={userClub} matchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)} onToggleList={handleToggleList} onRenew={handleRenew} onSetCaptain={handleSetCaptain} tierId={state.userTierId} difficulty={state.difficulty} onToggleDP={handleToggleDP} />}
         {tab === "tactics" && <TacticsTab club={userClub} matchday={currentMatchday ?? 1} onChange={handleTacticsChange} />}
         {tab === "table" && <TableTab tier={tier} userClubId={userClub.id} seasonPlayoffs={seasonPlayoffs} />}
         {tab === "fixtures" && <FixturesTab tier={tier} userClubId={userClub.id} />}
@@ -3266,7 +3461,7 @@ function Dashboard({ state, setState, onNewGame }) {
             onDismissTryouts={handleDismissTryouts}
           />
         )}
-        {tab === "trophies" && <TrophyTab trophyLog={state.trophyLog} bestFinish={state.bestFinish} />}
+        {tab === "trophies" && <TrophyTab trophyLog={managerHistory.trophyLog} bestFinish={managerHistory.bestFinish} />}
       </div>
 
       {recap && <MatchdayRecap results={recap} userClubName={userClub.name} onClose={() => setRecap(null)} />}
@@ -3274,6 +3469,7 @@ function Dashboard({ state, setState, onNewGame }) {
       {renewalNotice && <RenewalNotice notice={renewalNotice} onClose={() => setRenewalNotice(null)} />}
       {infoNotice && <InfoNotice message={infoNotice} onClose={() => setInfoNotice(null)} />}
       <HintButton club={userClub} matchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)} />
+      {sackedNotice && <SackedScreen notice={sackedNotice} onContinue={onSacked} />}
       {!rollover && draftPicks && draftPicks.length > 0 && (
         <DraftModal picks={draftPicks} onKeep={handleDraftKeep} onSell={handleDraftSell} />
       )}
@@ -3309,6 +3505,12 @@ const STORAGE_KEY = "ascent_career_v1";
 // match get reset instead of crashing the app on load.
 const SAVE_VERSION = 1;
 
+// Your trophy case is a MANAGER's history, not a specific club's — it
+// survives being sacked or starting a new career, so it lives in its own
+// storage key rather than inside the per-club save.
+const MANAGER_KEY = "ascent_manager_history_v1";
+const DEFAULT_MANAGER_HISTORY = { trophyLog: [], bestFinish: null };
+
 function isValidSave(parsed) {
   return (
     parsed &&
@@ -3325,6 +3527,7 @@ export default function App() {
   const [loaded, setLoaded] = useState(false);
   const [saveWasReset, setSaveWasReset] = useState(false);
   const [pendingDifficulty, setPendingDifficulty] = useState(null);
+  const [managerHistory, setManagerHistory] = useState(DEFAULT_MANAGER_HISTORY);
 
   useEffect(() => {
     try {
@@ -3345,8 +3548,23 @@ export default function App() {
       try { localStorage.removeItem(STORAGE_KEY); } catch (e2) {}
       setSaveWasReset(true);
     }
+    try {
+      const rawHistory = localStorage.getItem(MANAGER_KEY);
+      if (rawHistory) setManagerHistory({ ...DEFAULT_MANAGER_HISTORY, ...JSON.parse(rawHistory) });
+    } catch (e) {
+      // no manager history yet, or unreadable — fine, start with an empty case
+    }
     setLoaded(true);
   }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    try {
+      localStorage.setItem(MANAGER_KEY, JSON.stringify(managerHistory));
+    } catch (e) {
+      // best-effort
+    }
+  }, [managerHistory, loaded]);
 
   useEffect(() => {
     if (!loaded || !state) return;
@@ -3365,6 +3583,18 @@ export default function App() {
     setPendingDifficulty(null);
   };
 
+  // Getting sacked isn't the same as starting fresh — you keep your
+  // difficulty mode and go straight to picking a new club, not back through
+  // difficulty selection.
+  const handleSacked = () => {
+    const currentDifficulty = state?.difficulty;
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch (e) {}
+    setState(null);
+    setPendingDifficulty(currentDifficulty || "rookie");
+  };
+
   if (!loaded) {
     return <div style={{ minHeight: "100vh", background: PALETTE.pitchDark }} />;
   }
@@ -3381,7 +3611,7 @@ export default function App() {
     }} />;
   }
 
-  return <Dashboard state={state} setState={setState} onNewGame={handleNewGame} />;
+  return <Dashboard state={state} setState={setState} onNewGame={handleNewGame} onSacked={handleSacked} managerHistory={managerHistory} setManagerHistory={setManagerHistory} />;
 }
 
 function handlePickFromPreview(previewWorld, tierId, clubId, difficulty, setState) {
