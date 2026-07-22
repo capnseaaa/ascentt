@@ -491,7 +491,7 @@ function tryoutSigningCost(overall) {
    HINTS — simple rule-based "what should I do next" suggestions
    ============================================================ */
 
-function computeHints(club, matchday, seenOneTimeHints) {
+function computeHints(club, matchday, seenOneTimeHints, recentForm) {
   const seen = seenOneTimeHints instanceof Set ? seenOneTimeHints : new Set(seenOneTimeHints || []);
   const hints = [];
   // Recurring, state-dependent hints always get a fresh check every time —
@@ -501,6 +501,18 @@ function computeHints(club, matchday, seenOneTimeHints) {
   // you've seen the explanation, it's noise to keep repeating it. These
   // only get added if not already in the seen set.
   const pushOnce = (id, text) => { if (!seen.has(id)) hints.push({ id, text, oneTime: true }); };
+
+  // Losing streak — tied to what's actually set right now, not a generic
+  // "check the market" nudge. This is the "how do I get out of a rut"
+  // answer: a concrete suggestion based on the tactics currently in use.
+  const lastThree = (recentForm || []).slice(-3);
+  if (lastThree.length === 3 && lastThree.every((r) => r === "L")) {
+    let suggestion;
+    if (club.tactics.style === "attacking") suggestion = "dialing back to a balanced or defensive style — you may be getting caught out at the back";
+    else if (club.tactics.press === "high") suggestion = "dropping to a medium or low press to stay more compact";
+    else suggestion = "checking the Tactics tab — the suggested setup there is based on your actual squad, not a guess";
+    push("losing-streak", `You've lost your last 3 — try ${suggestion}. Also worth scouting your next opponent from the Fixtures tab before kickoff.`);
+  }
 
   const lineRatings = clubLineRatings(club);
   if (lineRatings.def > 0 && lineRatings.def < 2.5) push("thin-def", "Your defense is thin (under 2.5 stars) — worth a look at the transfer market.");
@@ -755,6 +767,16 @@ const FORMATION_SLOTS = {
   "3-5-2": { GK: 1, DEF: 3, MID: 5, FWD: 2 },
   "5-3-2": { GK: 1, DEF: 5, MID: 3, FWD: 2 },
   "4-2-3-1": { GK: 1, DEF: 4, MID: 5, FWD: 1 },
+};
+
+// One-line "what this is good for" so the formation buttons aren't just
+// unlabeled shapes — helps connect the choice to your actual squad.
+const FORMATION_NOTES = {
+  "4-4-2": "Balanced and simple — solid if your squad doesn't lean hard toward attack or defense.",
+  "4-3-3": "Rewards a strong front line and wide attacking players — needs goals to back it up.",
+  "3-5-2": "Midfield-heavy — best with a deep, strong MID line to control games, but thinner at the back.",
+  "5-3-2": "Extra defensive cover — good if your DEF is your strongest line or you're facing a tough attack.",
+  "4-2-3-1": "Flexible, MID-heavy setup — good if you have one standout striker and depth through the middle.",
 };
 
 function samplePoisson(lambda) {
@@ -1402,62 +1424,88 @@ const US_OPEN_CUP_GIANT_KILLER_BONUS = 50_000;
 
 // Deterministic given this world's fixed pyramid sizes (20/17/16/16
 // entrants joining at their fixed points always cascades through exactly
-// 8 rounds to a single champion) — used to drive the reveal-based
-// "Sim Next Round" stepping UI the same way the other playoff brackets do.
+// 8 rounds to a single champion).
 const US_OPEN_CUP_TOTAL_ROUNDS = 8;
 
-function runUsOpenCup(tiers) {
-  const matchday = 9999; // sentinel — same as every other postseason bracket
+// The cup runs DURING the season now, not after it — these are the league
+// matchday numbers before which a cup round is due. When the next league
+// matchday equals one of these, league play for that turn is replaced by
+// a cup round instead (the league fixtures aren't skipped, just delayed —
+// they play out normally on the next turn once the cup round is cleared).
+// Spread through the first half of the season and capped at 17 so it
+// still fits and wraps up comfortably even for USL1 (this world's
+// shortest single round-robin, at 17 matchdays), while finishing well
+// before MLS's own regular season and playoffs.
+const US_OPEN_CUP_ROUND_MATCHDAYS = [3, 5, 7, 9, 11, 13, 15, 17];
+
+// Shared by the bulk-sim loops (checking against a live `next` draft) and
+// the component-level pending-round indicator (checking against `state`) —
+// both just need "is round N due, and hasn't it been played yet".
+function isCupCheckpointPending(stateLike, matchdayNum) {
+  const idx = US_OPEN_CUP_ROUND_MATCHDAYS.indexOf(matchdayNum);
+  if (idx === -1) return false;
+  if (stateLike.usOpenCup?.done) return false;
+  const playedSoFar = stateLike.usOpenCup?.rounds?.length ?? 0;
+  return playedSoFar === idx;
+}
+
+const LATER_CUP_ROUND_LABELS = ["Round of 32", "Round of 16", "Quarterfinal", "Round of 8", "Semifinal", "Final"];
+
+function cupRoundLabel(roundIndex) {
+  if (roundIndex === 0) return "Round 1";
+  if (roundIndex === 1) return "Round 2";
+  return LATER_CUP_ROUND_LABELS[Math.min(roundIndex - 2, LATER_CUP_ROUND_LABELS.length - 1)];
+}
+
+// Plays exactly the next round of the US Open Cup and returns updated
+// progress. `progress` is null/undefined before Round 1. `qualifiers` is
+// last season's final standings ({ uslcTop16, mlsBottom16 } club ID
+// arrays) — real Open Cup qualification is based on the PREVIOUS season,
+// not whatever's in progress this year. In Season 1 there is no previous
+// season, so this falls back to current standings just that one time.
+function playNextUsOpenCupRound(progress, tiers, qualifiers) {
+  const matchday = 9999; // sentinel — distinguishes cup matches from any real league matchday for card/injury logic
   const wrap = (club, tierIdx) => ({ club, tierIdx });
+  const roundIndex = progress ? progress.rounds.length : 0;
 
-  const usl2Entrants = tiers[3].clubs.map((c) => wrap(c, 3));
-  const usl1Entrants = tiers[2].clubs.map((c) => wrap(c, 2));
-  const uslcTable = computeTable(tiers[1]);
-  const top16UslcEntrants = uslcTable.slice(0, 16).map((r) => wrap(tiers[1].clubs.find((c) => c.id === r.clubId), 1));
-  const mlsTable = computeTable(tiers[0]);
-  const bottom16MlsEntrants = mlsTable.slice(-16).map((r) => wrap(tiers[0].clubs.find((c) => c.id === r.clubId), 0));
-
-  const rounds = [];
-  const giantKillers = [];
-
-  const recordUpsets = (matches) => {
-    matches.forEach((m) => {
-      if (m.isUpset) giantKillers.push({ clubId: m.winnerEntrant.club.id, clubName: m.winnerEntrant.club.name });
-    });
+  const findClubAnywhere = (id) => {
+    for (let ti = 0; ti < tiers.length; ti++) {
+      const c = tiers[ti].clubs.find((cl) => cl.id === id);
+      if (c) return wrap(c, ti);
+    }
+    return null;
   };
 
-  // Round 1 — USL2 only
-  const r1 = playCupRound(usl2Entrants, matchday);
-  recordUpsets(r1.matches);
-  rounds.push({ label: "Round 1", ...r1 });
-
-  // Round 2 — R1 winners + all USL1 + top-16 USLC join
-  const r2Pool = [...r1.advancing, ...usl1Entrants, ...top16UslcEntrants];
-  const r2 = playCupRound(r2Pool, matchday);
-  recordUpsets(r2.matches);
-  rounds.push({ label: "Round 2", ...r2 });
-
-  // Round of 32 — bottom-16 MLS join. From here the bracket cascades
-  // through a fixed, deterministic sequence of round sizes every time
-  // (verified: entrants per round are always 20,43,38,19,10,5,3,2 given
-  // this world's fixed pyramid sizes), so the remaining round labels can
-  // just be hardcoded rather than guessed at dynamically.
-  let pool = [...r2.advancing, ...bottom16MlsEntrants];
-  const laterRoundLabels = ["Round of 32", "Round of 16", "Quarterfinal", "Round of 8", "Semifinal", "Final"];
-  while (pool.length > 1) {
-    const r = playCupRound(pool, matchday);
-    recordUpsets(r.matches);
-    const labelIdx = rounds.length - 2; // rounds 0-1 are Round 1/Round 2, already pushed
-    rounds.push({ label: laterRoundLabels[Math.min(labelIdx, laterRoundLabels.length - 1)], ...r });
-    pool = r.advancing;
+  let pool;
+  if (roundIndex === 0) {
+    pool = tiers[3].clubs.map((c) => wrap(c, 3)); // all USL2
+  } else if (roundIndex === 1) {
+    const usl1Entrants = tiers[2].clubs.map((c) => wrap(c, 2));
+    const uslcTop16Ids = qualifiers?.uslcTop16 ?? computeTable(tiers[1]).slice(0, 16).map((r) => r.clubId);
+    const top16UslcEntrants = uslcTop16Ids.map(findClubAnywhere).filter(Boolean);
+    pool = [...progress.pool, ...usl1Entrants, ...top16UslcEntrants];
+  } else if (roundIndex === 2) {
+    const mlsBottom16Ids = qualifiers?.mlsBottom16 ?? computeTable(tiers[0]).slice(-16).map((r) => r.clubId);
+    const bottom16MlsEntrants = mlsBottom16Ids.map(findClubAnywhere).filter(Boolean);
+    pool = [...progress.pool, ...bottom16MlsEntrants];
+  } else {
+    pool = progress.pool;
   }
 
-  const finalRound = rounds[rounds.length - 1];
-  const finalMatch = finalRound.matches[0];
-  const champion = finalMatch.winnerEntrant;
-  const runnerUp = finalMatch.loserEntrant;
+  const result = playCupRound(pool, matchday);
+  const roundGiantKillers = result.matches.filter((m) => m.isUpset).map((m) => ({ clubId: m.winnerEntrant.club.id, clubName: m.winnerEntrant.club.name }));
+  const newRound = { label: cupRoundLabel(roundIndex), ...result };
+  const rounds = [...(progress?.rounds || []), newRound];
+  const giantKillerBonuses = [...(progress?.giantKillerBonuses || []), ...roundGiantKillers];
 
-  return { rounds, champion, runnerUp, giantKillerBonuses: giantKillers, totalRounds: rounds.length };
+  if (result.advancing.length === 1) {
+    const finalMatch = newRound.matches[0];
+    return {
+      rounds, giantKillerBonuses, pool: result.advancing, done: true,
+      champion: finalMatch.winnerEntrant, runnerUp: finalMatch.loserEntrant,
+    };
+  }
+  return { rounds, giantKillerBonuses, pool: result.advancing, done: false, champion: null, runnerUp: null };
 }
 
 /* ============================================================
@@ -1585,16 +1633,11 @@ function computeSeasonPlayoffs(tiers, userClubId, difficulty) {
   // Players' Shield (the regular-season table topper).
   const uslcPlayoffResult = runFlatPlayoffBracket(tables[1], tiers[1].clubs, playoffMatchday, 8);
 
-  // The US Open Cup pulls in clubs from every tier at once, so it isn't
-  // tied to a single tier's standings the way the others are — always
-  // runs regardless of difficulty, same sporting-outcome-first principle.
-  const usOpenCupResult = runUsOpenCup(tiers);
-
-  return { tables, movementByBoundary, promotionPlayoffs, mlsPlayoffResult, uslcPlayoffResult, usOpenCupResult };
+  return { tables, movementByBoundary, promotionPlayoffs, mlsPlayoffResult, uslcPlayoffResult };
 }
 
 function rolloverSeason(tiers, userClubId, prizePools, difficulty, precomputedPlayoffs) {
-  const { tables, movementByBoundary, promotionPlayoffs, mlsPlayoffResult, uslcPlayoffResult, usOpenCupResult } =
+  const { tables, movementByBoundary, promotionPlayoffs, mlsPlayoffResult, uslcPlayoffResult } =
     precomputedPlayoffs || computeSeasonPlayoffs(tiers, userClubId, difficulty);
   const newTierClubIds = tiers.map((t) => t.clubs.map((c) => c.id));
   const clubsById = {};
@@ -1813,32 +1856,6 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty, precomputedPl
     else if (otherUslcQualifiers.includes(userClubId)) userUslcPlayoff = { result: "qualifier", amount: 5_000 };
   }
 
-  // US Open Cup payouts: champion, runner-up, and a giant-killer bonus for
-  // every lower-tier club that knocked out a higher one along the way.
-  // Entrants can come from any tier and may have been promoted/relegated
-  // by the time this pays out, so look each club up across the whole
-  // pyramid rather than assuming it's still in its entry-point tier.
-  let userUsOpenCup = null;
-  if (usOpenCupResult) {
-    const allClubsAfter = newTiers.flatMap((t) => t.clubs);
-    const payOutCup = (clubId, amount) => {
-      const c = allClubsAfter.find((cl) => cl.id === clubId);
-      if (c) c.budget += amount;
-    };
-    payOutCup(usOpenCupResult.champion.club.id, US_OPEN_CUP_CHAMPION_PRIZE);
-    payOutCup(usOpenCupResult.runnerUp.club.id, US_OPEN_CUP_RUNNERUP_PRIZE);
-    usOpenCupResult.giantKillerBonuses.forEach((g) => payOutCup(g.clubId, US_OPEN_CUP_GIANT_KILLER_BONUS));
-
-    const userGiantKillerWins = usOpenCupResult.giantKillerBonuses.filter((g) => g.clubId === userClubId).length;
-    if (userClubId === usOpenCupResult.champion.club.id) {
-      userUsOpenCup = { result: "champion", amount: US_OPEN_CUP_CHAMPION_PRIZE + userGiantKillerWins * US_OPEN_CUP_GIANT_KILLER_BONUS, giantKillerWins: userGiantKillerWins };
-    } else if (userClubId === usOpenCupResult.runnerUp.club.id) {
-      userUsOpenCup = { result: "runner-up", amount: US_OPEN_CUP_RUNNERUP_PRIZE + userGiantKillerWins * US_OPEN_CUP_GIANT_KILLER_BONUS, giantKillerWins: userGiantKillerWins };
-    } else if (userGiantKillerWins > 0) {
-      userUsOpenCup = { result: "giant-killer", amount: userGiantKillerWins * US_OPEN_CUP_GIANT_KILLER_BONUS, giantKillerWins: userGiantKillerWins };
-    }
-  }
-
   const userClubAfter = newTiers.flatMap((t) => t.clubs).find((c) => c.id === userClubId);
   const userPayroll = DIFFICULTY_MODES[difficulty]?.wagesDeducted && userClubAfter ? effectivePayroll(userClubAfter.squad, userClubAfter.designatedPlayerIds) : 0;
   // Draft additions are the one pure-growth step with no natural release —
@@ -1856,7 +1873,7 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty, precomputedPl
   return {
     newTiers, events, tables, windowResult, newPrizePools, userPrize, userRetirements, userDraftPicks, userPayroll,
     mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, promotionPlayoffs, userPromotionPlayoff,
-    userDisqualificationNotice, userDpRevenue, usOpenCupResult, userUsOpenCup,
+    userDisqualificationNotice, userDpRevenue,
   };
 }
 
@@ -2188,7 +2205,7 @@ function ClubSelectScreen({ world, onPick, saveWasReset, difficulty }) {
    SEASON ROLLOVER CEREMONY
    ============================================================ */
 
-function RolloverModal({ events, userClubId, seasonNumber, windowResult, userPrize, ownershipDeposit, userRetirements, userPayroll, mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, userPromotionPlayoff, boardNotice, usOpenCupResult, userUsOpenCup, userDpRevenue, onContinue }) {
+function RolloverModal({ events, userClubId, seasonNumber, windowResult, userPrize, ownershipDeposit, userRetirements, userPayroll, mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, userPromotionPlayoff, boardNotice, usOpenCup, userUsOpenCup, userDpRevenue, onContinue }) {
   const champions = events.filter((e) => e.type === "champion");
   const moves = events.filter((e) => e.type !== "champion");
   const userMove = moves.find((e) => e.clubId === userClubId);
@@ -2277,7 +2294,7 @@ function RolloverModal({ events, userClubId, seasonNumber, windowResult, userPri
           <div style={{ background: "#D9C6E8", borderRadius: 8, padding: 14, marginBottom: 16, display: "flex", alignItems: "center", gap: 10 }}>
             <Star size={20} color={PALETTE.ink} />
             <div style={{ ...display, fontWeight: 700, color: PALETTE.ink }}>
-              {userUsOpenCup.result === "champion" ? "US Open Cup Champions!" : userUsOpenCup.result === "runner-up" ? "US Open Cup runner-up" : `Giant-killer run in the US Open Cup (${userUsOpenCup.giantKillerWins} upset win${userUsOpenCup.giantKillerWins === 1 ? "" : "s"})`} — ${userUsOpenCup.amount.toLocaleString()}{userUsOpenCup.giantKillerWins > 0 && userUsOpenCup.result !== "giant-killer" ? ` (incl. ${userUsOpenCup.giantKillerWins} giant-killer bonus${userUsOpenCup.giantKillerWins === 1 ? "" : "es"})` : ""}.
+              {userUsOpenCup.result === "champion" ? "US Open Cup Champions!" : userUsOpenCup.result === "runner-up" ? "US Open Cup runner-up" : `Giant-killer run in the US Open Cup (${userUsOpenCup.giantKillerWins} upset win${userUsOpenCup.giantKillerWins === 1 ? "" : "s"})`} — earned earlier this season.
             </div>
           </div>
         )}
@@ -2337,7 +2354,7 @@ function RolloverModal({ events, userClubId, seasonNumber, windowResult, userPri
               {cupWinner("USL Cup Winner", uslcPlayoffResult)}
               {shieldOrChamp(2, `${TIER_META[2].name} Champion`)}
               {shieldOrChamp(3, `${TIER_META[3].name} Champion`)}
-              {cupWinner("US Open Cup Winner", usOpenCupResult)}
+              {cupWinner("US Open Cup Winner", usOpenCup?.done ? usOpenCup : null)}
             </>
           );
         })()}
@@ -2418,7 +2435,20 @@ function CupRecapModal({ recap, userClubId, onClose }) {
   );
 }
 
-function MatchdayRecap({ results, userClubName, onClose }) {
+// A short, honest explanation of what actually decided a match — the
+// single biggest line-rating gap between the two sides — so a result
+// isn't just a scoreline with no way to learn from it.
+function matchWhyExplanation(myRatings, oppRatings) {
+  const lines = [["defense", "def"], ["midfield", "mid"], ["attack", "att"]];
+  const diffs = lines.map(([label, key]) => [label, key, myRatings[key] - oppRatings[key]]);
+  const biggest = diffs.reduce((a, b) => (Math.abs(b[2]) > Math.abs(a[2]) ? b : a));
+  const [label, key, diff] = biggest;
+  if (Math.abs(diff) < 0.5) return "An even matchup on paper — this one could have gone either way.";
+  if (diff > 0) return `Your ${label} (${myRatings[key]}★ vs their ${oppRatings[key]}★) was the difference.`;
+  return `Their ${label} (${oppRatings[key]}★ vs your ${myRatings[key]}★) proved too strong.`;
+}
+
+function MatchdayRecap({ results, userClubName, tier, onClose }) {
   if (!results) return null;
   const eventIcon = { goal: "⚽", yellow_card: "🟨", red_card: "🟥", injury: "🩹", suspension: "⛔" };
   const sortedMatches = [...results.matches].sort((a, b) => {
@@ -2438,11 +2468,21 @@ function MatchdayRecap({ results, userClubName, onClose }) {
         </div>
         {sortedMatches.map((m, i) => {
           const isUser = m.homeClub === userClubName || m.awayClub === userClubName;
+          let why = null;
+          if (isUser && tier) {
+            const myClub = tier.clubs.find((c) => c.name === userClubName);
+            const oppName = m.homeClub === userClubName ? m.awayClub : m.homeClub;
+            const oppClub = tier.clubs.find((c) => c.name === oppName);
+            if (myClub && oppClub) why = matchWhyExplanation(clubLineRatings(myClub), clubLineRatings(oppClub));
+          }
           return (
             <div key={i} style={{ marginBottom: 14, padding: 10, borderRadius: 8, background: isUser ? PALETTE.parchmentDim : "transparent", border: isUser ? `1px solid ${PALETTE.gold}` : "none" }}>
               <div style={{ ...display, fontWeight: 600, fontSize: 15, color: PALETTE.ink }}>
                 {m.homeClub} <span style={{ ...mono }}>{m.homeScore} - {m.awayScore}</span> {m.awayClub}
               </div>
+              {isUser && why && (
+                <div style={{ marginTop: 4, fontSize: 12, color: PALETTE.inkSoft, ...serif, fontStyle: "italic" }}>{why}</div>
+              )}
               {isUser && m.events.length > 0 && (
                 <div style={{ marginTop: 6, fontSize: 12.5, color: PALETTE.inkSoft, ...serif }}>
                   {m.events.map((e, j) => (
@@ -2637,6 +2677,43 @@ function SquadTab({ club, matchday, onToggleList, onRenew, onSetCaptain, tierId,
   );
 }
 
+// Looks at the squad's actual personnel — which line is strongest, and
+// whether the squad is built for pace/attack or physicality/defense — and
+// suggests a formation/style/press combo to match, with a plain-language
+// reason. This is what answers "how do I set my team up" instead of
+// leaving formation/style as unlabeled buttons with no connection to who's
+// actually on the roster.
+function suggestTactics(club) {
+  const lineRatings = clubLineRatings(club);
+  const lines = [["def", lineRatings.def], ["mid", lineRatings.mid], ["att", lineRatings.att]];
+  const strongest = lines.reduce((a, b) => (b[1] > a[1] ? b : a));
+  const attMinusDef = lineRatings.att - lineRatings.def;
+
+  let formation, formationReason;
+  if (attMinusDef >= 1) { formation = "4-3-3"; formationReason = `your attack (${lineRatings.att}★) is well ahead of your defense (${lineRatings.def}★)`; }
+  else if (attMinusDef <= -1) { formation = "5-3-2"; formationReason = `your defense (${lineRatings.def}★) is your clear strength over your attack (${lineRatings.att}★)`; }
+  else if (strongest[0] === "mid") { formation = "4-2-3-1"; formationReason = `your midfield (${lineRatings.mid}★) is your best line`; }
+  else { formation = "4-4-2"; formationReason = "your squad is fairly balanced across all three lines"; }
+
+  const outfield = club.squad.filter((p) => p.position !== "GK");
+  const avgPace = outfield.length ? outfield.reduce((s, p) => s + p.pace, 0) / outfield.length : 50;
+  const avgPhysical = outfield.length ? outfield.reduce((s, p) => s + p.physical, 0) / outfield.length : 50;
+
+  let style, press, styleReason;
+  if (attMinusDef >= 1 || avgPace >= 66) {
+    style = "attacking"; press = avgPace >= 68 ? "high" : "medium";
+    styleReason = avgPace >= 66 ? `your squad's average pace (${Math.round(avgPace)}) supports an attacking, high-tempo approach` : formationReason;
+  } else if (attMinusDef <= -1 || avgPhysical >= 66) {
+    style = "defensive"; press = "low";
+    styleReason = avgPhysical >= 66 ? `your squad is built physical (avg ${Math.round(avgPhysical)}) — sitting in and staying solid suits that` : formationReason;
+  } else {
+    style = "balanced"; press = "medium";
+    styleReason = "nothing about your squad strongly favors one extreme, so a balanced approach is the safer bet";
+  }
+
+  return { formation, style, press, reason: `${formationReason[0].toUpperCase()}${formationReason.slice(1)} — ${styleReason === formationReason ? "which also points to" : "and"} ${style}, ${press} press.` };
+}
+
 function TacticsTab({ club, matchday, onChange }) {
   const formations = ["4-4-2", "4-3-3", "3-5-2", "5-3-2", "4-2-3-1"];
   const posOrder = { GK: 0, DEF: 1, MID: 2, FWD: 3 };
@@ -2664,12 +2741,20 @@ function TacticsTab({ club, matchday, onChange }) {
       </div>
     </div>
   );
+  const suggestion = suggestTactics(club);
+  const matchesSuggestion = club.tactics.formation === suggestion.formation && club.tactics.style === suggestion.style && club.tactics.press === suggestion.press;
+  const applySuggestion = () => {
+    onChange("formation", suggestion.formation);
+    onChange("style", suggestion.style);
+    onChange("press", suggestion.press);
+  };
+
   return (
     <div>
       <div style={{ ...display, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.06em", color: PALETTE.inkSoft, marginBottom: 8 }}>
         Current XI rating
       </div>
-      <div style={{ display: "flex", gap: 20, marginBottom: 24, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 20, marginBottom: 20, flexWrap: "wrap" }}>
         {[["DEF", lineRatings.def], ["MID", lineRatings.mid], ["ATT", lineRatings.att]].map(([label, val]) => (
           <div key={label} style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase" }}>{label}</span>
@@ -2677,9 +2762,28 @@ function TacticsTab({ club, matchday, onChange }) {
           </div>
         ))}
       </div>
+
+      {!matchesSuggestion && (
+        <div style={{ background: "#E4D9C4", border: `1px solid ${PALETTE.bronze}`, borderRadius: 8, padding: 14, marginBottom: 20 }}>
+          <div style={{ ...display, fontWeight: 700, fontSize: 13, color: PALETTE.ink, marginBottom: 4 }}>
+            Suggested for your squad: {suggestion.formation}, {suggestion.style}, {suggestion.press} press
+          </div>
+          <div style={{ ...serif, fontSize: 12.5, color: PALETTE.inkSoft, marginBottom: 10 }}>{suggestion.reason}</div>
+          <button
+            onClick={applySuggestion}
+            style={{ padding: "7px 14px", borderRadius: 6, border: "none", background: PALETTE.ink, color: PALETTE.parchment, fontSize: 12.5, fontWeight: 600, cursor: "pointer", ...display }}
+          >
+            Apply Suggestion
+          </button>
+        </div>
+      )}
+
       <div style={{ display: "flex", gap: 32, flexWrap: "wrap" }}>
         <div style={{ maxWidth: 420, flex: 1, minWidth: 260 }}>
           <Row label="Formation" value={club.tactics.formation} options={formations} field="formation" />
+          <div style={{ ...serif, fontSize: 12, color: PALETTE.inkSoft, marginTop: -10, marginBottom: 18 }}>
+            {FORMATION_NOTES[club.tactics.formation]}
+          </div>
           <Row label="Style" value={club.tactics.style} options={["defensive", "balanced", "attacking"]} field="style" />
           <Row label="Press" value={club.tactics.press} options={["low", "medium", "high"]} field="press" />
           <Row
@@ -2826,16 +2930,19 @@ function CupMatchLine({ match, userClubId }) {
   );
 }
 
-function UsOpenCupTab({ usOpenCupResult, revealedRounds, onSimRound, onSimRest, userClubId }) {
-  if (!usOpenCupResult) {
+function UsOpenCupTab({ usOpenCup, pendingRoundIndex, onPlayRound, userClubId }) {
+  const hasStarted = !!usOpenCup;
+  const done = usOpenCup?.done ?? false;
+  const champion = usOpenCup?.champion;
+
+  if (!hasStarted && pendingRoundIndex === null) {
     return (
       <div style={{ ...serif, color: PALETTE.inkSoft, fontSize: 13, padding: "20px 4px" }}>
-        The US Open Cup bracket appears here once the postseason begins — head to the Table tab and tap "View Postseason" after your regular season ends.
+        The US Open Cup kicks off at matchday {US_OPEN_CUP_ROUND_MATCHDAYS[0]} — league fixtures pause that week so you can play your cup match here instead.
       </div>
     );
   }
-  const done = revealedRounds >= usOpenCupResult.totalRounds;
-  const champion = usOpenCupResult.champion;
+
   return (
     <div>
       {done && (
@@ -2843,36 +2950,35 @@ function UsOpenCupTab({ usOpenCupResult, revealedRounds, onSimRound, onSimRest, 
           <TierBadge tierId={champion.tierIdx} /> 🏆 {champion.club.name} win the US Open Cup
         </div>
       )}
-      {!done && (
-        <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+      {pendingRoundIndex !== null && (
+        <div style={{ background: "#D9C6E8", border: `1px solid ${PALETTE.ink}`, borderRadius: 8, padding: 14, marginBottom: 16 }}>
+          <div style={{ ...display, fontWeight: 700, fontSize: 14, color: PALETTE.ink, marginBottom: 8 }}>
+            {cupRoundLabel(pendingRoundIndex)} is up this week — league fixtures are on hold until it's played.
+          </div>
           <button
-            onClick={onSimRound}
-            style={{ padding: "8px 14px", borderRadius: 6, border: `1px solid ${PALETTE.ink}`, background: PALETTE.ink, color: PALETTE.parchment, fontSize: 12.5, fontWeight: 600, cursor: "pointer", ...display }}
+            onClick={onPlayRound}
+            style={{ padding: "9px 16px", borderRadius: 6, border: "none", background: PALETTE.ink, color: PALETTE.parchment, fontSize: 13, fontWeight: 600, cursor: "pointer", ...display }}
           >
-            Sim Next Round
-          </button>
-          <button
-            onClick={onSimRest}
-            style={{ padding: "8px 14px", borderRadius: 6, border: `1px solid ${PALETTE.ink}`, background: "none", color: PALETTE.ink, fontSize: 12.5, fontWeight: 600, cursor: "pointer", ...display }}
-          >
-            Sim Rest of Cup
+            Play {cupRoundLabel(pendingRoundIndex)}
           </button>
         </div>
       )}
-      {usOpenCupResult.rounds.map((round, ri) => (
+      {!done && pendingRoundIndex === null && hasStarted && (() => {
+        const nextTrigger = US_OPEN_CUP_ROUND_MATCHDAYS[usOpenCup.rounds.length];
+        return nextTrigger ? (
+          <div style={{ ...serif, fontSize: 12.5, color: PALETTE.inkSoft, marginBottom: 16, fontStyle: "italic" }}>
+            Next cup round comes up at matchday {nextTrigger}.
+          </div>
+        ) : null;
+      })()}
+      {hasStarted && usOpenCup.rounds.map((round, ri) => (
         <div key={ri} style={{ marginBottom: 16 }}>
           <div style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase", marginBottom: 6 }}>{round.label}</div>
-          {revealedRounds > ri ? (
-            <>
-              {round.matches.map((m, mi) => <CupMatchLine key={mi} match={m} userClubId={userClubId} />)}
-              {round.byeEntrant && (
-                <div style={{ ...serif, fontSize: 12, color: PALETTE.inkSoft, padding: "6px 8px", display: "flex", alignItems: "center", gap: 5 }}>
-                  <TierBadge tierId={round.byeEntrant.tierIdx} /> {round.byeEntrant.club.name} received a bye this round.
-                </div>
-              )}
-            </>
-          ) : (
-            <div style={{ ...serif, fontSize: 12, color: PALETTE.inkSoft, fontStyle: "italic", padding: "6px 8px" }}>TBD</div>
+          {round.matches.map((m, mi) => <CupMatchLine key={mi} match={m} userClubId={userClubId} />)}
+          {round.byeEntrant && (
+            <div style={{ ...serif, fontSize: 12, color: PALETTE.inkSoft, padding: "6px 8px", display: "flex", alignItems: "center", gap: 5 }}>
+              <TierBadge tierId={round.byeEntrant.tierIdx} /> {round.byeEntrant.club.name} received a bye this round.
+            </div>
           )}
         </div>
       ))}
@@ -3080,12 +3186,61 @@ function TableTab({ tier, userClubId, seasonPlayoffs, revealedRounds, onSimRound
 function FixturesTab({ tier, userClubId }) {
   const clubName = (id) => tier.clubs.find((c) => c.id === id)?.name ?? "?";
   const userFixtures = tier.fixtures.filter((f) => f.homeClubId === userClubId || f.awayClubId === userClubId);
+  const nextFixture = userFixtures.find((f) => !f.played);
+  const opponentId = nextFixture ? (nextFixture.homeClubId === userClubId ? nextFixture.awayClubId : nextFixture.homeClubId) : null;
+  const opponent = opponentId ? tier.clubs.find((c) => c.id === opponentId) : null;
+  const userClub = tier.clubs.find((c) => c.id === userClubId);
+
+  let scouting = null;
+  if (opponent && userClub) {
+    const oppRatings = clubLineRatings(opponent);
+    const myRatings = clubLineRatings(userClub);
+    const table = computeTable(tier);
+    const oppRow = table.find((r) => r.clubId === opponentId);
+    const oppForm = oppRow ? oppRow.form.slice(-5) : [];
+    const diffs = [
+      ["their attack vs your defense", oppRatings.att - myRatings.def, "attack", "defense"],
+      ["their defense vs your attack", myRatings.att - oppRatings.def, "attack", "defense"],
+    ];
+    const biggestEdge = diffs.reduce((a, b) => (Math.abs(b[1]) > Math.abs(a[1]) ? b : a));
+    let tip = "This looks like an even matchup — a balanced approach is reasonable.";
+    if (biggestEdge[0] === "their attack vs your defense" && biggestEdge[1] >= 1) {
+      tip = `Their attack (${oppRatings.att}★) is notably stronger than your defense (${myRatings.def}★) — consider a more defensive setup.`;
+    } else if (biggestEdge[0] === "their defense vs your attack" && biggestEdge[1] >= 1) {
+      tip = `Your attack (${myRatings.att}★) is notably stronger than their defense (${oppRatings.def}★) — an attacking approach could pay off.`;
+    }
+    scouting = { opponent, oppRatings, oppForm, tip };
+  }
+
   return (
     <div>
+      {scouting && (
+        <div style={{ background: PALETTE.parchmentDim, borderRadius: 8, padding: 14, marginBottom: 16 }}>
+          <div style={{ ...display, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.06em", color: PALETTE.inkSoft, marginBottom: 8 }}>
+            Next Opponent — {scouting.opponent.name}
+          </div>
+          <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+            {[["DEF", scouting.oppRatings.def], ["MID", scouting.oppRatings.mid], ["ATT", scouting.oppRatings.att]].map(([label, val]) => (
+              <div key={label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ ...display, fontSize: 11, fontWeight: 700, color: PALETTE.inkSoft }}>{label}</span>
+                <span style={{ color: PALETTE.gold, fontSize: 14 }}><StarRow value={val} /></span>
+              </div>
+            ))}
+            {scouting.oppForm.length > 0 && (
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ ...display, fontSize: 11, fontWeight: 700, color: PALETTE.inkSoft }}>FORM</span>
+                <FormBadges form={scouting.oppForm} />
+              </div>
+            )}
+          </div>
+          <div style={{ ...serif, fontSize: 12.5, color: PALETTE.ink }}>{scouting.tip}</div>
+        </div>
+      )}
       {userFixtures.map((f) => (
         <div key={f.id} style={{
           display: "flex", justifyContent: "space-between", padding: "8px 10px", fontSize: 13,
           borderBottom: `1px solid ${PALETTE.parchmentDim}`, ...serif,
+          background: (!f.played && f.id === nextFixture?.id) ? `${PALETTE.gold}18` : "none",
         }}>
           <span style={{ color: PALETTE.inkSoft, ...mono, width: 32 }}>MD{f.matchday}</span>
           <span style={{ flex: 1 }}>{clubName(f.homeClubId)} vs {clubName(f.awayClubId)}</span>
@@ -3113,9 +3268,13 @@ function computeRecommendationScore(player, userClub, difficulty) {
 
   // Need: a weak, thin, or soon-to-be-depleted position group is a bigger
   // priority than topping up a position that's already deep and strong.
+  // A squad only ever needs ~2 keepers, never the 4 that makes sense as a
+  // depth target for outfield lines — without this split, every listed GK
+  // registered as "thin" and flooded the recommendations.
+  const idealDepth = player.position === "GK" ? 2 : 4;
   let needScore = 0;
   needScore += Math.max(0, 60 - avgAtPos) * 0.6;
-  needScore += Math.max(0, 4 - depthCount) * 8;
+  needScore += Math.max(0, idealDepth - depthCount) * 8;
   needScore += expiringCount * 10;
 
   // Upgrade: how much better is this player than the best you've already got there
@@ -3178,7 +3337,22 @@ function MarketTab({ tiers, userClub, userTierId, onBuy, difficulty }) {
     listed.forEach((entry) => { entry.score = computeRecommendationScore(entry.player, userClub, difficulty); });
     const affordable = listed.filter((e) => e.score > -Infinity);
     affordable.sort((a, b) => b.score - a.score);
-    recommendedList = affordable.slice(0, 10);
+    // Cap per-position so the list reads as "a couple good options in each
+    // area of need" rather than one position (especially GK, which has few
+    // real slots to begin with) crowding out everything else. GK capped
+    // hard at 1 — a squad rarely needs to shop for more than one keeper
+    // at a time, so even 2 felt like too many relative to outfield needs.
+    const MAX_PER_POSITION = { GK: 1, DEF: 6, MID: 6, FWD: 6 };
+    const perPositionCount = { GK: 0, DEF: 0, MID: 0, FWD: 0 };
+    const RECOMMENDED_TOTAL = 18;
+    for (const entry of affordable) {
+      if (recommendedList.length >= RECOMMENDED_TOTAL) break;
+      const pos = entry.player.position;
+      const cap = MAX_PER_POSITION[pos] ?? 5;
+      if ((perPositionCount[pos] ?? 0) >= cap) continue;
+      recommendedList.push(entry);
+      perPositionCount[pos] = (perPositionCount[pos] ?? 0) + 1;
+    }
   } else {
     const dir = sortDir === "asc" ? 1 : -1;
     listed.sort((a, b) => {
@@ -3591,10 +3765,11 @@ function DraftModal({ picks, onKeep, onSell }) {
   );
 }
 
-function HintButton({ club, matchday, managerHistory, setManagerHistory }) {
+function HintButton({ club, matchday, tier, managerHistory, setManagerHistory }) {
   const [open, setOpen] = useState(false);
   const seenOneTimeHints = managerHistory?.seenOneTimeHints || [];
-  const hints = computeHints(club, matchday, seenOneTimeHints);
+  const recentForm = tier ? (computeTable(tier).find((r) => r.clubId === club.id)?.form.slice(-5) ?? []) : [];
+  const hints = computeHints(club, matchday, seenOneTimeHints, recentForm);
   const urgentCount = hints[0]?.id === "all-clear" ? 0 : hints.length;
 
   const handleOpen = () => {
@@ -3667,52 +3842,22 @@ const ONBOARDING_STEPS = [
   {
     icon: Trophy,
     title: "Welcome to Ascent",
-    body: "Pick a club, work your way through four real-world tiers, and try to reach the top of the pyramid. This quick walkthrough covers the basics — you can skip it anytime and figure things out as you go.",
+    body: "You're not playing the matches — you're the manager. You pick the team, set the game plan, buy and sell players, and grow young talent. The matches themselves play out on their own once you've made your calls. Skip this anytime with the link below.",
+  },
+  {
+    icon: TrendingUp,
+    title: "The Pyramid",
+    body: "American soccer is stacked in four tiers: MLS at the top, then USL Championship, USL League One, and USL League Two at the bottom. Finish near the top of your tier and you move UP a tier next season. Finish near the bottom and you get sent DOWN. Win it all in the top tier and you're the champion of American soccer.",
   },
   {
     icon: Users,
-    title: "Squad",
-    body: "Your full roster lives here. Set your captain, keep an eye on injuries and suspensions, and choose a lineup mode — Best XI plays your strongest team, Youth favors younger players for development, and Auto balances fitness for you.",
-  },
-  {
-    icon: Sliders,
-    title: "Tactics",
-    body: "Set your formation, style of play, and pressing intensity before each matchday. These modifiers actually change how matches simulate — an attacking, high-press setup plays very differently to a defensive, low-block one.",
-  },
-  {
-    icon: Calendar,
-    title: "Table & Fixtures",
-    body: "Sim a single matchday or fast-forward a whole season. Promotion and relegation happen automatically at each tier boundary, and once the regular season ends, playoffs (where they exist) kick in before the next season begins.",
-  },
-  {
-    icon: ShoppingBag,
-    title: "Market",
-    body: "Browse and sign players from any tier, sorted by age, rating, price, or potential — or tap ★ Recommended for a shortlist tailored to your squad's actual needs (weak lines, thin depth, expiring contracts) and what you can really afford, not just raw ratings. List your own players for sale from the Squad tab. Prices scale with overall rating, age, and potential — a promising 19-year-old costs a lot more than a declining veteran with the same rating.",
-  },
-  {
-    icon: DollarSign,
-    title: "Finances",
-    body: "On Pro and Executive, tap \"Payroll\" in the header for a full breakdown of your wage bill and room left. Go into debt and help arrives — Pro gets an automatic partial ownership bailout, Executive's board may bail you out too depending on how patient they're feeling (or it counts against you). Let your squad drop below 16 players and you're disqualified from competing until you sign back up to strength — emergency funding is granted automatically to help.",
-  },
-  {
-    icon: GraduationCap,
-    title: "Development",
-    body: "MLS and USL Championship clubs can build an academy and sign young prospects who grow over time. USL League One and Two clubs don't have academy access, but can host tryouts instead — occasionally turning up a hidden gem.",
-  },
-  {
-    icon: Star,
-    title: "Designated Players",
-    body: "Executive mode adds a real MLS-style salary cap — every non-DP wage has to fit under it. Naming one of your 3 DP slots is the only way to sign or keep a player above that number. A DP also raises your reputation a notch, gives your starting XI a small chemistry boost when they're on the pitch, and brings in extra gate & jersey revenue every season — a real building block, not just a wage discount.",
-  },
-  {
-    icon: Award,
-    title: "Trophy Room",
-    body: "This is your career record, not just this club's — it follows you across every club you ever manage, including your best-ever finish and every promotion, relegation, and trophy along the way.",
+    title: "Running your club",
+    body: "Squad is your full roster — set your captain and pick a lineup mode. Tactics is your game plan (formation, style, press) for the next match — set this well and it actually changes how matches play out. Market is where you buy and sell players. Development lets you grow young talent through an academy or tryouts.",
   },
   {
     icon: Lightbulb,
-    title: "Need a nudge?",
-    body: "The gold circular button in the corner gives you a few actionable suggestions whenever you're not sure what to do next — weak lines to scout, lineup tweaks, academy nudges, and more.",
+    title: "If you're ever stuck",
+    body: "The gold button in the corner gives you concrete suggestions any time you're not sure what to do. The Market has a ★ Recommended tab built around your squad's actual needs. Tactics has a \"Suggested for your squad\" box. None of this is guesswork you have to do alone.",
   },
   {
     icon: Trophy,
@@ -3986,7 +4131,6 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
   const [infoNotice, setInfoNotice] = useState(null);
   const [seasonPlayoffs, setSeasonPlayoffs] = useState(null);
   const [revealedRounds, setRevealedRounds] = useState(0);
-  const [cupRevealedRounds, setCupRevealedRounds] = useState(0);
   const [cupRecap, setCupRecap] = useState(null);
   const [sackedNotice, setSackedNotice] = useState(null);
   const [showPayroll, setShowPayroll] = useState(false);
@@ -4018,6 +4162,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
 
   const simulateMatchday = () => {
     if (currentMatchday === null) return;
+    if (pendingCupRoundIndex !== null) { setTab("opencup"); return; }
     mutateAndSave((next) => {
       const { matches, disqualificationNotice } = simulateMatchdayAcrossTiers(next, currentMatchday);
       const w = maybeTriggerMidWindow(next, currentMatchday);
@@ -4033,10 +4178,13 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
 
   const simulateSeason = () => {
     if (currentMatchday === null) return;
+    if (pendingCupRoundIndex !== null) { setTab("opencup"); return; }
     mutateAndSave((next) => {
       let md = getCurrentMatchday(next);
       let lastNotice = null;
+      let stoppedForCup = false;
       while (md !== null) {
+        if (isCupCheckpointPending(next, md)) { stoppedForCup = true; break; }
         const { disqualificationNotice } = simulateMatchdayAcrossTiers(next, md);
         if (disqualificationNotice) lastNotice = disqualificationNotice;
         maybeTriggerMidWindow(next, md);
@@ -4046,28 +4194,36 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
         setInfoNotice(lastNotice.resolved
           ? `${lastNotice.clubName} is back above the minimum squad size at some point this run — disqualification lifted.`
           : `${lastNotice.clubName} dropped below the ${MIN_SQUAD_SIZE}-player minimum during this run — you're disqualified from competing until you sign back up to strength. Emergency funding of $${lastNotice.funding.toLocaleString()} has been added to your budget to help.`);
+      } else if (stoppedForCup) {
+        setInfoNotice("US Open Cup fixtures are up this week — head to the Open Cup tab to play them before the season continues.");
       }
     });
+    if (pendingCupRoundIndex !== null || US_OPEN_CUP_ROUND_MATCHDAYS.includes(currentMatchday)) setTab("opencup");
   };
 
   const simulateToNextWindow = () => {
     if (currentMatchday === null) return;
+    if (pendingCupRoundIndex !== null) { setTab("opencup"); return; }
     mutateAndSave((next) => {
       let md = getCurrentMatchday(next);
       let fired = null;
       let lastNotice = null;
+      let stoppedForCup = false;
       while (md !== null) {
+        if (isCupCheckpointPending(next, md)) { stoppedForCup = true; break; }
         const { disqualificationNotice } = simulateMatchdayAcrossTiers(next, md);
         if (disqualificationNotice) lastNotice = disqualificationNotice;
         fired = maybeTriggerMidWindow(next, md);
         md = getCurrentMatchday(next);
         if (fired) break;
       }
-      setWindowNotice(fired ? fired : { seasonEnded: true });
+      if (!stoppedForCup) setWindowNotice(fired ? fired : { seasonEnded: true });
       if (lastNotice) {
         setInfoNotice(lastNotice.resolved
           ? `${lastNotice.clubName} is back above the minimum squad size — disqualification lifted.`
           : `${lastNotice.clubName} dropped below the ${MIN_SQUAD_SIZE}-player minimum — you're disqualified from competing until you sign back up to strength. Emergency funding of $${lastNotice.funding.toLocaleString()} has been added to your budget to help.`);
+      } else if (stoppedForCup) {
+        setInfoNotice("US Open Cup fixtures are up this week — head to the Open Cup tab to play them before the season continues.");
       }
     });
   };
@@ -4076,7 +4232,6 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
     try {
       setSeasonPlayoffs(computeSeasonPlayoffs(state.tiers, state.userClubId, state.difficulty));
       setRevealedRounds(0);
-      setCupRevealedRounds(0);
       setTab("table");
     } catch (e) {
       setInfoNotice(`Something went wrong computing the postseason (${e.message}). You can still continue to next season — the regular rollover doesn't depend on this.`);
@@ -4085,38 +4240,55 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
 
   const handleSimRound = () => setRevealedRounds((r) => Math.min(MAX_POSTSEASON_ROUNDS, r + 1));
   const handleSimRestOfPostseason = () => setRevealedRounds(MAX_POSTSEASON_ROUNDS);
-  // Pops up the user's own cup match whenever a round they're actually in
-  // gets revealed — same idea as the regular-season matchday recap. Once
-  // they lose, they no longer appear in any later round's matches, so this
-  // naturally stops popping up without needing separate "eliminated" state.
+
+  // Pops up the user's own cup match once their round is played — same
+  // idea as the regular-season matchday recap. Once they lose, they no
+  // longer appear in any later round's matches, so this naturally stops
+  // popping up without needing separate "eliminated" state.
   const findUserCupMatch = (round) => round.matches.find((m) => m.homeEntrant.club.id === state.userClubId || m.awayEntrant.club.id === state.userClubId);
 
-  const handleSimCupRound = () => {
-    const cup = seasonPlayoffs?.usOpenCupResult;
-    const prevRevealed = cupRevealedRounds;
-    setCupRevealedRounds((r) => Math.min(US_OPEN_CUP_TOTAL_ROUNDS, r + 1));
-    if (cup && prevRevealed < cup.rounds.length) {
-      const round = cup.rounds[prevRevealed];
-      const match = findUserCupMatch(round);
-      if (match) setCupRecap({ roundLabel: round.label, match });
-    }
-  };
-  const handleSimRestOfCup = () => {
-    const cup = seasonPlayoffs?.usOpenCupResult;
-    const prevRevealed = cupRevealedRounds;
-    setCupRevealedRounds(US_OPEN_CUP_TOTAL_ROUNDS);
-    if (cup) {
-      let lastMatch = null, lastLabel = null;
-      for (let ri = prevRevealed; ri < cup.rounds.length; ri++) {
-        const m = findUserCupMatch(cup.rounds[ri]);
-        if (m) { lastMatch = m; lastLabel = cup.rounds[ri].label; }
+  // The cup now runs DURING the season: a specific league matchday number
+  // comes due, and instead of playing that league matchday, this round
+  // of the cup plays first. Nothing else advances until it's done.
+  const pendingCupRoundIndex = currentMatchday !== null && isCupCheckpointPending(state, currentMatchday)
+    ? US_OPEN_CUP_ROUND_MATCHDAYS.indexOf(currentMatchday)
+    : null;
+
+  const handlePlayCupRound = () => {
+    mutateAndSave((next) => {
+      const progress = playNextUsOpenCupRound(next.usOpenCup, next.tiers, next.usOpenCupQualifiers);
+      // Prize money lands the moment it's earned, not saved up for the
+      // end of the season.
+      const allClubs = next.tiers.flatMap((t) => t.clubs);
+      const payOut = (clubId, amount) => {
+        const c = allClubs.find((cl) => cl.id === clubId);
+        if (c) c.budget += amount;
+      };
+      const newRound = progress.rounds[progress.rounds.length - 1];
+      newRound.matches.forEach((m) => { if (m.isUpset) payOut(m.winnerEntrant.club.id, US_OPEN_CUP_GIANT_KILLER_BONUS); });
+      if (progress.done) {
+        payOut(progress.champion.club.id, US_OPEN_CUP_CHAMPION_PRIZE);
+        payOut(progress.runnerUp.club.id, US_OPEN_CUP_RUNNERUP_PRIZE);
       }
-      if (lastMatch) setCupRecap({ roundLabel: lastLabel, match: lastMatch });
-    }
+      next.usOpenCup = progress;
+      const match = findUserCupMatch(newRound);
+      if (match) setCupRecap({ roundLabel: newRound.label, match });
+    });
   };
 
   const doRollover = () => {
-    const { newTiers, events, tables, windowResult, newPrizePools, userPrize, userRetirements, userDraftPicks, userPayroll, mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, userPromotionPlayoff, userDisqualificationNotice, userDpRevenue, usOpenCupResult, userUsOpenCup } = rolloverSeason(state.tiers, state.userClubId, state.prizePools, state.difficulty, seasonPlayoffs);
+    const { newTiers, events, tables, windowResult, newPrizePools, userPrize, userRetirements, userDraftPicks, userPayroll, mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, userPromotionPlayoff, userDisqualificationNotice, userDpRevenue } = rolloverSeason(state.tiers, state.userClubId, state.prizePools, state.difficulty, seasonPlayoffs);
+    // The US Open Cup already ran and paid out mid-season (see
+    // handlePlayCupRound) — this is just a historical recap for the
+    // season summary, not a fresh payout.
+    const cup = state.usOpenCup;
+    let userUsOpenCup = null;
+    if (cup?.done) {
+      const userGiantKillerWins = cup.giantKillerBonuses.filter((g) => g.clubId === state.userClubId).length;
+      if (state.userClubId === cup.champion.club.id) userUsOpenCup = { result: "champion", giantKillerWins: userGiantKillerWins };
+      else if (state.userClubId === cup.runnerUp.club.id) userUsOpenCup = { result: "runner-up", giantKillerWins: userGiantKillerWins };
+      else if (userGiantKillerWins > 0) userUsOpenCup = { result: "giant-killer", giantKillerWins: userGiantKillerWins };
+    }
     const userMove = events.find((e) => e.clubId === state.userClubId && e.type !== "champion");
     const userChamp = events.find((e) => e.clubId === state.userClubId && e.type === "champion");
     const currentClubName = state.tiers[state.userTierId].clubs.find((c) => c.id === state.userClubId)?.name ?? "";
@@ -4248,7 +4420,6 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
       setSackedNotice(sackNotice);
       setSeasonPlayoffs(null);
     setRevealedRounds(0);
-      setCupRevealedRounds(0);
       return;
     }
 
@@ -4259,12 +4430,20 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
       seasonNumber: prev.seasonNumber + 1,
       midWindowSeason: prev.midWindowSeason,
       prizePools: newPrizePools,
+      // US Open Cup qualification is based on the PREVIOUS season's final
+      // standings, same as the real tournament (not whatever's happening
+      // in-progress this season) — bank this season's final top-16
+      // USLC / bottom-16 MLS now, for next season's cup rounds to use.
+      usOpenCupQualifiers: {
+        uslcTop16: tables[1].slice(0, 16).map((r) => r.clubId),
+        mlsBottom16: tables[0].slice(-16).map((r) => r.clubId),
+      },
+      usOpenCup: null,
     }));
-    setRollover({ events, seasonNumber: state.seasonNumber, windowResult, userPrize, ownershipDeposit: ownershipDepositFor(state.userTierId, state.difficulty), userRetirements, userPayroll, mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, userPromotionPlayoff, boardNotice, userDpRevenue, usOpenCupResult, userUsOpenCup });
+    setRollover({ events, seasonNumber: state.seasonNumber, windowResult, userPrize, ownershipDeposit: ownershipDepositFor(state.userTierId, state.difficulty), userRetirements, userPayroll, mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, userPromotionPlayoff, boardNotice, userDpRevenue, usOpenCup: cup, userUsOpenCup });
     if (userDraftPicks && userDraftPicks.length) setDraftPicks(userDraftPicks);
     setSeasonPlayoffs(null);
     setRevealedRounds(0);
-      setCupRevealedRounds(0);
   };
 
   const handleToggleList = (playerId) => {
@@ -4630,22 +4809,21 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
         )}
         {tab === "opencup" && (
           <UsOpenCupTab
-            usOpenCupResult={seasonPlayoffs?.usOpenCupResult}
-            revealedRounds={cupRevealedRounds}
-            onSimRound={handleSimCupRound}
-            onSimRest={handleSimRestOfCup}
+            usOpenCup={state.usOpenCup}
+            pendingRoundIndex={pendingCupRoundIndex}
+            onPlayRound={handlePlayCupRound}
             userClubId={state.userClubId}
           />
         )}
         {tab === "trophies" && <TrophyTab trophyLog={managerHistory.trophyLog} bestFinish={managerHistory.bestFinish} currentClubName={userClub.name} />}
       </div>
 
-      {recap && <MatchdayRecap results={recap} userClubName={userClub.name} onClose={() => setRecap(null)} />}
+      {recap && <MatchdayRecap results={recap} userClubName={userClub.name} tier={tier} onClose={() => setRecap(null)} />}
       {cupRecap && <CupRecapModal recap={cupRecap} userClubId={state.userClubId} onClose={() => setCupRecap(null)} />}
       {windowNotice && <WindowNotice notice={windowNotice} onClose={() => setWindowNotice(null)} />}
       {renewalNotice && <RenewalNotice notice={renewalNotice} onClose={() => setRenewalNotice(null)} />}
       {infoNotice && <InfoNotice message={infoNotice} onClose={() => setInfoNotice(null)} />}
-      <HintButton club={userClub} matchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)} managerHistory={managerHistory} setManagerHistory={setManagerHistory} />
+      <HintButton club={userClub} matchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)} tier={tier} managerHistory={managerHistory} setManagerHistory={setManagerHistory} />
       {sackedNotice && <SackedScreen notice={sackedNotice} onContinue={onSacked} />}
       {showPayroll && <PayrollOverlay club={userClub} difficulty={state.difficulty} tierIdx={state.userTierId} onClose={() => setShowPayroll(false)} />}
       {!rollover && draftPicks && draftPicks.length > 0 && (
@@ -4668,7 +4846,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
           userPromotionPlayoff={rollover.userPromotionPlayoff}
           boardNotice={rollover.boardNotice}
           userDpRevenue={rollover.userDpRevenue}
-          usOpenCupResult={rollover.usOpenCupResult}
+          usOpenCup={rollover.usOpenCup}
           userUsOpenCup={rollover.userUsOpenCup}
           onContinue={() => setRollover(null)}
         />
@@ -4827,5 +5005,7 @@ function handlePickFromPreview(previewWorld, tierId, clubId, difficulty, setStat
     bestFinish: null,
     midWindowSeason: 0,
     prizePools: [3_000_000, 1_200_000, 500_000, 200_000],
+    usOpenCup: null,
+    usOpenCupQualifiers: null,
   });
 }
