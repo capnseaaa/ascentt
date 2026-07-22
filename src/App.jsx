@@ -1615,16 +1615,12 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty, precomputedPl
     promoted.forEach((id) => events.push({ clubId: id, clubName: clubsById[id].name, from: i + 1, to: i, type: "promoted" }));
   });
 
-  // Only clubs that actually changed tier this season get their wages
-  // re-based — previously EVERY player's wage was recomputed from their
-  // current overall/age every single season, even for clubs that stayed
-  // in the same tier, which silently inflated payroll every year as
-  // players simply grew (nothing to do with an actual signing or raise).
-  const movedTierClubIds = new Set();
-  movementByBoundary.forEach(({ promoted, relegated }) => {
-    promoted.forEach((id) => movedTierClubIds.add(id));
-    relegated.forEach((id) => movedTierClubIds.add(id));
-  });
+  // A player's wage should only ever move when their contract actually
+  // renews (an explicit action, whether the user's own renewal or the
+  // AI's auto-renewal logic below) — never automatically just because
+  // their club got promoted or relegated. The only thing rebased here is
+  // a brand-new player's still-crude placeholder wage, corrected once to
+  // something tier-realistic the first time they pass through a rollover.
 
   // Prize money: on Rookie, distributed by final standing from a per-tier
   // pool that shrinks a little every season (simple, no real-world figures
@@ -1722,17 +1718,13 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty, precomputedPl
       }
       const prize = prizeAmountsByTier[i][id] ?? 0;
       const youthPlayers = (club.youthPlayers || []).map((p) => growYouthProspect(p, club.academyStars || 0));
-      // Wages re-base to reflect the tier a club is about to play in — but
-      // only for a player who hasn't had a real wage computed yet (a fresh
-      // draft pick, academy promotion, or new signing still on a crude
-      // placeholder wage) or a club that actually just got promoted or
-      // relegated. A player who already has a real wage, at a club
-      // staying in the same tier, keeps it — it only moves via an
-      // explicit renewal from here on, not a silent yearly recompute as
-      // their overall happens to grow.
-      const clubMoved = movedTierClubIds.has(id);
+      // A fresh draft pick, academy promotion, or new signing still on a
+      // crude placeholder wage gets corrected to something tier-realistic
+      // once, here. Anyone who already has a real wage keeps it exactly as
+      // is — even through a promotion or relegation — until their
+      // contract actually comes up for renewal.
       squad = squad.map((p) => (
-        (!p.wageSet || clubMoved) ? { ...p, wage: computeRealisticWage(p.overall, p.age, i), wageSet: true } : p
+        !p.wageSet ? { ...p, wage: computeRealisticWage(p.overall, p.age, i), wageSet: true } : p
       ));
       const payroll = DIFFICULTY_MODES[difficulty]?.wagesDeducted ? effectivePayroll(squad, club.designatedPlayerIds) : 0;
 
