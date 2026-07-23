@@ -2100,6 +2100,8 @@ function runTransferWindow(tiers, userClubId) {
         seller.budget += p.askingPrice;
         p.transferListed = false;
         p.askingPrice = null;
+        p.benchStreak = 0;
+        p.transferRequested = false;
         seller.squad = seller.squad.filter((sp) => sp.id !== p.id);
         if (seller.designatedPlayerIds?.includes(p.id)) {
           seller.designatedPlayerIds = seller.designatedPlayerIds.filter((id) => id !== p.id);
@@ -2454,39 +2456,45 @@ function RolloverModal({ events, userClubId, seasonNumber, windowResult, userPri
           Champions & Cup Winners
         </div>
         {(() => {
-          const rowStyle = { display: "grid", gridTemplateColumns: "58px 190px 1fr", alignItems: "start", columnGap: 8, rowGap: 2, fontSize: 14, color: PALETTE.ink, marginBottom: 6, ...serif };
-          const shieldOrChamp = (tierIdx, label) => {
+          const rows = [];
+          const addShieldOrChamp = (tierIdx, label) => {
             const c = champions.find((e) => e.tier === tierIdx);
-            if (!c) return null;
-            return (
-              <div key={label} style={rowStyle}>
-                <span><TierBadge tierId={tierIdx} /></span>
-                <strong>{label}:</strong>
-                <span>{c.clubName}</span>
-              </div>
-            );
+            if (c) rows.push({ tierIdx, label, winner: c.clubName });
           };
-          const cupWinner = (label, result) => {
-            if (!result) return null;
+          const addCupWinner = (label, result, tierIdx) => {
+            if (!result) return;
             const championName = result.champion.club ? result.champion.club.name : result.champion.name;
-            return (
-              <div key={label} style={rowStyle}>
-                <span><Trophy size={14} color={PALETTE.gold} /></span>
-                <strong>{label}:</strong>
-                <span>{championName}</span>
-              </div>
-            );
+            rows.push({ tierIdx, label, winner: championName });
           };
+          addCupWinner("US Open Cup Winner", usOpenCup?.done ? usOpenCup : null, null);
+          addShieldOrChamp(0, "Supporters' Shield");
+          addCupWinner("MLS Cup Winner", mlsPlayoffResult, 0);
+          addShieldOrChamp(1, "Players' Shield");
+          addCupWinner("USL Cup Winner", uslcPlayoffResult, 1);
+          addShieldOrChamp(2, `${TIER_META[2].name} Champion`);
+          addShieldOrChamp(3, `${TIER_META[3].name} Champion`);
+
+          if (rows.length === 0) return null;
           return (
-            <>
-              {cupWinner("US Open Cup Winner", usOpenCup?.done ? usOpenCup : null)}
-              {shieldOrChamp(0, "Supporters' Shield")}
-              {cupWinner("MLS Cup Winner", mlsPlayoffResult)}
-              {shieldOrChamp(1, "Players' Shield")}
-              {cupWinner("USL Cup Winner", uslcPlayoffResult)}
-              {shieldOrChamp(2, `${TIER_META[2].name} Champion`)}
-              {shieldOrChamp(3, `${TIER_META[3].name} Champion`)}
-            </>
+            <div style={{ borderRadius: 8, overflow: "hidden", border: `1px solid ${PALETTE.parchmentDim}` }}>
+              <div style={{ display: "grid", gridTemplateColumns: "70px 1fr 1fr", background: PALETTE.ink, color: PALETTE.parchment, ...display, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                <div style={{ padding: "6px 8px" }}>League</div>
+                <div style={{ padding: "6px 8px" }}>Award</div>
+                <div style={{ padding: "6px 8px" }}>Winner</div>
+              </div>
+              {rows.map((r, i) => {
+                const tint = r.tierIdx === null ? "#D9C6E822" : `${TIER_META[r.tierIdx].color}22`;
+                return (
+                  <div key={i} style={{ display: "grid", gridTemplateColumns: "70px 1fr 1fr", background: tint, borderTop: `1px solid ${PALETTE.parchmentDim}`, fontSize: 13, ...serif, color: PALETTE.ink }}>
+                    <div style={{ padding: "7px 8px", display: "flex", alignItems: "center" }}>
+                      {r.tierIdx === null ? <span style={{ ...mono, fontSize: 10, fontWeight: 700 }}>CUP</span> : <TierBadge tierId={r.tierIdx} />}
+                    </div>
+                    <div style={{ padding: "7px 8px", fontWeight: 600 }}>{r.label}</div>
+                    <div style={{ padding: "7px 8px" }}>{r.winner}</div>
+                  </div>
+                );
+              })}
+            </div>
           );
         })()}
 
@@ -2600,14 +2608,24 @@ function CupRecapModal({ recap, userClubId, onClose }) {
 // A short, honest explanation of what actually decided a match — the
 // single biggest line-rating gap between the two sides — so a result
 // isn't just a scoreline with no way to learn from it.
-function matchWhyExplanation(myRatings, oppRatings) {
+function matchWhyExplanation(myRatings, oppRatings, myGoals, oppGoals) {
   const lines = [["defense", "def"], ["midfield", "mid"], ["attack", "att"]];
   const diffs = lines.map(([label, key]) => [label, key, myRatings[key] - oppRatings[key]]);
   const biggest = diffs.reduce((a, b) => (Math.abs(b[2]) > Math.abs(a[2]) ? b : a));
   const [label, key, diff] = biggest;
-  if (Math.abs(diff) < 0.5) return "An even matchup on paper — this one could have gone either way.";
-  if (diff > 0) return `Your ${label} (${myRatings[key]}★ vs their ${oppRatings[key]}★) was the difference.`;
-  return `Their ${label} (${oppRatings[key]}★ vs your ${myRatings[key]}★) proved too strong.`;
+
+  if (myGoals === oppGoals) return "An even, hard-fought result — could have gone either way.";
+  const won = myGoals > oppGoals;
+
+  // Only attribute the result to a ratings gap when the gap actually points
+  // the same direction as what really happened — previously this ignored
+  // the scoreline entirely and could claim a team's own strength "was the
+  // difference" in a game they lost, or that the opponent's edge "proved
+  // too strong" in a game they actually won.
+  if (won && diff > 0.5) return `Your ${label} (${myRatings[key]}★ vs their ${oppRatings[key]}★) was the difference.`;
+  if (!won && diff < -0.5) return `Their ${label} (${oppRatings[key]}★ vs your ${myRatings[key]}★) proved too strong.`;
+  if (won) return "A result that went your way despite a fairly even matchup on paper.";
+  return "A tough result to take given how the matchup looked on paper — bound to happen sometimes.";
 }
 
 function MatchdayRecap({ results, userClubName, tier, onClose }) {
@@ -2633,9 +2651,12 @@ function MatchdayRecap({ results, userClubName, tier, onClose }) {
           let why = null;
           if (isUser && tier) {
             const myClub = tier.clubs.find((c) => c.name === userClubName);
-            const oppName = m.homeClub === userClubName ? m.awayClub : m.homeClub;
+            const isHome = m.homeClub === userClubName;
+            const oppName = isHome ? m.awayClub : m.homeClub;
             const oppClub = tier.clubs.find((c) => c.name === oppName);
-            if (myClub && oppClub) why = matchWhyExplanation(clubLineRatings(myClub), clubLineRatings(oppClub));
+            const myGoals = isHome ? m.homeScore : m.awayScore;
+            const oppGoals = isHome ? m.awayScore : m.homeScore;
+            if (myClub && oppClub) why = matchWhyExplanation(clubLineRatings(myClub), clubLineRatings(oppClub), myGoals, oppGoals);
           }
           return (
             <div key={i} style={{ marginBottom: 14, padding: 10, borderRadius: 8, background: isUser ? PALETTE.parchmentDim : "transparent", border: isUser ? `1px solid ${PALETTE.gold}` : "none" }}>
@@ -3477,9 +3498,9 @@ function FixturesTab({ tier, userClubId, usOpenCup }) {
     const oppRow = table.find((r) => r.clubId === opponentId);
     const oppForm = oppRow ? oppRow.form.slice(-5) : [];
     const diffs = [
-      ["their attack vs your defense", oppRatings.att - myRatings.def],
-      ["their defense vs your attack", myRatings.att - oppRatings.def],
-      ["midfield battle", myRatings.mid - oppRatings.mid],
+      ["theirAttackVsMyDefense", oppRatings.att - myRatings.def], // positive = danger (their attack beats my defense)
+      ["myAttackVsTheirDefense", myRatings.att - oppRatings.def], // positive = opportunity (my attack beats their defense)
+      ["midfield", myRatings.mid - oppRatings.mid], // positive = my edge
     ];
     const biggestEdge = diffs.reduce((a, b) => (Math.abs(b[1]) > Math.abs(a[1]) ? b : a));
     const oppLosses = oppForm.filter((r) => r === "L").length;
@@ -3487,10 +3508,14 @@ function FixturesTab({ tier, userClubId, usOpenCup }) {
     let tip;
     if (Math.abs(biggestEdge[1]) < 1) {
       tip = "This looks like an even matchup on paper — a balanced approach is reasonable.";
-    } else if (biggestEdge[0] === "their attack vs your defense") {
-      tip = `Their attack (${oppRatings.att}★) is notably stronger than your defense (${myRatings.def}★) — consider a more defensive setup.`;
-    } else if (biggestEdge[0] === "their defense vs your attack") {
-      tip = `Your attack (${myRatings.att}★) is notably stronger than their defense (${oppRatings.def}★) — an attacking approach could pay off.`;
+    } else if (biggestEdge[0] === "theirAttackVsMyDefense") {
+      tip = biggestEdge[1] > 0
+        ? `Their attack (${oppRatings.att}★) is notably stronger than your defense (${myRatings.def}★) — consider a more defensive setup.`
+        : `Your defense (${myRatings.def}★) should hold up well against their attack (${oppRatings.att}★) — a solid platform to play from.`;
+    } else if (biggestEdge[0] === "myAttackVsTheirDefense") {
+      tip = biggestEdge[1] > 0
+        ? `Your attack (${myRatings.att}★) is notably stronger than their defense (${oppRatings.def}★) — an attacking approach could pay off.`
+        : `Their defense (${oppRatings.def}★) is well ahead of your attack (${myRatings.att}★) — goals may be hard to come by.`;
     } else if (biggestEdge[1] > 0) {
       tip = `You have the edge in midfield (${myRatings.mid}★ vs ${oppRatings.mid}★) — control the game through the middle and let your other lines follow.`;
     } else {
@@ -4463,6 +4488,8 @@ function simulateMatchdayAcrossTiers(next, currentMatchday) {
           seller.budget += p.askingPrice;
           p.transferListed = false;
           p.askingPrice = null;
+          p.benchStreak = 0;
+          p.transferRequested = false;
           seller.squad = seller.squad.filter((sp) => sp.id !== p.id);
           if (seller.designatedPlayerIds?.includes(p.id)) {
             seller.designatedPlayerIds = seller.designatedPlayerIds.filter((id) => id !== p.id);
@@ -4549,7 +4576,6 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
 
   const simulateSeason = () => {
     if (currentMatchday === null) return;
-    if (pendingCupRoundIndex !== null) { setTab("opencup"); return; }
     mutateAndSave((next) => {
       let md = getCurrentMatchday(next);
       let lastNotice = null;
@@ -4579,7 +4605,6 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
 
   const simulateToNextWindow = () => {
     if (currentMatchday === null) return;
-    if (pendingCupRoundIndex !== null) { setTab("opencup"); return; }
     mutateAndSave((next) => {
       let md = getCurrentMatchday(next);
       let fired = null;
@@ -5000,6 +5025,13 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
       seller.budget += p.askingPrice;
       p.transferListed = false;
       p.askingPrice = null;
+      // A fresh start at a new club — whatever bench frustration or
+      // transfer-request history they had at their old club doesn't carry
+      // over. Otherwise a player who'd built up bench streak elsewhere
+      // could trigger "unhappy" again almost immediately after being
+      // bought, before they'd even had a real chance to play here.
+      p.benchStreak = 0;
+      p.transferRequested = false;
       seller.squad = seller.squad.filter((pl) => pl.id !== playerId);
       if (seller.designatedPlayerIds?.includes(playerId)) {
         seller.designatedPlayerIds = seller.designatedPlayerIds.filter((id) => id !== playerId);
