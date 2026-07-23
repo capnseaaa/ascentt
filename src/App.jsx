@@ -2639,8 +2639,13 @@ function MatchdayRecap({ results, userClubName, tier, onClose }) {
           }
           return (
             <div key={i} style={{ marginBottom: 14, padding: 10, borderRadius: 8, background: isUser ? PALETTE.parchmentDim : "transparent", border: isUser ? `1px solid ${PALETTE.gold}` : "none" }}>
-              <div style={{ ...display, fontWeight: 600, fontSize: 15, color: PALETTE.ink }}>
+              <div style={{ ...display, fontWeight: 600, fontSize: 15, color: PALETTE.ink, display: "flex", alignItems: "center", gap: 6 }}>
                 {m.homeClub} <span style={{ ...mono }}>{m.homeScore} - {m.awayScore}</span> {m.awayClub}
+                {m.isRivalryMatch && (
+                  <span style={{ ...display, fontSize: 10, fontWeight: 700, color: PALETTE.crimson, border: `1px solid ${PALETTE.crimson}`, borderRadius: 4, padding: "1px 5px" }}>
+                    🔥 RIVALRY
+                  </span>
+                )}
               </div>
               {isUser && why && (
                 <div style={{ marginTop: 4, fontSize: 12, color: PALETTE.inkSoft, ...serif, fontStyle: "italic" }}>{why}</div>
@@ -2675,7 +2680,7 @@ function MatchdayRecap({ results, userClubName, tier, onClose }) {
    DASHBOARD TABS
    ============================================================ */
 
-function SquadTab({ club, matchday, onToggleList, onRenew, onSetCaptain, tierId, difficulty, onToggleDP, onToggleRest, onToggleHoldBack }) {
+function SquadTab({ club, matchday, onToggleList, onRenew, onSetCaptain, tierId, difficulty, onToggleDP, onToggleRest, onToggleHoldBack, onLoanOut, playersOnLoan }) {
   const [lineupOpen, setLineupOpen] = useState(false);
   const xi = startingXI(club, matchday);
   const xiIds = new Set(xi.map((p) => p.id));
@@ -2702,6 +2707,12 @@ function SquadTab({ club, matchday, onToggleList, onRenew, onSetCaptain, tierId,
           (whole squad — see Tactics tab for your current XI's rating)
         </span>
       </div>
+
+      {playersOnLoan && playersOnLoan.length > 0 && (
+        <div style={{ ...serif, fontSize: 12.5, color: PALETTE.inkSoft, marginBottom: 16 }}>
+          📤 {playersOnLoan.length} player{playersOnLoan.length === 1 ? "" : "s"} out on loan — {playersOnLoan.map((e) => e.player.name).join(", ")}, back next season.
+        </div>
+      )}
 
       {DIFFICULTY_MODES[difficulty]?.boardPressure && (
         <div style={{ border: `1px solid ${PALETTE.parchmentDim}`, borderRadius: 8, padding: "10px 14px", marginBottom: 16, display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
@@ -2851,6 +2862,18 @@ function SquadTab({ club, matchday, onToggleList, onRenew, onSetCaptain, tierId,
                     >
                       🛡
                     </button>
+                    {p.age <= 21 && (
+                      <button
+                        onClick={() => onLoanOut(p.id)}
+                        title="Loan out for the season — returns next season, having developed"
+                        style={{
+                          fontSize: 11, padding: "4px 8px", borderRadius: 5, border: `1px solid ${PALETTE.inkSoft}`,
+                          background: "none", color: PALETTE.inkSoft, cursor: "pointer", ...display,
+                        }}
+                      >
+                        Loan Out
+                      </button>
+                    )}
                   </td>
                 </tr>
               );
@@ -4361,6 +4384,7 @@ const RIVALRIES = [
   ["FC Dallas", "Houston Dynamo FC"], // Texas Derby
   ["Toronto FC", "CF Montréal"], // Canadian Classique
   ["Chicago Fire FC", "Sporting Kansas City"], // Brimstone Cup
+  ["Louisville City FC", "Indy Eleven"], // I-64 Derby
 ];
 const RIVALRY_PAIRS = new Set(RIVALRIES.map(([a, b]) => [a, b].sort().join("|")));
 function isRivalryMatch(nameA, nameB) {
@@ -4401,6 +4425,16 @@ function simulateMatchdayAcrossTiers(next, currentMatchday) {
       if (eventBonusesOn && WIN_BONUS[t.id] > 0) {
         if (fx.homeScore > fx.awayScore) home.budget += WIN_BONUS[t.id];
         else if (fx.awayScore > fx.homeScore) away.budget += WIN_BONUS[t.id];
+      }
+      // Rivalry matches — a small reputation bump for the winner always
+      // applies (bragging rights matter regardless of difficulty), while
+      // the extra gate revenue only makes sense once revenue is actually
+      // tracked (Pro/Executive).
+      if (isRivalryMatch(home.name, away.name) && fx.homeScore !== fx.awayScore) {
+        const winner = fx.homeScore > fx.awayScore ? home : away;
+        winner.reputation = clamp(winner.reputation + RIVALRY_REPUTATION_BUMP, 20, 95);
+        if (eventBonusesOn) winner.budget += RIVALRY_REVENUE_BONUS;
+        result.isRivalryMatch = true;
       }
       if (t.id === next.userTierId) matches.push(result);
     });
@@ -4757,6 +4791,22 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
       return;
     }
 
+    // Loan returns — anyone due back this season rejoins the squad (if
+    // there's room), having developed a bit extra for the time away.
+    const nextSeasonNumber = state.seasonNumber + 1;
+    const stillOnLoan = [];
+    const userNewTierId = userMove ? userMove.to : state.userTierId;
+    const userClubAfterMove = newTiers[userNewTierId].clubs.find((c) => c.id === state.userClubId);
+    (state.playersOnLoan || []).forEach((entry) => {
+      if (entry.returnSeasonNumber !== nextSeasonNumber) { stillOnLoan.push(entry); return; }
+      if (userClubAfterMove && userClubAfterMove.squad.length < MAX_SQUAD_SIZE) {
+        const developed = growPlayer(growPlayer(entry.player)); // an extra development pass, on top of what everyone else already gets this rollover
+        userClubAfterMove.squad.push({ ...developed, seasonGoals: 0, benchStreak: 0 });
+      } else {
+        stillOnLoan.push(entry); // squad's full — stay out one more season
+      }
+    });
+
     setState((prev) => ({
       ...prev,
       tiers: newTiers,
@@ -4773,6 +4823,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
         mlsBottom16: tables[0].slice(-16).map((r) => r.clubId),
       },
       usOpenCup: null,
+      playersOnLoan: stillOnLoan,
     }));
     setRollover({ events, seasonNumber: state.seasonNumber, windowResult, userPrize, ownershipDeposit: ownershipDepositFor(state.userTierId, state.difficulty), userRetirements, userPayroll, mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, userPromotionPlayoff, boardNotice, userDpRevenue, usOpenCup: cup, userUsOpenCup, seasonAwards });
     if (userDraftPicks && userDraftPicks.length) setDraftPicks(userDraftPicks);
@@ -4867,6 +4918,25 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
       const club = next.tiers[next.userTierId].clubs.find((c) => c.id === next.userClubId);
       const p = club.squad.find((pl) => pl.id === playerId);
       if (p) p.holdBackForCup = !p.holdBackForCup;
+    });
+  };
+
+  // Loans keep it simple by design — no need to simulate them playing for
+  // another club match by match. They leave the squad for the season, a
+  // modest fee lands now, and they come back next season a little further
+  // along than they'd have developed sitting on the bench.
+  const handleLoanOut = (playerId) => {
+    mutateAndSave((next) => {
+      const club = next.tiers[next.userTierId].clubs.find((c) => c.id === next.userClubId);
+      const p = club.squad.find((pl) => pl.id === playerId);
+      if (!p) return;
+      const fee = Math.round(1_000 * Math.pow(1.08, p.overall));
+      club.budget += fee;
+      club.squad = club.squad.filter((pl) => pl.id !== playerId);
+      if (club.designatedPlayerIds?.includes(playerId)) {
+        club.designatedPlayerIds = club.designatedPlayerIds.filter((id) => id !== playerId);
+      }
+      next.playersOnLoan = [...(next.playersOnLoan || []), { player: p, returnSeasonNumber: next.seasonNumber + 1 }];
     });
   };
 
@@ -5146,7 +5216,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
       </div>
 
       <div style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
-        {tab === "squad" && <SquadTab club={userClub} matchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)} onToggleList={handleToggleList} onRenew={handleRenew} onSetCaptain={handleSetCaptain} tierId={state.userTierId} difficulty={state.difficulty} onToggleDP={handleToggleDP} onToggleRest={handleToggleRest} onToggleHoldBack={handleToggleHoldBack} />}
+        {tab === "squad" && <SquadTab club={userClub} matchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)} onToggleList={handleToggleList} onRenew={handleRenew} onSetCaptain={handleSetCaptain} tierId={state.userTierId} difficulty={state.difficulty} onToggleDP={handleToggleDP} onToggleRest={handleToggleRest} onToggleHoldBack={handleToggleHoldBack} onLoanOut={handleLoanOut} playersOnLoan={state.playersOnLoan} />}
         {tab === "tactics" && <TacticsTab club={userClub} matchday={currentMatchday ?? 1} onChange={handleTacticsChange} tier={tier} />}
         {tab === "table" && <TableTab tier={tier} userClubId={userClub.id} seasonPlayoffs={seasonPlayoffs} revealedRounds={revealedRounds} onSimRound={handleSimRound} onSimRest={handleSimRestOfPostseason} />}
         {tab === "fixtures" && <FixturesTab tier={tier} userClubId={userClub.id} usOpenCup={state.usOpenCup} />}
@@ -5366,5 +5436,6 @@ function handlePickFromPreview(previewWorld, tierId, clubId, difficulty, setStat
     prizePools: [3_000_000, 1_200_000, 500_000, 200_000],
     usOpenCup: null,
     usOpenCupQualifiers: null,
+    playersOnLoan: [],
   });
 }
