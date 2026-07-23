@@ -4406,10 +4406,26 @@ const RIVALRIES = [
   ["LA Galaxy", "Los Angeles FC"], // El Tráfico
   ["New York City FC", "New York Red Bulls"], // Hudson River Derby
   ["Real Salt Lake", "Colorado Rapids"], // Rocky Mountain Cup
-  ["FC Dallas", "Houston Dynamo FC"], // Texas Derby
   ["Toronto FC", "CF Montréal"], // Canadian Classique
-  ["Chicago Fire FC", "Sporting Kansas City"], // Brimstone Cup
   ["Louisville City FC", "Indy Eleven"], // I-64 Derby
+  // Texas Triangle / Copa Tejas — three-way rivalry between all of MLS's Texas clubs
+  ["FC Dallas", "Houston Dynamo FC"], // the original Texas Derby within the triangle
+  ["FC Dallas", "Austin FC"],
+  ["Houston Dynamo FC", "Austin FC"],
+  // Corrected — this was previously mislabeled with the wrong two clubs.
+  // The real Brimstone Cup is FC Dallas vs Chicago Fire FC, contested
+  // since 2001.
+  ["FC Dallas", "Chicago Fire FC"], // Brimstone Cup
+  ["FC Dallas", "Columbus Crew"], // Lamar Hunt Pioneer Cup
+  ["New York Red Bulls", "D.C. United"], // Atlantic Cup
+  ["LA Galaxy", "San Jose Earthquakes"], // California Clásico
+  ["Columbus Crew", "FC Cincinnati"], // Hell Is Real derby
+  ["Seattle Sounders FC", "San Jose Earthquakes"], // Heritage Cup
+  ["Sporting Kansas City", "St. Louis City SC"], // Midwest expansion-era rivalry
+  ["D.C. United", "New England Revolution"],
+  ["D.C. United", "Philadelphia Union"],
+  ["Inter Miami CF", "Orlando City SC"], // Florida Derby
+  ["CF Montréal", "Vancouver Whitecaps FC"], // cross-country, rooted in pre-MLS Canadian competitions
 ];
 const RIVALRY_PAIRS = new Set(RIVALRIES.map(([a, b]) => [a, b].sort().join("|")));
 function isRivalryMatch(nameA, nameB) {
