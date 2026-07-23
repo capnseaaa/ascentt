@@ -515,9 +515,9 @@ function computeHints(club, matchday, seenOneTimeHints, recentForm) {
   }
 
   const lineRatings = clubLineRatings(club);
-  if (lineRatings.def > 0 && lineRatings.def < 2.5) push("thin-def", "Your defense is thin (under 2.5 stars) — worth a look at the transfer market.");
-  if (lineRatings.mid > 0 && lineRatings.mid < 2.5) push("thin-mid", "Your midfield is under 2.5 stars — a signing there could lift the whole team.");
-  if (lineRatings.att > 0 && lineRatings.att < 2.5) push("thin-att", "Your attack is under 2.5 stars — you may be short of goals.");
+  if (lineRatings.def > 0 && lineRatings.def < 2.5) push("thin-def", "Your defense is thin (under 2.5 stars) — check the Market's ★ Recommended tab for a defender.");
+  if (lineRatings.mid > 0 && lineRatings.mid < 2.5) push("thin-mid", "Your midfield is under 2.5 stars — check the Market's ★ Recommended tab, a signing there could lift the whole team.");
+  if (lineRatings.att > 0 && lineRatings.att < 2.5) push("thin-att", "Your attack is under 2.5 stars — check the Market's ★ Recommended tab, you may be short of goals.");
 
   const expiring = club.squad.filter((p) => p.contractYearsLeft <= 1);
   if (expiring.length > 0) {
@@ -551,7 +551,7 @@ function computeHints(club, matchday, seenOneTimeHints, recentForm) {
   // player with a next step rather than just "everything's fine."
   const weakest = ["def", "mid", "att"].reduce((a, b) => (lineRatings[a] <= lineRatings[b] ? a : b));
   const weakestLabel = { def: "defense", mid: "midfield", att: "attack" }[weakest];
-  push("weakest-line", `Your ${weakestLabel} is your weakest line (${lineRatings[weakest]}★) — the Market tab is worth a scan even if nothing's urgent there.`);
+  push("weakest-line", `Your ${weakestLabel} is your weakest line (${lineRatings[weakest]}★) — the Market's ★ Recommended tab is worth a scan even if nothing's urgent there.`);
 
   if (club.tactics.lineupMode === "best") {
     pushOnce("lineup-mode-tip", "You're on Best XI — switching to Auto occasionally keeps players fresher, or try Youth to develop your prospects faster.");
@@ -808,13 +808,23 @@ function unavailableReason(p, matchday) {
   return null;
 }
 
-// Best XI = pure rating. Youth = prioritizes youngest players (weaker on
-// paper, but they get the caps/growth), tie-broken by rating. Auto = rating
-// with a fitness nudge, so tired starters naturally rotate for fresher legs
-// rather than always fielding the same XI regardless of fatigue.
+// Best XI = your most talented available players, full stop — fitness and
+// morale still affect how well they PERFORM once selected (via
+// effectiveRating during match simulation), but shouldn't reorder who gets
+// picked in the first place. Previously this used effectiveRating for
+// selection too, so a much lower-overall but fully-fit player could
+// outrank a genuine star who was merely tired — "Best XI" wasn't
+// actually picking your best players. A small penalty only kicks in once
+// fitness gets genuinely risky (below 40), as a fatigue-injury safety
+// margin, not a ranking swing. Youth prioritizes youngest players (weaker
+// on paper, but they get the caps/growth), tie-broken by rating. Auto is
+// rating with a fitness nudge, so tired starters naturally rotate for
+// fresher legs rather than always fielding the same XI regardless of
+// fatigue.
 function lineupScore(mode, p) {
   if (mode === "youth") return -p.age * 1000 + effectiveRating(p);
   if (mode === "auto") return effectiveRating(p) + p.fitness * 0.15;
+  if (mode === "best") return p.overall - (p.fitness < 40 ? (40 - p.fitness) * 0.5 : 0);
   return effectiveRating(p);
 }
 
@@ -1506,6 +1516,28 @@ function playNextUsOpenCupRound(progress, tiers, qualifiers) {
     };
   }
   return { rounds, giantKillerBonuses, pool: result.advancing, done: false, champion: null, runnerUp: null };
+}
+
+// Resolves exactly one cup round in place against a live `next` draft:
+// updates next.usOpenCup and pays out prize money the moment it's earned.
+// Returns the newly-played round (for recap purposes). Shared by the
+// manual "Play This Round" button and the bulk Sim Season / Sim to
+// Window auto-resolution.
+function resolveCupRoundInPlace(next) {
+  const progress = playNextUsOpenCupRound(next.usOpenCup, next.tiers, next.usOpenCupQualifiers);
+  const allClubs = next.tiers.flatMap((t) => t.clubs);
+  const payOut = (clubId, amount) => {
+    const c = allClubs.find((cl) => cl.id === clubId);
+    if (c) c.budget += amount;
+  };
+  const newRound = progress.rounds[progress.rounds.length - 1];
+  newRound.matches.forEach((m) => { if (m.isUpset) payOut(m.winnerEntrant.club.id, US_OPEN_CUP_GIANT_KILLER_BONUS); });
+  if (progress.done) {
+    payOut(progress.champion.club.id, US_OPEN_CUP_CHAMPION_PRIZE);
+    payOut(progress.runnerUp.club.id, US_OPEN_CUP_RUNNERUP_PRIZE);
+  }
+  next.usOpenCup = progress;
+  return newRound;
 }
 
 /* ============================================================
@@ -2348,13 +2380,13 @@ function RolloverModal({ events, userClubId, seasonNumber, windowResult, userPri
           };
           return (
             <>
+              {cupWinner("US Open Cup Winner", usOpenCup?.done ? usOpenCup : null)}
               {shieldOrChamp(0, "Supporters' Shield")}
               {cupWinner("MLS Cup Winner", mlsPlayoffResult)}
               {shieldOrChamp(1, "Players' Shield")}
               {cupWinner("USL Cup Winner", uslcPlayoffResult)}
               {shieldOrChamp(2, `${TIER_META[2].name} Champion`)}
               {shieldOrChamp(3, `${TIER_META[3].name} Champion`)}
-              {cupWinner("US Open Cup Winner", usOpenCup?.done ? usOpenCup : null)}
             </>
           );
         })()}
@@ -2683,7 +2715,7 @@ function SquadTab({ club, matchday, onToggleList, onRenew, onSetCaptain, tierId,
 // reason. This is what answers "how do I set my team up" instead of
 // leaving formation/style as unlabeled buttons with no connection to who's
 // actually on the roster.
-function suggestTactics(club) {
+function suggestTactics(club, oppRatings) {
   const lineRatings = clubLineRatings(club);
   const lines = [["def", lineRatings.def], ["mid", lineRatings.mid], ["att", lineRatings.att]];
   const strongest = lines.reduce((a, b) => (b[1] > a[1] ? b : a));
@@ -2699,22 +2731,39 @@ function suggestTactics(club) {
   const avgPace = outfield.length ? outfield.reduce((s, p) => s + p.pace, 0) / outfield.length : 50;
   const avgPhysical = outfield.length ? outfield.reduce((s, p) => s + p.physical, 0) / outfield.length : 50;
 
+  // Opponent-aware override: when the next opponent is scouted and the
+  // gap is clear-cut, THIS takes priority over generic squad-personnel
+  // logic — this is what makes the suggestion actually respond to who
+  // you're about to play, not just describe your own roster back to you.
   let style, press, styleReason;
-  if (attMinusDef >= 1 || avgPace >= 66) {
-    style = "attacking"; press = avgPace >= 68 ? "high" : "medium";
-    styleReason = avgPace >= 66 ? `your squad's average pace (${Math.round(avgPace)}) supports an attacking, high-tempo approach` : formationReason;
-  } else if (attMinusDef <= -1 || avgPhysical >= 66) {
-    style = "defensive"; press = "low";
-    styleReason = avgPhysical >= 66 ? `your squad is built physical (avg ${Math.round(avgPhysical)}) — sitting in and staying solid suits that` : formationReason;
-  } else {
-    style = "balanced"; press = "medium";
-    styleReason = "nothing about your squad strongly favors one extreme, so a balanced approach is the safer bet";
+  if (oppRatings) {
+    const attEdge = lineRatings.att - oppRatings.def;
+    const defEdge = oppRatings.att - lineRatings.def;
+    if (defEdge >= 1 && defEdge >= attEdge) {
+      style = "defensive"; press = "low";
+      styleReason = `their attack (${oppRatings.att}★) threatens your defense (${lineRatings.def}★) — sit in and stay solid against them`;
+    } else if (attEdge >= 1) {
+      style = "attacking"; press = avgPace >= 64 ? "high" : "medium";
+      styleReason = `your attack (${lineRatings.att}★) should trouble their defense (${oppRatings.def}★) — press the advantage`;
+    }
+  }
+  if (!style) {
+    if (attMinusDef >= 1 || avgPace >= 66) {
+      style = "attacking"; press = avgPace >= 68 ? "high" : "medium";
+      styleReason = avgPace >= 66 ? `your squad's average pace (${Math.round(avgPace)}) supports an attacking, high-tempo approach` : formationReason;
+    } else if (attMinusDef <= -1 || avgPhysical >= 66) {
+      style = "defensive"; press = "low";
+      styleReason = avgPhysical >= 66 ? `your squad is built physical (avg ${Math.round(avgPhysical)}) — sitting in and staying solid suits that` : formationReason;
+    } else {
+      style = "balanced"; press = "medium";
+      styleReason = "nothing about your squad strongly favors one extreme, so a balanced approach is the safer bet";
+    }
   }
 
   return { formation, style, press, reason: `${formationReason[0].toUpperCase()}${formationReason.slice(1)} — ${styleReason === formationReason ? "which also points to" : "and"} ${style}, ${press} press.` };
 }
 
-function TacticsTab({ club, matchday, onChange }) {
+function TacticsTab({ club, matchday, onChange, tier }) {
   const formations = ["4-4-2", "4-3-3", "3-5-2", "5-3-2", "4-2-3-1"];
   const posOrder = { GK: 0, DEF: 1, MID: 2, FWD: 3 };
   const projected = [...startingXI(club, matchday)].sort((a, b) => posOrder[a.position] - posOrder[b.position]);
@@ -2741,7 +2790,17 @@ function TacticsTab({ club, matchday, onChange }) {
       </div>
     </div>
   );
-  const suggestion = suggestTactics(club);
+  let nextOppRatings = null;
+  if (tier) {
+    const userFixtures = tier.fixtures.filter((f) => f.homeClubId === club.id || f.awayClubId === club.id);
+    const nextFixture = userFixtures.find((f) => !f.played);
+    if (nextFixture) {
+      const oppId = nextFixture.homeClubId === club.id ? nextFixture.awayClubId : nextFixture.homeClubId;
+      const opponent = tier.clubs.find((c) => c.id === oppId);
+      if (opponent) nextOppRatings = clubLineRatings(opponent);
+    }
+  }
+  const suggestion = suggestTactics(club, nextOppRatings);
   const matchesSuggestion = club.tactics.formation === suggestion.formation && club.tactics.style === suggestion.style && club.tactics.press === suggestion.press;
   const applySuggestion = () => {
     onChange("formation", suggestion.formation);
@@ -2971,7 +3030,7 @@ function UsOpenCupTab({ usOpenCup, pendingRoundIndex, onPlayRound, userClubId })
           </div>
         ) : null;
       })()}
-      {hasStarted && usOpenCup.rounds.map((round, ri) => (
+      {hasStarted && [...usOpenCup.rounds].reverse().map((round, ri) => (
         <div key={ri} style={{ marginBottom: 16 }}>
           <div style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase", marginBottom: 6 }}>{round.label}</div>
           {round.matches.map((m, mi) => <CupMatchLine key={mi} match={m} userClubId={userClubId} />)}
@@ -3199,16 +3258,27 @@ function FixturesTab({ tier, userClubId }) {
     const oppRow = table.find((r) => r.clubId === opponentId);
     const oppForm = oppRow ? oppRow.form.slice(-5) : [];
     const diffs = [
-      ["their attack vs your defense", oppRatings.att - myRatings.def, "attack", "defense"],
-      ["their defense vs your attack", myRatings.att - oppRatings.def, "attack", "defense"],
+      ["their attack vs your defense", oppRatings.att - myRatings.def],
+      ["their defense vs your attack", myRatings.att - oppRatings.def],
+      ["midfield battle", myRatings.mid - oppRatings.mid],
     ];
     const biggestEdge = diffs.reduce((a, b) => (Math.abs(b[1]) > Math.abs(a[1]) ? b : a));
-    let tip = "This looks like an even matchup — a balanced approach is reasonable.";
-    if (biggestEdge[0] === "their attack vs your defense" && biggestEdge[1] >= 1) {
+    const oppLosses = oppForm.filter((r) => r === "L").length;
+    const oppWins = oppForm.filter((r) => r === "W").length;
+    let tip;
+    if (Math.abs(biggestEdge[1]) < 1) {
+      tip = "This looks like an even matchup on paper — a balanced approach is reasonable.";
+    } else if (biggestEdge[0] === "their attack vs your defense") {
       tip = `Their attack (${oppRatings.att}★) is notably stronger than your defense (${myRatings.def}★) — consider a more defensive setup.`;
-    } else if (biggestEdge[0] === "their defense vs your attack" && biggestEdge[1] >= 1) {
+    } else if (biggestEdge[0] === "their defense vs your attack") {
       tip = `Your attack (${myRatings.att}★) is notably stronger than their defense (${oppRatings.def}★) — an attacking approach could pay off.`;
+    } else if (biggestEdge[1] > 0) {
+      tip = `You have the edge in midfield (${myRatings.mid}★ vs ${oppRatings.mid}★) — control the game through the middle and let your other lines follow.`;
+    } else {
+      tip = `They control the midfield battle (${oppRatings.mid}★ vs your ${myRatings.mid}★) — a more direct approach may bypass it better than trying to out-possess them.`;
     }
+    if (oppForm.length >= 3 && oppLosses >= 3) tip += ` They're out of form lately (${oppForm.join("")}) — a good time to be aggressive.`;
+    else if (oppForm.length >= 3 && oppWins >= 4) tip += ` They're red-hot right now (${oppForm.join("")}) — don't take them lightly.`;
     scouting = { opponent, oppRatings, oppForm, tip };
   }
 
@@ -3259,12 +3329,23 @@ const MARKET_PAGE_SIZE = 20;
 // how much of an upgrade they'd actually be over the incumbents, age fit,
 // and whether the club can really afford them (price up front, and wage
 // room if wages are tracked). Higher score = better recommendation.
-function computeRecommendationScore(player, userClub, difficulty) {
+function computeRecommendationScore(player, userClub, difficulty, tierIdx) {
   const squadAtPos = userClub.squad.filter((p) => p.position === player.position);
   const avgAtPos = squadAtPos.length ? squadAtPos.reduce((s, p) => s + p.overall, 0) / squadAtPos.length : 0;
   const bestAtPos = squadAtPos.length ? Math.max(...squadAtPos.map((p) => p.overall)) : 0;
   const depthCount = squadAtPos.length;
   const expiringCount = squadAtPos.filter((p) => p.contractYearsLeft <= 1).length;
+
+  // Hard quality floor: extreme "need" (a razor-thin or weak position)
+  // could previously push a genuinely bad player's score positive purely
+  // off desperation, even for an MLS club — a 35-45 overall signing is
+  // never actually a recommendation regardless of how thin the position
+  // is. Two independent floors: never far below what's normal for the
+  // club's own tier, and never a clear downgrade from what's already
+  // rostered there (unless the position is empty, a true emergency).
+  const tierFloor = TIER_META[tierIdx].baseRating - 15;
+  if (player.overall < tierFloor) return -Infinity;
+  if (depthCount > 0 && player.overall < avgAtPos - 10) return -Infinity;
 
   // Need: a weak, thin, or soon-to-be-depleted position group is a bigger
   // priority than topping up a position that's already deep and strong.
@@ -3303,23 +3384,40 @@ function computeRecommendationScore(player, userClub, difficulty) {
   return needScore + upgradeScore + ageScore + financeScore;
 }
 
-function recommendationReason(player, userClub) {
+function recommendationReason(player, userClub, xi) {
   const squadAtPos = userClub.squad.filter((p) => p.position === player.position);
   const bestAtPos = squadAtPos.length ? Math.max(...squadAtPos.map((p) => p.overall)) : 0;
   const depthCount = squadAtPos.length;
   const upgrade = player.overall - bestAtPos;
   const reasons = [];
-  if (depthCount <= 2) reasons.push(`thin at ${player.position} (${depthCount} on roster)`);
-  if (upgrade > 5) reasons.push(`+${upgrade} OVR upgrade`);
-  else if (upgrade > 0) reasons.push("modest upgrade");
+  if (depthCount === 0) reasons.push(`no ${player.position} on your roster right now`);
+  else if (depthCount <= 2) reasons.push(`thin at ${player.position} (${depthCount} on roster)`);
+
+  // Prioritize naming an actual STARTER this would replace — that's a far
+  // more actionable, concrete signal than just "your weakest bench player
+  // at this position," which might not even be someone you're playing.
+  const startersAtPos = (xi || []).filter((p) => p.position === player.position);
+  const weakestStarter = startersAtPos.length ? [...startersAtPos].sort((a, b) => a.overall - b.overall)[0] : null;
+  const weakestAtPos = squadAtPos.length ? [...squadAtPos].sort((a, b) => a.overall - b.overall)[0] : null;
+
+  if (weakestStarter && player.overall > weakestStarter.overall + 3) {
+    reasons.push(`would replace ${weakestStarter.name} in your starting XI (${weakestStarter.overall} OVR)`);
+  } else if (weakestAtPos && player.overall > weakestAtPos.overall + 3) {
+    reasons.push(`would replace ${weakestAtPos.name} (${weakestAtPos.overall} OVR)`);
+  } else if (upgrade > 5) {
+    reasons.push(`+${upgrade} OVR upgrade`);
+  } else if (upgrade > 0) {
+    reasons.push("modest upgrade");
+  }
   if (player.age <= 23) reasons.push(`age ${player.age}, room to grow`);
   return reasons.length ? reasons.join(" · ") : "solid depth option";
 }
 
-function MarketTab({ tiers, userClub, userTierId, onBuy, difficulty }) {
+function MarketTab({ tiers, userClub, userTierId, onBuy, difficulty, matchday }) {
   const [sortField, setSortField] = useState("overall");
   const [sortDir, setSortDir] = useState("desc");
   const [page, setPage] = useState(0);
+  const xi = startingXI(userClub, matchday ?? 1);
 
   const listed = [];
   tiers.forEach((t) => {
@@ -3334,7 +3432,7 @@ function MarketTab({ tiers, userClub, userTierId, onBuy, difficulty }) {
   const isRecommended = sortField === "recommended";
   let recommendedList = [];
   if (isRecommended) {
-    listed.forEach((entry) => { entry.score = computeRecommendationScore(entry.player, userClub, difficulty); });
+    listed.forEach((entry) => { entry.score = computeRecommendationScore(entry.player, userClub, difficulty, userTierId); });
     const affordable = listed.filter((e) => e.score > -Infinity);
     affordable.sort((a, b) => b.score - a.score);
     // Cap per-position so the list reads as "a couple good options in each
@@ -3425,7 +3523,7 @@ function MarketTab({ tiers, userClub, userTierId, onBuy, difficulty }) {
               </div>
               <div style={{ fontSize: 12, color: PALETTE.inkSoft }}>from {seller.name}</div>
               {isRecommended && (
-                <div style={{ fontSize: 11.5, color: PALETTE.gold, marginTop: 2 }}>★ {recommendationReason(player, userClub)}</div>
+                <div style={{ fontSize: 11.5, color: PALETTE.gold, marginTop: 2 }}>★ {recommendationReason(player, userClub, xi)}</div>
               )}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -3772,25 +3870,25 @@ function HintButton({ club, matchday, tier, managerHistory, setManagerHistory })
   const hints = computeHints(club, matchday, seenOneTimeHints, recentForm);
   const urgentCount = hints[0]?.id === "all-clear" ? 0 : hints.length;
 
-  const handleOpen = () => {
-    setOpen((v) => {
-      const nowOpen = !v;
-      if (nowOpen) {
-        // Mark every one-time hint currently showing as seen, so
-        // educational tips (academy investing, lineup mode, etc.) don't
-        // keep repeating once the player's already seen them — recurring,
-        // actionable hints (contracts, thin lines, prospects ready) aren't
-        // affected and keep coming back as long as they're still true.
-        const newOneTimeIds = hints.filter((h) => h.oneTime).map((h) => h.id);
-        if (newOneTimeIds.length > 0 && setManagerHistory) {
-          setManagerHistory((prev) => ({
-            ...prev,
-            seenOneTimeHints: Array.from(new Set([...(prev.seenOneTimeHints || []), ...newOneTimeIds])),
-          }));
-        }
-      }
-      return nowOpen;
-    });
+  // Mark one-time hints as seen only when the panel CLOSES, not when it
+  // opens — marking on open caused the very hints being shown to vanish
+  // instantly (computeHints re-runs on the state update and excludes
+  // them), so a one-time hint was never actually readable. Recurring,
+  // actionable hints (contracts, thin lines, prospects ready) aren't
+  // affected and keep coming back as long as they're still true.
+  const closeAndMarkSeen = () => {
+    const oneTimeIds = hints.filter((h) => h.oneTime).map((h) => h.id);
+    if (oneTimeIds.length > 0 && setManagerHistory) {
+      setManagerHistory((prev) => ({
+        ...prev,
+        seenOneTimeHints: Array.from(new Set([...(prev.seenOneTimeHints || []), ...oneTimeIds])),
+      }));
+    }
+    setOpen(false);
+  };
+  const handleToggle = () => {
+    if (open) closeAndMarkSeen();
+    else setOpen(true);
   };
 
   return (
@@ -3803,7 +3901,7 @@ function HintButton({ club, matchday, tier, managerHistory, setManagerHistory })
         }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
             <span style={{ ...display, fontSize: 13, textTransform: "uppercase", letterSpacing: "0.06em", color: PALETTE.inkSoft }}>Hints</span>
-            <button onClick={() => setOpen(false)} style={{ background: "none", border: "none", cursor: "pointer" }}>
+            <button onClick={closeAndMarkSeen} style={{ background: "none", border: "none", cursor: "pointer" }}>
               <X size={16} color={PALETTE.inkSoft} />
             </button>
           </div>
@@ -3815,7 +3913,7 @@ function HintButton({ club, matchday, tier, managerHistory, setManagerHistory })
         </div>
       )}
       <button
-        onClick={handleOpen}
+        onClick={handleToggle}
         style={{
           width: 52, height: 52, borderRadius: "50%", border: "none", cursor: "pointer",
           background: PALETTE.gold, color: PALETTE.ink, display: "flex", alignItems: "center", justifyContent: "center",
@@ -4182,9 +4280,15 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
     mutateAndSave((next) => {
       let md = getCurrentMatchday(next);
       let lastNotice = null;
-      let stoppedForCup = false;
+      let lastUserCupMatch = null;
       while (md !== null) {
-        if (isCupCheckpointPending(next, md)) { stoppedForCup = true; break; }
+        if (isCupCheckpointPending(next, md)) {
+          const newRound = resolveCupRoundInPlace(next);
+          const match = findUserCupMatch(newRound);
+          if (match) lastUserCupMatch = { roundLabel: newRound.label, match };
+          md = getCurrentMatchday(next);
+          continue;
+        }
         const { disqualificationNotice } = simulateMatchdayAcrossTiers(next, md);
         if (disqualificationNotice) lastNotice = disqualificationNotice;
         maybeTriggerMidWindow(next, md);
@@ -4194,11 +4298,10 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
         setInfoNotice(lastNotice.resolved
           ? `${lastNotice.clubName} is back above the minimum squad size at some point this run — disqualification lifted.`
           : `${lastNotice.clubName} dropped below the ${MIN_SQUAD_SIZE}-player minimum during this run — you're disqualified from competing until you sign back up to strength. Emergency funding of $${lastNotice.funding.toLocaleString()} has been added to your budget to help.`);
-      } else if (stoppedForCup) {
-        setInfoNotice("US Open Cup fixtures are up this week — head to the Open Cup tab to play them before the season continues.");
+      } else if (lastUserCupMatch) {
+        setCupRecap(lastUserCupMatch);
       }
     });
-    if (pendingCupRoundIndex !== null || US_OPEN_CUP_ROUND_MATCHDAYS.includes(currentMatchday)) setTab("opencup");
   };
 
   const simulateToNextWindow = () => {
@@ -4208,22 +4311,28 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
       let md = getCurrentMatchday(next);
       let fired = null;
       let lastNotice = null;
-      let stoppedForCup = false;
+      let lastUserCupMatch = null;
       while (md !== null) {
-        if (isCupCheckpointPending(next, md)) { stoppedForCup = true; break; }
+        if (isCupCheckpointPending(next, md)) {
+          const newRound = resolveCupRoundInPlace(next);
+          const match = findUserCupMatch(newRound);
+          if (match) lastUserCupMatch = { roundLabel: newRound.label, match };
+          md = getCurrentMatchday(next);
+          continue;
+        }
         const { disqualificationNotice } = simulateMatchdayAcrossTiers(next, md);
         if (disqualificationNotice) lastNotice = disqualificationNotice;
         fired = maybeTriggerMidWindow(next, md);
         md = getCurrentMatchday(next);
         if (fired) break;
       }
-      if (!stoppedForCup) setWindowNotice(fired ? fired : { seasonEnded: true });
+      setWindowNotice(fired ? fired : { seasonEnded: true });
       if (lastNotice) {
         setInfoNotice(lastNotice.resolved
           ? `${lastNotice.clubName} is back above the minimum squad size — disqualification lifted.`
           : `${lastNotice.clubName} dropped below the ${MIN_SQUAD_SIZE}-player minimum — you're disqualified from competing until you sign back up to strength. Emergency funding of $${lastNotice.funding.toLocaleString()} has been added to your budget to help.`);
-      } else if (stoppedForCup) {
-        setInfoNotice("US Open Cup fixtures are up this week — head to the Open Cup tab to play them before the season continues.");
+      } else if (lastUserCupMatch) {
+        setCupRecap(lastUserCupMatch);
       }
     });
   };
@@ -4256,21 +4365,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
 
   const handlePlayCupRound = () => {
     mutateAndSave((next) => {
-      const progress = playNextUsOpenCupRound(next.usOpenCup, next.tiers, next.usOpenCupQualifiers);
-      // Prize money lands the moment it's earned, not saved up for the
-      // end of the season.
-      const allClubs = next.tiers.flatMap((t) => t.clubs);
-      const payOut = (clubId, amount) => {
-        const c = allClubs.find((cl) => cl.id === clubId);
-        if (c) c.budget += amount;
-      };
-      const newRound = progress.rounds[progress.rounds.length - 1];
-      newRound.matches.forEach((m) => { if (m.isUpset) payOut(m.winnerEntrant.club.id, US_OPEN_CUP_GIANT_KILLER_BONUS); });
-      if (progress.done) {
-        payOut(progress.champion.club.id, US_OPEN_CUP_CHAMPION_PRIZE);
-        payOut(progress.runnerUp.club.id, US_OPEN_CUP_RUNNERUP_PRIZE);
-      }
-      next.usOpenCup = progress;
+      const newRound = resolveCupRoundInPlace(next);
       const match = findUserCupMatch(newRound);
       if (match) setCupRecap({ roundLabel: newRound.label, match });
     });
@@ -4789,10 +4884,10 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
 
       <div style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
         {tab === "squad" && <SquadTab club={userClub} matchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)} onToggleList={handleToggleList} onRenew={handleRenew} onSetCaptain={handleSetCaptain} tierId={state.userTierId} difficulty={state.difficulty} onToggleDP={handleToggleDP} />}
-        {tab === "tactics" && <TacticsTab club={userClub} matchday={currentMatchday ?? 1} onChange={handleTacticsChange} />}
+        {tab === "tactics" && <TacticsTab club={userClub} matchday={currentMatchday ?? 1} onChange={handleTacticsChange} tier={tier} />}
         {tab === "table" && <TableTab tier={tier} userClubId={userClub.id} seasonPlayoffs={seasonPlayoffs} revealedRounds={revealedRounds} onSimRound={handleSimRound} onSimRest={handleSimRestOfPostseason} />}
         {tab === "fixtures" && <FixturesTab tier={tier} userClubId={userClub.id} />}
-        {tab === "market" && <MarketTab tiers={state.tiers} userClub={userClub} userTierId={state.userTierId} onBuy={handleBuy} difficulty={state.difficulty} />}
+        {tab === "market" && <MarketTab tiers={state.tiers} userClub={userClub} userTierId={state.userTierId} onBuy={handleBuy} difficulty={state.difficulty} matchday={currentMatchday ?? 1} />}
         {tab === "development" && (
           <DevelopmentTab
             club={userClub}
