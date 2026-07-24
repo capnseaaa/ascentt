@@ -258,6 +258,22 @@ function generateFictionalSquad(baseRating, spread = 8, usedNames) {
   return layout.map((pos) => makePlayer(pos, baseRating + randInt(-spread, spread), usedNames));
 }
 
+// ============================================================
+// ENGLAND (IN PROGRESS) — not yet wired into the country selector.
+// Real 2026-27 Premier League club list confirmed via research:
+// promoted Coventry City / Ipswich Town / Hull City replacing
+// relegated West Ham United / Burnley / Wolverhampton Wanderers.
+// PREMIER_LEAGUE_CLUBS is the full 20-club name list; ENGLAND_ROSTERS
+// currently has real, researched 2025-26 rosters for 6 of those clubs
+// (the rest still need the same research pass MLS/these six got).
+// Ratings are calibrated against real FIFA/EA FC-style overalls, NOT
+// rescaled to MLS's numeric range — the Premier League is a genuinely
+// stronger league than MLS, so its numbers run higher on purpose.
+// ============================================================
+const PREMIER_LEAGUE_CLUBS = ["Arsenal", "Aston Villa", "Bournemouth", "Brentford", "Brighton & Hove Albion", "Chelsea", "Crystal Palace", "Everton", "Fulham", "Leeds United", "Liverpool", "Manchester City", "Manchester United", "Newcastle United", "Nottingham Forest", "Sunderland", "Tottenham Hotspur", "Coventry City", "Ipswich Town", "Hull City"];
+
+const ENGLAND_ROSTERS = {"arsenal": {"name": "Arsenal", "players": [{"name": "David Raya", "position": "GK", "age": 30, "overall": 86, "potential": 86, "pace": 66, "shooting": 45, "passing": 72, "defense": 60, "physical": 80}, {"name": "Kepa Arrizabalaga", "position": "GK", "age": 31, "overall": 79, "potential": 79, "pace": 64, "shooting": 44, "passing": 68, "defense": 55, "physical": 78}, {"name": "William Saliba", "position": "DEF", "age": 24, "overall": 87, "potential": 89, "pace": 68, "shooting": 42, "passing": 68, "defense": 86, "physical": 84}, {"name": "Gabriel Magalhaes", "position": "DEF", "age": 27, "overall": 85, "potential": 85, "pace": 62, "shooting": 48, "passing": 64, "defense": 85, "physical": 83}, {"name": "Cristhian Mosquera", "position": "DEF", "age": 21, "overall": 76, "potential": 83, "pace": 70, "shooting": 38, "passing": 62, "defense": 75, "physical": 74}, {"name": "Jurrien Timber", "position": "DEF", "age": 24, "overall": 83, "potential": 86, "pace": 79, "shooting": 52, "passing": 72, "defense": 80, "physical": 73}, {"name": "Oleksandr Zinchenko", "position": "DEF", "age": 28, "overall": 80, "potential": 80, "pace": 68, "shooting": 48, "passing": 80, "defense": 68, "physical": 60}, {"name": "Takehiro Tomiyasu", "position": "DEF", "age": 26, "overall": 79, "potential": 80, "pace": 66, "shooting": 42, "passing": 68, "defense": 76, "physical": 75}, {"name": "Martin Zubimendi", "position": "MID", "age": 26, "overall": 84, "potential": 86, "pace": 62, "shooting": 58, "passing": 84, "defense": 78, "physical": 68}, {"name": "Christian Norgaard", "position": "MID", "age": 31, "overall": 78, "potential": 78, "pace": 54, "shooting": 52, "passing": 73, "defense": 75, "physical": 78}, {"name": "Viktor Gyokeres", "position": "FWD", "age": 27, "overall": 84, "potential": 86, "pace": 80, "shooting": 86, "passing": 66, "defense": 42, "physical": 84}, {"name": "Noni Madueke", "position": "FWD", "age": 23, "overall": 80, "potential": 85, "pace": 86, "shooting": 74, "passing": 68, "defense": 38, "physical": 66}]}, "manchester_city": {"name": "Manchester City", "players": [{"name": "Gianluigi Donnarumma", "position": "GK", "age": 26, "overall": 89, "potential": 90, "pace": 58, "shooting": 42, "passing": 76, "defense": 58, "physical": 84}, {"name": "James Trafford", "position": "GK", "age": 23, "overall": 78, "potential": 84, "pace": 60, "shooting": 44, "passing": 70, "defense": 52, "physical": 76}, {"name": "Ruben Dias", "position": "DEF", "age": 28, "overall": 87, "potential": 88, "pace": 60, "shooting": 44, "passing": 66, "defense": 88, "physical": 84}, {"name": "Josko Gvardiol", "position": "DEF", "age": 23, "overall": 86, "potential": 90, "pace": 72, "shooting": 54, "passing": 74, "defense": 84, "physical": 81}, {"name": "Marc Guehi", "position": "DEF", "age": 25, "overall": 82, "potential": 86, "pace": 64, "shooting": 42, "passing": 64, "defense": 80, "physical": 76}, {"name": "Rayan Ait-Nouri", "position": "DEF", "age": 24, "overall": 81, "potential": 85, "pace": 82, "shooting": 58, "passing": 72, "defense": 74, "physical": 68}, {"name": "Nathan Ake", "position": "DEF", "age": 30, "overall": 80, "potential": 80, "pace": 64, "shooting": 44, "passing": 68, "defense": 78, "physical": 78}, {"name": "Abdukodir Khusanov", "position": "DEF", "age": 21, "overall": 76, "potential": 83, "pace": 74, "shooting": 38, "passing": 58, "defense": 74, "physical": 72}, {"name": "Rodri", "position": "MID", "age": 29, "overall": 91, "potential": 91, "pace": 58, "shooting": 73, "passing": 88, "defense": 86, "physical": 82}, {"name": "Bernardo Silva", "position": "MID", "age": 31, "overall": 87, "potential": 87, "pace": 74, "shooting": 74, "passing": 86, "defense": 64, "physical": 58}, {"name": "Tijjani Reijnders", "position": "MID", "age": 27, "overall": 84, "potential": 86, "pace": 72, "shooting": 72, "passing": 80, "defense": 68, "physical": 74}, {"name": "Rayan Cherki", "position": "MID", "age": 22, "overall": 82, "potential": 88, "pace": 68, "shooting": 72, "passing": 82, "defense": 42, "physical": 52}, {"name": "Phil Foden", "position": "MID", "age": 25, "overall": 87, "potential": 90, "pace": 78, "shooting": 80, "passing": 84, "defense": 58, "physical": 62}, {"name": "Matheus Nunes", "position": "MID", "age": 27, "overall": 81, "potential": 83, "pace": 80, "shooting": 66, "passing": 74, "defense": 66, "physical": 72}, {"name": "Erling Haaland", "position": "FWD", "age": 26, "overall": 91, "potential": 92, "pace": 82, "shooting": 92, "passing": 66, "defense": 46, "physical": 90}, {"name": "Jeremy Doku", "position": "FWD", "age": 23, "overall": 85, "potential": 89, "pace": 94, "shooting": 74, "passing": 70, "defense": 36, "physical": 68}, {"name": "Omar Marmoush", "position": "FWD", "age": 26, "overall": 82, "potential": 84, "pace": 84, "shooting": 78, "passing": 68, "defense": 36, "physical": 72}]}, "liverpool": {"name": "Liverpool", "players": [{"name": "Alisson", "position": "GK", "age": 33, "overall": 88, "potential": 88, "pace": 60, "shooting": 44, "passing": 74, "defense": 58, "physical": 80}, {"name": "Giorgi Mamardashvili", "position": "GK", "age": 25, "overall": 82, "potential": 86, "pace": 58, "shooting": 42, "passing": 66, "defense": 52, "physical": 82}, {"name": "Virgil van Dijk", "position": "DEF", "age": 34, "overall": 88, "potential": 88, "pace": 68, "shooting": 58, "passing": 74, "defense": 90, "physical": 86}, {"name": "Ibrahima Konate", "position": "DEF", "age": 26, "overall": 84, "potential": 86, "pace": 78, "shooting": 50, "passing": 64, "defense": 84, "physical": 82}, {"name": "Joe Gomez", "position": "DEF", "age": 28, "overall": 78, "potential": 78, "pace": 72, "shooting": 38, "passing": 62, "defense": 76, "physical": 76}, {"name": "Milos Kerkez", "position": "DEF", "age": 22, "overall": 81, "potential": 86, "pace": 84, "shooting": 54, "passing": 72, "defense": 72, "physical": 68}, {"name": "Conor Bradley", "position": "DEF", "age": 22, "overall": 78, "potential": 84, "pace": 80, "shooting": 52, "passing": 68, "defense": 74, "physical": 66}, {"name": "Jeremie Frimpong", "position": "DEF", "age": 24, "overall": 82, "potential": 86, "pace": 94, "shooting": 66, "passing": 68, "defense": 68, "physical": 64}, {"name": "Andy Robertson", "position": "DEF", "age": 31, "overall": 82, "potential": 82, "pace": 72, "shooting": 52, "passing": 78, "defense": 78, "physical": 72}, {"name": "Florian Wirtz", "position": "MID", "age": 22, "overall": 87, "potential": 92, "pace": 80, "shooting": 78, "passing": 86, "defense": 52, "physical": 58}, {"name": "Dominik Szoboszlai", "position": "MID", "age": 24, "overall": 85, "potential": 87, "pace": 78, "shooting": 78, "passing": 82, "defense": 62, "physical": 72}, {"name": "Alexis Mac Allister", "position": "MID", "age": 26, "overall": 86, "potential": 88, "pace": 68, "shooting": 78, "passing": 86, "defense": 66, "physical": 64}, {"name": "Federico Chiesa", "position": "MID", "age": 27, "overall": 81, "potential": 82, "pace": 80, "shooting": 74, "passing": 68, "defense": 40, "physical": 66}, {"name": "Curtis Jones", "position": "MID", "age": 24, "overall": 80, "potential": 84, "pace": 70, "shooting": 64, "passing": 74, "defense": 58, "physical": 64}, {"name": "Ryan Gravenberch", "position": "MID", "age": 23, "overall": 83, "potential": 87, "pace": 66, "shooting": 58, "passing": 78, "defense": 64, "physical": 76}, {"name": "Wataru Endo", "position": "MID", "age": 32, "overall": 77, "potential": 77, "pace": 56, "shooting": 50, "passing": 68, "defense": 74, "physical": 74}, {"name": "Alexander Isak", "position": "FWD", "age": 26, "overall": 86, "potential": 88, "pace": 78, "shooting": 86, "passing": 68, "defense": 38, "physical": 72}, {"name": "Hugo Ekitike", "position": "FWD", "age": 23, "overall": 81, "potential": 86, "pace": 78, "shooting": 72, "passing": 60, "defense": 32, "physical": 74}, {"name": "Cody Gakpo", "position": "FWD", "age": 26, "overall": 83, "potential": 84, "pace": 74, "shooting": 76, "passing": 74, "defense": 42, "physical": 72}]}, "chelsea": {"name": "Chelsea", "players": [{"name": "Robert Sanchez", "position": "GK", "age": 27, "overall": 81, "potential": 82, "pace": 56, "shooting": 42, "passing": 66, "defense": 44, "physical": 80}, {"name": "Filip Jorgensen", "position": "GK", "age": 23, "overall": 77, "potential": 84, "pace": 56, "shooting": 42, "passing": 62, "defense": 42, "physical": 74}, {"name": "Marc Cucurella", "position": "DEF", "age": 27, "overall": 83, "potential": 84, "pace": 74, "shooting": 58, "passing": 78, "defense": 76, "physical": 68}, {"name": "Tosin Adarabioyo", "position": "DEF", "age": 27, "overall": 78, "potential": 78, "pace": 62, "shooting": 44, "passing": 62, "defense": 78, "physical": 80}, {"name": "Benoit Badiashile", "position": "DEF", "age": 24, "overall": 79, "potential": 84, "pace": 60, "shooting": 42, "passing": 62, "defense": 78, "physical": 74}, {"name": "Levi Colwill", "position": "DEF", "age": 22, "overall": 81, "potential": 88, "pace": 66, "shooting": 42, "passing": 66, "defense": 80, "physical": 74}, {"name": "Trevoh Chalobah", "position": "DEF", "age": 26, "overall": 78, "potential": 80, "pace": 62, "shooting": 46, "passing": 64, "defense": 76, "physical": 76}, {"name": "Reece James", "position": "DEF", "age": 25, "overall": 84, "potential": 88, "pace": 74, "shooting": 68, "passing": 80, "defense": 76, "physical": 72}, {"name": "Malo Gusto", "position": "DEF", "age": 22, "overall": 79, "potential": 84, "pace": 80, "shooting": 52, "passing": 70, "defense": 74, "physical": 68}, {"name": "Enzo Fernandez", "position": "MID", "age": 24, "overall": 86, "potential": 88, "pace": 62, "shooting": 70, "passing": 86, "defense": 72, "physical": 70}, {"name": "Moises Caicedo", "position": "MID", "age": 23, "overall": 86, "potential": 89, "pace": 74, "shooting": 54, "passing": 74, "defense": 84, "physical": 80}, {"name": "Romeo Lavia", "position": "MID", "age": 21, "overall": 79, "potential": 84, "pace": 64, "shooting": 46, "passing": 68, "defense": 78, "physical": 72}, {"name": "Joao Pedro", "position": "FWD", "age": 24, "overall": 82, "potential": 86, "pace": 72, "shooting": 78, "passing": 68, "defense": 38, "physical": 72}, {"name": "Cole Palmer", "position": "MID", "age": 23, "overall": 87, "potential": 91, "pace": 70, "shooting": 84, "passing": 82, "defense": 42, "physical": 62}, {"name": "Nicolas Jackson", "position": "FWD", "age": 24, "overall": 78, "potential": 82, "pace": 84, "shooting": 68, "passing": 58, "defense": 32, "physical": 68}, {"name": "Christopher Nkunku", "position": "FWD", "age": 27, "overall": 81, "potential": 83, "pace": 74, "shooting": 74, "passing": 74, "defense": 44, "physical": 64}, {"name": "Pedro Neto", "position": "FWD", "age": 25, "overall": 82, "potential": 85, "pace": 84, "shooting": 72, "passing": 72, "defense": 38, "physical": 64}, {"name": "Liam Delap", "position": "FWD", "age": 22, "overall": 77, "potential": 84, "pace": 70, "shooting": 72, "passing": 54, "defense": 32, "physical": 80}]}, "manchester_united": {"name": "Manchester United", "players": [{"name": "Senne Lammens", "position": "GK", "age": 23, "overall": 76, "potential": 84, "pace": 54, "shooting": 40, "passing": 62, "defense": 42, "physical": 74}, {"name": "Diogo Dalot", "position": "DEF", "age": 26, "overall": 80, "potential": 82, "pace": 74, "shooting": 54, "passing": 72, "defense": 74, "physical": 70}, {"name": "Luke Shaw", "position": "DEF", "age": 30, "overall": 79, "potential": 79, "pace": 66, "shooting": 50, "passing": 72, "defense": 76, "physical": 68}, {"name": "Harry Maguire", "position": "DEF", "age": 32, "overall": 78, "potential": 78, "pace": 52, "shooting": 44, "passing": 58, "defense": 78, "physical": 82}, {"name": "Leny Yoro", "position": "DEF", "age": 20, "overall": 80, "potential": 88, "pace": 68, "shooting": 40, "passing": 62, "defense": 80, "physical": 74}, {"name": "Lisandro Martinez", "position": "DEF", "age": 27, "overall": 82, "potential": 83, "pace": 62, "shooting": 46, "passing": 66, "defense": 82, "physical": 74}, {"name": "Noussair Mazraoui", "position": "DEF", "age": 27, "overall": 79, "potential": 80, "pace": 74, "shooting": 50, "passing": 68, "defense": 72, "physical": 70}, {"name": "Patrick Dorgu", "position": "DEF", "age": 20, "overall": 76, "potential": 84, "pace": 80, "shooting": 52, "passing": 64, "defense": 68, "physical": 66}, {"name": "Bruno Fernandes", "position": "MID", "age": 31, "overall": 88, "potential": 88, "pace": 66, "shooting": 82, "passing": 86, "defense": 60, "physical": 66}, {"name": "Casemiro", "position": "MID", "age": 33, "overall": 82, "potential": 82, "pace": 50, "shooting": 60, "passing": 72, "defense": 82, "physical": 80}, {"name": "Kobbie Mainoo", "position": "MID", "age": 20, "overall": 80, "potential": 86, "pace": 68, "shooting": 62, "passing": 78, "defense": 66, "physical": 64}, {"name": "Mason Mount", "position": "MID", "age": 26, "overall": 78, "potential": 78, "pace": 66, "shooting": 66, "passing": 74, "defense": 54, "physical": 62}, {"name": "Manuel Ugarte", "position": "MID", "age": 24, "overall": 79, "potential": 82, "pace": 64, "shooting": 42, "passing": 66, "defense": 80, "physical": 76}, {"name": "Bryan Mbeumo", "position": "FWD", "age": 25, "overall": 84, "potential": 86, "pace": 80, "shooting": 78, "passing": 70, "defense": 42, "physical": 68}, {"name": "Matheus Cunha", "position": "FWD", "age": 26, "overall": 82, "potential": 82, "pace": 74, "shooting": 74, "passing": 68, "defense": 40, "physical": 74}, {"name": "Amad Diallo", "position": "FWD", "age": 23, "overall": 79, "potential": 84, "pace": 78, "shooting": 68, "passing": 66, "defense": 38, "physical": 62}, {"name": "Benjamin Sesko", "position": "FWD", "age": 22, "overall": 81, "potential": 86, "pace": 74, "shooting": 76, "passing": 58, "defense": 34, "physical": 80}, {"name": "Joshua Zirkzee", "position": "FWD", "age": 24, "overall": 78, "potential": 80, "pace": 64, "shooting": 68, "passing": 64, "defense": 36, "physical": 76}]}, "tottenham_hotspur": {"name": "Tottenham Hotspur", "players": [{"name": "Guglielmo Vicario", "position": "GK", "age": 28, "overall": 84, "potential": 86, "pace": 60, "shooting": 44, "passing": 74, "defense": 50, "physical": 78}, {"name": "Fraser Forster", "position": "GK", "age": 37, "overall": 74, "potential": 74, "pace": 44, "shooting": 38, "passing": 58, "defense": 40, "physical": 80}, {"name": "Cristian Romero", "position": "DEF", "age": 27, "overall": 85, "potential": 86, "pace": 66, "shooting": 52, "passing": 64, "defense": 86, "physical": 82}, {"name": "Micky van de Ven", "position": "DEF", "age": 24, "overall": 83, "potential": 88, "pace": 90, "shooting": 50, "passing": 66, "defense": 80, "physical": 72}, {"name": "Destiny Udogie", "position": "DEF", "age": 22, "overall": 80, "potential": 86, "pace": 76, "shooting": 52, "passing": 70, "defense": 74, "physical": 68}, {"name": "Pedro Porro", "position": "DEF", "age": 26, "overall": 81, "potential": 83, "pace": 80, "shooting": 64, "passing": 76, "defense": 70, "physical": 70}, {"name": "Richarlison", "position": "FWD", "age": 28, "overall": 79, "potential": 79, "pace": 76, "shooting": 74, "passing": 62, "defense": 44, "physical": 76}, {"name": "Antonin Kinsky", "position": "GK", "age": 22, "overall": 73, "potential": 80, "pace": 58, "shooting": 42, "passing": 64, "defense": 44, "physical": 72}, {"name": "Kevin Danso", "position": "DEF", "age": 27, "overall": 76, "potential": 77, "pace": 66, "shooting": 44, "passing": 58, "defense": 76, "physical": 80}, {"name": "Ben Davies", "position": "DEF", "age": 32, "overall": 70, "potential": 70, "pace": 58, "shooting": 40, "passing": 60, "defense": 70, "physical": 72}, {"name": "Archie Gray", "position": "DEF", "age": 20, "overall": 74, "potential": 82, "pace": 68, "shooting": 52, "passing": 70, "defense": 66, "physical": 68}, {"name": "Djed Spence", "position": "DEF", "age": 25, "overall": 71, "potential": 74, "pace": 84, "shooting": 48, "passing": 60, "defense": 62, "physical": 68}, {"name": "James Maddison", "position": "MID", "age": 29, "overall": 83, "potential": 83, "pace": 66, "shooting": 76, "passing": 84, "defense": 50, "physical": 60}, {"name": "Pape Matar Sarr", "position": "MID", "age": 23, "overall": 77, "potential": 81, "pace": 74, "shooting": 58, "passing": 70, "defense": 70, "physical": 72}, {"name": "Rodrigo Bentancur", "position": "MID", "age": 28, "overall": 78, "potential": 78, "pace": 64, "shooting": 58, "passing": 72, "defense": 74, "physical": 74}, {"name": "Yves Bissouma", "position": "MID", "age": 29, "overall": 77, "potential": 77, "pace": 68, "shooting": 54, "passing": 68, "defense": 76, "physical": 76}, {"name": "Joao Palhinha", "position": "MID", "age": 30, "overall": 78, "potential": 78, "pace": 54, "shooting": 52, "passing": 66, "defense": 82, "physical": 80}, {"name": "Lucas Bergvall", "position": "MID", "age": 20, "overall": 76, "potential": 86, "pace": 72, "shooting": 60, "passing": 74, "defense": 62, "physical": 64}, {"name": "Xavi Simons", "position": "MID", "age": 22, "overall": 81, "potential": 87, "pace": 74, "shooting": 74, "passing": 80, "defense": 48, "physical": 58}, {"name": "Conor Gallagher", "position": "MID", "age": 25, "overall": 75, "potential": 76, "pace": 72, "shooting": 62, "passing": 68, "defense": 64, "physical": 72}, {"name": "Mohammed Kudus", "position": "MID", "age": 25, "overall": 80, "potential": 83, "pace": 80, "shooting": 74, "passing": 70, "defense": 44, "physical": 64}, {"name": "Dejan Kulusevski", "position": "MID", "age": 26, "overall": 81, "potential": 82, "pace": 74, "shooting": 74, "passing": 74, "defense": 48, "physical": 66}, {"name": "Mathys Tel", "position": "FWD", "age": 21, "overall": 74, "potential": 82, "pace": 80, "shooting": 68, "passing": 58, "defense": 32, "physical": 62}, {"name": "Dominic Solanke", "position": "FWD", "age": 28, "overall": 76, "potential": 76, "pace": 68, "shooting": 74, "passing": 58, "defense": 32, "physical": 74}, {"name": "Wilson Odobert", "position": "FWD", "age": 21, "overall": 71, "potential": 78, "pace": 84, "shooting": 62, "passing": 54, "defense": 30, "physical": 56}, {"name": "Mikey Moore", "position": "FWD", "age": 18, "overall": 68, "potential": 82, "pace": 84, "shooting": 58, "passing": 54, "defense": 26, "physical": 52}]}, "newcastle_united": {"name": "Newcastle United", "players": [{"name": "Nick Pope", "position": "GK", "age": 34, "overall": 82, "potential": 82, "pace": 58, "shooting": 44, "passing": 64, "defense": 54, "physical": 78}, {"name": "Aaron Ramsdale", "position": "GK", "age": 28, "overall": 78, "potential": 80, "pace": 58, "shooting": 42, "passing": 66, "defense": 50, "physical": 74}, {"name": "Kieran Trippier", "position": "DEF", "age": 36, "overall": 78, "potential": 78, "pace": 60, "shooting": 58, "passing": 80, "defense": 74, "physical": 66}, {"name": "Lewis Hall", "position": "DEF", "age": 21, "overall": 78, "potential": 84, "pace": 74, "shooting": 52, "passing": 74, "defense": 70, "physical": 66}, {"name": "Sven Botman", "position": "DEF", "age": 26, "overall": 81, "potential": 84, "pace": 62, "shooting": 40, "passing": 60, "defense": 82, "physical": 78}, {"name": "Fabian Schar", "position": "DEF", "age": 34, "overall": 79, "potential": 79, "pace": 52, "shooting": 46, "passing": 66, "defense": 78, "physical": 76}, {"name": "Malick Thiaw", "position": "DEF", "age": 25, "overall": 79, "potential": 82, "pace": 64, "shooting": 40, "passing": 58, "defense": 78, "physical": 78}, {"name": "Dan Burn", "position": "DEF", "age": 34, "overall": 77, "potential": 77, "pace": 48, "shooting": 36, "passing": 54, "defense": 76, "physical": 84}, {"name": "Valentino Livramento", "position": "DEF", "age": 23, "overall": 78, "potential": 83, "pace": 80, "shooting": 52, "passing": 68, "defense": 68, "physical": 66}, {"name": "Joelinton", "position": "MID", "age": 29, "overall": 80, "potential": 80, "pace": 72, "shooting": 66, "passing": 64, "defense": 72, "physical": 84}, {"name": "Sandro Tonali", "position": "MID", "age": 26, "overall": 83, "potential": 85, "pace": 62, "shooting": 64, "passing": 78, "defense": 74, "physical": 74}, {"name": "Bruno Guimaraes", "position": "MID", "age": 28, "overall": 85, "potential": 87, "pace": 66, "shooting": 68, "passing": 82, "defense": 74, "physical": 72}, {"name": "Jacob Ramsey", "position": "MID", "age": 24, "overall": 76, "potential": 80, "pace": 72, "shooting": 64, "passing": 70, "defense": 58, "physical": 66}, {"name": "Jacob Murphy", "position": "MID", "age": 31, "overall": 76, "potential": 76, "pace": 80, "shooting": 66, "passing": 66, "defense": 50, "physical": 66}, {"name": "Joe Willock", "position": "MID", "age": 26, "overall": 74, "potential": 74, "pace": 74, "shooting": 62, "passing": 64, "defense": 58, "physical": 68}, {"name": "Nick Woltemade", "position": "FWD", "age": 24, "overall": 79, "potential": 83, "pace": 66, "shooting": 74, "passing": 64, "defense": 42, "physical": 80}, {"name": "Yoane Wissa", "position": "FWD", "age": 29, "overall": 78, "potential": 78, "pace": 76, "shooting": 74, "passing": 58, "defense": 38, "physical": 72}, {"name": "Harvey Barnes", "position": "FWD", "age": 28, "overall": 78, "potential": 78, "pace": 80, "shooting": 72, "passing": 66, "defense": 36, "physical": 64}, {"name": "Anthony Elanga", "position": "FWD", "age": 23, "overall": 78, "potential": 82, "pace": 90, "shooting": 68, "passing": 60, "defense": 36, "physical": 64}, {"name": "Anthony Gordon", "position": "FWD", "age": 25, "overall": 80, "potential": 83, "pace": 86, "shooting": 72, "passing": 68, "defense": 42, "physical": 66}]}, "aston_villa": {"name": "Aston Villa", "players": [{"name": "Emiliano Martinez", "position": "GK", "age": 33, "overall": 84, "potential": 84, "pace": 58, "shooting": 46, "passing": 72, "defense": 54, "physical": 78}, {"name": "Matty Cash", "position": "DEF", "age": 28, "overall": 77, "potential": 77, "pace": 74, "shooting": 52, "passing": 64, "defense": 68, "physical": 74}, {"name": "Victor Lindelof", "position": "DEF", "age": 31, "overall": 76, "potential": 76, "pace": 54, "shooting": 40, "passing": 62, "defense": 76, "physical": 72}, {"name": "Ezri Konsa", "position": "DEF", "age": 28, "overall": 79, "potential": 79, "pace": 60, "shooting": 42, "passing": 62, "defense": 78, "physical": 76}, {"name": "Tyrone Mings", "position": "DEF", "age": 32, "overall": 74, "potential": 74, "pace": 52, "shooting": 36, "passing": 54, "defense": 76, "physical": 80}, {"name": "Lucas Digne", "position": "DEF", "age": 32, "overall": 78, "potential": 78, "pace": 68, "shooting": 54, "passing": 76, "defense": 70, "physical": 68}, {"name": "Pau Torres", "position": "DEF", "age": 28, "overall": 80, "potential": 80, "pace": 58, "shooting": 44, "passing": 68, "defense": 78, "physical": 74}, {"name": "Ian Maatsen", "position": "DEF", "age": 23, "overall": 77, "potential": 82, "pace": 78, "shooting": 54, "passing": 68, "defense": 68, "physical": 64}, {"name": "Ross Barkley", "position": "MID", "age": 32, "overall": 74, "potential": 74, "pace": 58, "shooting": 60, "passing": 72, "defense": 54, "physical": 66}, {"name": "John McGinn", "position": "MID", "age": 31, "overall": 80, "potential": 80, "pace": 74, "shooting": 68, "passing": 72, "defense": 66, "physical": 76}, {"name": "Youri Tielemans", "position": "MID", "age": 28, "overall": 79, "potential": 79, "pace": 62, "shooting": 68, "passing": 78, "defense": 62, "physical": 68}, {"name": "Boubacar Kamara", "position": "MID", "age": 26, "overall": 79, "potential": 79, "pace": 62, "shooting": 52, "passing": 70, "defense": 78, "physical": 78}, {"name": "Morgan Rogers", "position": "MID", "age": 23, "overall": 81, "potential": 86, "pace": 78, "shooting": 72, "passing": 74, "defense": 50, "physical": 68}, {"name": "Emiliano Buendia", "position": "MID", "age": 29, "overall": 76, "potential": 76, "pace": 68, "shooting": 64, "passing": 74, "defense": 44, "physical": 58}, {"name": "Amadou Onana", "position": "MID", "age": 24, "overall": 80, "potential": 84, "pace": 68, "shooting": 58, "passing": 68, "defense": 76, "physical": 80}, {"name": "Ollie Watkins", "position": "FWD", "age": 30, "overall": 84, "potential": 84, "pace": 82, "shooting": 84, "passing": 68, "defense": 40, "physical": 74}, {"name": "Tammy Abraham", "position": "FWD", "age": 28, "overall": 74, "potential": 74, "pace": 68, "shooting": 70, "passing": 54, "defense": 32, "physical": 72}, {"name": "Jadon Sancho", "position": "FWD", "age": 26, "overall": 76, "potential": 78, "pace": 80, "shooting": 68, "passing": 66, "defense": 38, "physical": 62}]}, "brighton_hove_albion": {"name": "Brighton & Hove Albion", "players": [{"name": "Bart Verbruggen", "position": "GK", "age": 23, "overall": 79, "potential": 84, "pace": 60, "shooting": 44, "passing": 68, "defense": 50, "physical": 74}, {"name": "Igor Julio", "position": "DEF", "age": 27, "overall": 74, "potential": 74, "pace": 68, "shooting": 40, "passing": 54, "defense": 72, "physical": 74}, {"name": "Adam Webster", "position": "DEF", "age": 31, "overall": 72, "potential": 72, "pace": 56, "shooting": 38, "passing": 54, "defense": 72, "physical": 76}, {"name": "Lewis Dunk", "position": "DEF", "age": 34, "overall": 76, "potential": 76, "pace": 52, "shooting": 42, "passing": 64, "defense": 76, "physical": 78}, {"name": "Jan Paul van Hecke", "position": "DEF", "age": 25, "overall": 76, "potential": 80, "pace": 64, "shooting": 40, "passing": 60, "defense": 74, "physical": 72}, {"name": "Ferdi Kadioglu", "position": "DEF", "age": 26, "overall": 78, "potential": 80, "pace": 80, "shooting": 58, "passing": 70, "defense": 68, "physical": 68}, {"name": "Olivier Boscagli", "position": "DEF", "age": 26, "overall": 74, "potential": 74, "pace": 60, "shooting": 38, "passing": 56, "defense": 70, "physical": 72}, {"name": "Maxim De Cuyper", "position": "DEF", "age": 24, "overall": 73, "potential": 76, "pace": 72, "shooting": 48, "passing": 64, "defense": 66, "physical": 66}, {"name": "Joel Veltman", "position": "DEF", "age": 33, "overall": 73, "potential": 73, "pace": 56, "shooting": 36, "passing": 58, "defense": 72, "physical": 70}, {"name": "Solly March", "position": "MID", "age": 31, "overall": 75, "potential": 75, "pace": 74, "shooting": 64, "passing": 68, "defense": 50, "physical": 58}, {"name": "Jack Hinshelwood", "position": "MID", "age": 20, "overall": 73, "potential": 80, "pace": 70, "shooting": 54, "passing": 66, "defense": 58, "physical": 62}, {"name": "Carlos Baleba", "position": "MID", "age": 21, "overall": 80, "potential": 87, "pace": 78, "shooting": 60, "passing": 70, "defense": 74, "physical": 78}, {"name": "James Milner", "position": "MID", "age": 39, "overall": 68, "potential": 68, "pace": 44, "shooting": 50, "passing": 68, "defense": 58, "physical": 64}, {"name": "Kaoru Mitoma", "position": "MID", "age": 28, "overall": 82, "potential": 84, "pace": 88, "shooting": 74, "passing": 70, "defense": 42, "physical": 60}, {"name": "Yasin Ayari", "position": "MID", "age": 22, "overall": 73, "potential": 79, "pace": 66, "shooting": 52, "passing": 66, "defense": 60, "physical": 64}, {"name": "Mats Wieffer", "position": "MID", "age": 25, "overall": 77, "potential": 81, "pace": 64, "shooting": 54, "passing": 72, "defense": 74, "physical": 72}, {"name": "Pascal Gross", "position": "MID", "age": 34, "overall": 77, "potential": 77, "pace": 58, "shooting": 64, "passing": 78, "defense": 58, "physical": 58}, {"name": "Matt O'Riley", "position": "MID", "age": 25, "overall": 77, "potential": 80, "pace": 66, "shooting": 66, "passing": 74, "defense": 58, "physical": 62}, {"name": "Diego Gomez", "position": "MID", "age": 22, "overall": 73, "potential": 78, "pace": 70, "shooting": 58, "passing": 68, "defense": 52, "physical": 58}, {"name": "Stefanos Tzimas", "position": "FWD", "age": 19, "overall": 71, "potential": 80, "pace": 72, "shooting": 68, "passing": 58, "defense": 32, "physical": 66}, {"name": "Georginio Rutter", "position": "FWD", "age": 23, "overall": 78, "potential": 83, "pace": 78, "shooting": 72, "passing": 68, "defense": 42, "physical": 66}, {"name": "Yankuba Minteh", "position": "MID", "age": 21, "overall": 76, "potential": 82, "pace": 88, "shooting": 66, "passing": 60, "defense": 38, "physical": 58}, {"name": "Danny Welbeck", "position": "FWD", "age": 35, "overall": 75, "potential": 75, "pace": 66, "shooting": 72, "passing": 62, "defense": 38, "physical": 68}, {"name": "Charalampos Kostoulas", "position": "FWD", "age": 18, "overall": 70, "potential": 82, "pace": 76, "shooting": 66, "passing": 54, "defense": 28, "physical": 62}]}, "afc_bournemouth": {"name": "Bournemouth", "players": [{"name": "Djordje Petrovic", "position": "GK", "age": 26, "overall": 79, "potential": 82, "pace": 58, "shooting": 42, "passing": 64, "defense": 48, "physical": 76}, {"name": "Adrien Truffert", "position": "DEF", "age": 24, "overall": 75, "potential": 78, "pace": 76, "shooting": 54, "passing": 70, "defense": 68, "physical": 64}, {"name": "Bafode Diakite", "position": "DEF", "age": 24, "overall": 76, "potential": 80, "pace": 72, "shooting": 42, "passing": 58, "defense": 74, "physical": 76}, {"name": "Alex Jimenez", "position": "DEF", "age": 21, "overall": 75, "potential": 81, "pace": 80, "shooting": 52, "passing": 66, "defense": 68, "physical": 64}, {"name": "Marcos Senesi", "position": "DEF", "age": 28, "overall": 78, "potential": 78, "pace": 60, "shooting": 42, "passing": 58, "defense": 78, "physical": 78}, {"name": "James Hill", "position": "DEF", "age": 23, "overall": 74, "potential": 78, "pace": 64, "shooting": 38, "passing": 52, "defense": 72, "physical": 74}, {"name": "Julio Soler", "position": "DEF", "age": 20, "overall": 73, "potential": 80, "pace": 78, "shooting": 44, "passing": 58, "defense": 66, "physical": 66}, {"name": "Adam Smith", "position": "DEF", "age": 34, "overall": 68, "potential": 68, "pace": 62, "shooting": 40, "passing": 58, "defense": 64, "physical": 68}, {"name": "Ryan Christie", "position": "MID", "age": 30, "overall": 75, "potential": 75, "pace": 68, "shooting": 64, "passing": 72, "defense": 58, "physical": 62}, {"name": "Tyler Adams", "position": "MID", "age": 26, "overall": 76, "potential": 76, "pace": 72, "shooting": 48, "passing": 64, "defense": 74, "physical": 76}, {"name": "Marcus Tavernier", "position": "MID", "age": 26, "overall": 77, "potential": 77, "pace": 74, "shooting": 68, "passing": 68, "defense": 52, "physical": 64}, {"name": "David Brooks", "position": "MID", "age": 28, "overall": 73, "potential": 73, "pace": 70, "shooting": 62, "passing": 66, "defense": 44, "physical": 58}, {"name": "Alex Scott", "position": "MID", "age": 22, "overall": 75, "potential": 80, "pace": 74, "shooting": 58, "passing": 68, "defense": 62, "physical": 66}, {"name": "Lewis Cook", "position": "MID", "age": 28, "overall": 75, "potential": 75, "pace": 64, "shooting": 58, "passing": 72, "defense": 66, "physical": 64}, {"name": "Ben Doak", "position": "FWD", "age": 20, "overall": 74, "potential": 82, "pace": 86, "shooting": 64, "passing": 58, "defense": 34, "physical": 58}, {"name": "Amine Adli", "position": "FWD", "age": 25, "overall": 75, "potential": 77, "pace": 78, "shooting": 66, "passing": 64, "defense": 38, "physical": 62}, {"name": "Evanilson", "position": "FWD", "age": 26, "overall": 79, "potential": 80, "pace": 72, "shooting": 76, "passing": 58, "defense": 36, "physical": 74}, {"name": "Enes Unal", "position": "FWD", "age": 28, "overall": 74, "potential": 74, "pace": 64, "shooting": 72, "passing": 52, "defense": 32, "physical": 74}, {"name": "Eli Junior Kroupi", "position": "FWD", "age": 20, "overall": 76, "potential": 84, "pace": 80, "shooting": 74, "passing": 58, "defense": 32, "physical": 66}, {"name": "Justin Kluivert", "position": "FWD", "age": 26, "overall": 78, "potential": 79, "pace": 84, "shooting": 72, "passing": 66, "defense": 38, "physical": 62}, {"name": "Antoine Semenyo", "position": "FWD", "age": 25, "overall": 79, "potential": 80, "pace": 82, "shooting": 74, "passing": 64, "defense": 42, "physical": 78}]}, "brentford": {"name": "Brentford", "players": [{"name": "Caoimhin Kelleher", "position": "GK", "age": 27, "overall": 77, "potential": 79, "pace": 58, "shooting": 42, "passing": 64, "defense": 46, "physical": 74}, {"name": "Rico Henry", "position": "DEF", "age": 28, "overall": 74, "potential": 74, "pace": 76, "shooting": 50, "passing": 62, "defense": 72, "physical": 68}, {"name": "Sepp van den Berg", "position": "DEF", "age": 23, "overall": 76, "potential": 80, "pace": 68, "shooting": 42, "passing": 58, "defense": 76, "physical": 76}, {"name": "Ethan Pinnock", "position": "DEF", "age": 32, "overall": 74, "potential": 74, "pace": 54, "shooting": 38, "passing": 54, "defense": 74, "physical": 78}, {"name": "Nathan Collins", "position": "DEF", "age": 24, "overall": 79, "potential": 82, "pace": 62, "shooting": 44, "passing": 58, "defense": 80, "physical": 80}, {"name": "Aaron Hickey", "position": "DEF", "age": 23, "overall": 75, "potential": 79, "pace": 76, "shooting": 52, "passing": 66, "defense": 70, "physical": 70}, {"name": "Kristoffer Ajer", "position": "DEF", "age": 27, "overall": 74, "potential": 74, "pace": 60, "shooting": 38, "passing": 58, "defense": 74, "physical": 76}, {"name": "Michael Kayode", "position": "DEF", "age": 21, "overall": 72, "potential": 78, "pace": 78, "shooting": 46, "passing": 58, "defense": 66, "physical": 68}, {"name": "Jordan Henderson", "position": "MID", "age": 35, "overall": 73, "potential": 73, "pace": 54, "shooting": 54, "passing": 72, "defense": 62, "physical": 66}, {"name": "Mathias Jensen", "position": "MID", "age": 29, "overall": 76, "potential": 76, "pace": 66, "shooting": 60, "passing": 72, "defense": 58, "physical": 60}, {"name": "Vitaly Janelt", "position": "MID", "age": 27, "overall": 75, "potential": 75, "pace": 64, "shooting": 56, "passing": 68, "defense": 66, "physical": 72}, {"name": "Yehor Yarmoliuk", "position": "MID", "age": 21, "overall": 72, "potential": 78, "pace": 68, "shooting": 50, "passing": 62, "defense": 64, "physical": 68}, {"name": "Frank Onyeka", "position": "MID", "age": 27, "overall": 73, "potential": 73, "pace": 72, "shooting": 52, "passing": 62, "defense": 66, "physical": 74}, {"name": "Mikkel Damsgaard", "position": "MID", "age": 25, "overall": 77, "potential": 78, "pace": 68, "shooting": 68, "passing": 74, "defense": 44, "physical": 56}, {"name": "Antoni Milambo", "position": "MID", "age": 21, "overall": 73, "potential": 80, "pace": 70, "shooting": 58, "passing": 68, "defense": 58, "physical": 60}, {"name": "Fabio Carvalho", "position": "MID", "age": 23, "overall": 75, "potential": 79, "pace": 74, "shooting": 64, "passing": 68, "defense": 44, "physical": 56}, {"name": "Kevin Schade", "position": "FWD", "age": 24, "overall": 78, "potential": 81, "pace": 88, "shooting": 70, "passing": 62, "defense": 36, "physical": 66}, {"name": "Igor Thiago", "position": "FWD", "age": 24, "overall": 81, "potential": 84, "pace": 76, "shooting": 82, "passing": 58, "defense": 34, "physical": 76}, {"name": "Dango Ouattara", "position": "FWD", "age": 23, "overall": 77, "potential": 80, "pace": 88, "shooting": 68, "passing": 60, "defense": 38, "physical": 68}, {"name": "Keane Lewis-Potter", "position": "FWD", "age": 24, "overall": 74, "potential": 76, "pace": 78, "shooting": 64, "passing": 60, "defense": 40, "physical": 62}]}, "crystal_palace": {"name": "Crystal Palace", "players": [{"name": "Dean Henderson", "position": "GK", "age": 29, "overall": 81, "potential": 81, "pace": 60, "shooting": 44, "passing": 68, "defense": 52, "physical": 78}, {"name": "Walter Benitez", "position": "GK", "age": 32, "overall": 76, "potential": 76, "pace": 60, "shooting": 42, "passing": 66, "defense": 48, "physical": 74}, {"name": "Daniel Munoz", "position": "DEF", "age": 29, "overall": 78, "potential": 78, "pace": 80, "shooting": 58, "passing": 68, "defense": 70, "physical": 74}, {"name": "Tyrick Mitchell", "position": "DEF", "age": 26, "overall": 76, "potential": 76, "pace": 72, "shooting": 50, "passing": 66, "defense": 70, "physical": 70}, {"name": "Maxence Lacroix", "position": "DEF", "age": 25, "overall": 78, "potential": 80, "pace": 68, "shooting": 42, "passing": 58, "defense": 78, "physical": 78}, {"name": "Chris Richards", "position": "DEF", "age": 25, "overall": 75, "potential": 77, "pace": 66, "shooting": 40, "passing": 56, "defense": 74, "physical": 78}, {"name": "Nathaniel Clyne", "position": "DEF", "age": 34, "overall": 68, "potential": 68, "pace": 62, "shooting": 38, "passing": 58, "defense": 66, "physical": 66}, {"name": "Jaydee Canvot", "position": "DEF", "age": 19, "overall": 71, "potential": 80, "pace": 68, "shooting": 38, "passing": 54, "defense": 68, "physical": 72}, {"name": "Borna Sosa", "position": "DEF", "age": 27, "overall": 72, "potential": 72, "pace": 64, "shooting": 50, "passing": 68, "defense": 62, "physical": 58}, {"name": "Chadi Riad", "position": "DEF", "age": 22, "overall": 72, "potential": 77, "pace": 62, "shooting": 38, "passing": 56, "defense": 70, "physical": 72}, {"name": "Adam Wharton", "position": "MID", "age": 21, "overall": 80, "potential": 86, "pace": 68, "shooting": 58, "passing": 80, "defense": 68, "physical": 64}, {"name": "Jefferson Lerma", "position": "MID", "age": 30, "overall": 76, "potential": 76, "pace": 64, "shooting": 54, "passing": 66, "defense": 74, "physical": 78}, {"name": "Will Hughes", "position": "MID", "age": 29, "overall": 72, "potential": 72, "pace": 62, "shooting": 54, "passing": 68, "defense": 60, "physical": 62}, {"name": "Cheick Doucoure", "position": "MID", "age": 25, "overall": 76, "potential": 76, "pace": 68, "shooting": 50, "passing": 64, "defense": 76, "physical": 78}, {"name": "Daichi Kamada", "position": "MID", "age": 29, "overall": 75, "potential": 75, "pace": 70, "shooting": 64, "passing": 72, "defense": 54, "physical": 62}, {"name": "Justin Devenny", "position": "MID", "age": 22, "overall": 68, "potential": 72, "pace": 68, "shooting": 52, "passing": 60, "defense": 54, "physical": 60}, {"name": "Jean-Philippe Mateta", "position": "FWD", "age": 28, "overall": 77, "potential": 77, "pace": 68, "shooting": 74, "passing": 54, "defense": 32, "physical": 80}, {"name": "Ismaila Sarr", "position": "FWD", "age": 27, "overall": 80, "potential": 80, "pace": 91, "shooting": 74, "passing": 66, "defense": 38, "physical": 72}, {"name": "Eddie Nketiah", "position": "FWD", "age": 26, "overall": 73, "potential": 73, "pace": 66, "shooting": 68, "passing": 52, "defense": 30, "physical": 68}, {"name": "Brennan Johnson", "position": "FWD", "age": 24, "overall": 76, "potential": 79, "pace": 84, "shooting": 68, "passing": 62, "defense": 36, "physical": 60}, {"name": "Yeremy Pino", "position": "MID", "age": 23, "overall": 75, "potential": 79, "pace": 80, "shooting": 66, "passing": 66, "defense": 42, "physical": 58}, {"name": "Christantus Uche", "position": "MID", "age": 22, "overall": 71, "potential": 77, "pace": 76, "shooting": 58, "passing": 60, "defense": 44, "physical": 60}, {"name": "Jorgen Strand Larsen", "position": "FWD", "age": 25, "overall": 75, "potential": 77, "pace": 68, "shooting": 72, "passing": 54, "defense": 32, "physical": 78}, {"name": "Evann Guessand", "position": "FWD", "age": 24, "overall": 73, "potential": 76, "pace": 78, "shooting": 68, "passing": 58, "defense": 36, "physical": 70}]}, "everton": {"name": "Everton", "players": [{"name": "Jordan Pickford", "position": "GK", "age": 31, "overall": 84, "potential": 84, "pace": 68, "shooting": 46, "passing": 72, "defense": 58, "physical": 76}, {"name": "Mark Travers", "position": "GK", "age": 26, "overall": 72, "potential": 74, "pace": 64, "shooting": 42, "passing": 62, "defense": 48, "physical": 70}, {"name": "Michael Keane", "position": "DEF", "age": 32, "overall": 72, "potential": 72, "pace": 52, "shooting": 38, "passing": 54, "defense": 74, "physical": 78}, {"name": "James Tarkowski", "position": "DEF", "age": 32, "overall": 75, "potential": 75, "pace": 52, "shooting": 42, "passing": 56, "defense": 78, "physical": 80}, {"name": "Jarrad Branthwaite", "position": "DEF", "age": 23, "overall": 79, "potential": 84, "pace": 66, "shooting": 40, "passing": 60, "defense": 80, "physical": 80}, {"name": "Adam Aznou", "position": "DEF", "age": 19, "overall": 68, "potential": 78, "pace": 74, "shooting": 44, "passing": 58, "defense": 62, "physical": 60}, {"name": "Idrissa Gueye", "position": "MID", "age": 35, "overall": 72, "potential": 72, "pace": 66, "shooting": 50, "passing": 64, "defense": 72, "physical": 74}, {"name": "Jack Grealish", "position": "MID", "age": 29, "overall": 80, "potential": 80, "pace": 72, "shooting": 68, "passing": 78, "defense": 48, "physical": 66}, {"name": "James Garner", "position": "MID", "age": 24, "overall": 73, "potential": 76, "pace": 64, "shooting": 58, "passing": 68, "defense": 64, "physical": 66}, {"name": "Kiernan Dewsbury-Hall", "position": "MID", "age": 26, "overall": 75, "potential": 76, "pace": 68, "shooting": 62, "passing": 70, "defense": 58, "physical": 64}, {"name": "Carlos Alcaraz", "position": "MID", "age": 22, "overall": 73, "potential": 78, "pace": 72, "shooting": 60, "passing": 66, "defense": 52, "physical": 58}, {"name": "Dwight McNeil", "position": "MID", "age": 25, "overall": 76, "potential": 77, "pace": 76, "shooting": 66, "passing": 68, "defense": 44, "physical": 60}, {"name": "Beto", "position": "FWD", "age": 26, "overall": 72, "potential": 73, "pace": 68, "shooting": 68, "passing": 50, "defense": 32, "physical": 78}, {"name": "Iliman Ndiaye", "position": "FWD", "age": 24, "overall": 75, "potential": 79, "pace": 80, "shooting": 68, "passing": 66, "defense": 38, "physical": 58}, {"name": "Thierno Barry", "position": "FWD", "age": 22, "overall": 72, "potential": 78, "pace": 74, "shooting": 68, "passing": 52, "defense": 32, "physical": 74}, {"name": "Tom King", "position": "GK", "age": 30, "overall": 64, "potential": 64, "pace": 58, "shooting": 40, "passing": 56, "defense": 38, "physical": 66}]}, "fulham": {"name": "Fulham", "players": [{"name": "Bernd Leno", "position": "GK", "age": 33, "overall": 80, "potential": 80, "pace": 58, "shooting": 44, "passing": 70, "defense": 54, "physical": 74}, {"name": "Benjamin Lecomte", "position": "GK", "age": 34, "overall": 71, "potential": 71, "pace": 56, "shooting": 40, "passing": 60, "defense": 44, "physical": 68}, {"name": "Kenny Tete", "position": "DEF", "age": 30, "overall": 75, "potential": 75, "pace": 76, "shooting": 50, "passing": 64, "defense": 68, "physical": 72}, {"name": "Calvin Bassey", "position": "DEF", "age": 25, "overall": 74, "potential": 77, "pace": 72, "shooting": 42, "passing": 58, "defense": 70, "physical": 72}, {"name": "Joachim Andersen", "position": "DEF", "age": 29, "overall": 78, "potential": 78, "pace": 54, "shooting": 42, "passing": 62, "defense": 78, "physical": 78}, {"name": "Jorge Cuenca", "position": "DEF", "age": 26, "overall": 70, "potential": 72, "pace": 60, "shooting": 38, "passing": 54, "defense": 68, "physical": 72}, {"name": "Timothy Castagne", "position": "DEF", "age": 29, "overall": 75, "potential": 75, "pace": 74, "shooting": 52, "passing": 64, "defense": 70, "physical": 74}, {"name": "Ryan Sessegnon", "position": "DEF", "age": 25, "overall": 71, "potential": 74, "pace": 78, "shooting": 52, "passing": 60, "defense": 62, "physical": 66}, {"name": "Issa Diop", "position": "DEF", "age": 28, "overall": 70, "potential": 70, "pace": 56, "shooting": 36, "passing": 48, "defense": 68, "physical": 78}, {"name": "Antonee Robinson", "position": "DEF", "age": 28, "overall": 77, "potential": 77, "pace": 84, "shooting": 54, "passing": 68, "defense": 70, "physical": 70}, {"name": "Harrison Reed", "position": "MID", "age": 30, "overall": 71, "potential": 71, "pace": 60, "shooting": 50, "passing": 64, "defense": 68, "physical": 66}, {"name": "Tom Cairney", "position": "MID", "age": 34, "overall": 72, "potential": 72, "pace": 54, "shooting": 56, "passing": 74, "defense": 60, "physical": 62}, {"name": "Sander Berge", "position": "MID", "age": 27, "overall": 75, "potential": 75, "pace": 66, "shooting": 58, "passing": 66, "defense": 70, "physical": 80}, {"name": "Sasa Lukic", "position": "MID", "age": 29, "overall": 74, "potential": 74, "pace": 66, "shooting": 56, "passing": 66, "defense": 68, "physical": 72}, {"name": "Andreas Pereira", "position": "MID", "age": 29, "overall": 74, "potential": 74, "pace": 68, "shooting": 64, "passing": 70, "defense": 54, "physical": 64}, {"name": "Emile Smith Rowe", "position": "MID", "age": 25, "overall": 74, "potential": 77, "pace": 72, "shooting": 64, "passing": 70, "defense": 46, "physical": 58}, {"name": "Alex Iwobi", "position": "MID", "age": 29, "overall": 76, "potential": 76, "pace": 74, "shooting": 64, "passing": 70, "defense": 50, "physical": 62}, {"name": "Rodrigo Muniz", "position": "FWD", "age": 24, "overall": 73, "potential": 76, "pace": 74, "shooting": 70, "passing": 52, "defense": 32, "physical": 74}, {"name": "Raul Jimenez", "position": "FWD", "age": 34, "overall": 73, "potential": 73, "pace": 62, "shooting": 72, "passing": 58, "defense": 34, "physical": 78}, {"name": "Harry Wilson", "position": "MID", "age": 28, "overall": 74, "potential": 74, "pace": 68, "shooting": 68, "passing": 68, "defense": 46, "physical": 60}, {"name": "Samuel Chukwueze", "position": "MID", "age": 26, "overall": 75, "potential": 77, "pace": 84, "shooting": 68, "passing": 64, "defense": 38, "physical": 60}, {"name": "Josh King", "position": "FWD", "age": 33, "overall": 66, "potential": 66, "pace": 64, "shooting": 64, "passing": 54, "defense": 32, "physical": 66}]}, "leeds_united": {"name": "Leeds United", "players": [{"name": "Lucas Perri", "position": "GK", "age": 28, "overall": 77, "potential": 79, "pace": 66, "shooting": 44, "passing": 66, "defense": 50, "physical": 74}, {"name": "Illan Meslier", "position": "GK", "age": 26, "overall": 74, "potential": 76, "pace": 62, "shooting": 42, "passing": 62, "defense": 46, "physical": 70}, {"name": "Karl Darlow", "position": "GK", "age": 35, "overall": 68, "potential": 68, "pace": 54, "shooting": 40, "passing": 58, "defense": 44, "physical": 66}, {"name": "Jayden Bogle", "position": "DEF", "age": 25, "overall": 74, "potential": 76, "pace": 80, "shooting": 52, "passing": 66, "defense": 68, "physical": 70}, {"name": "Gabriel Gudmundsson", "position": "DEF", "age": 26, "overall": 72, "potential": 74, "pace": 70, "shooting": 50, "passing": 66, "defense": 64, "physical": 64}, {"name": "Pascal Struijk", "position": "DEF", "age": 26, "overall": 75, "potential": 77, "pace": 58, "shooting": 42, "passing": 60, "defense": 76, "physical": 80}, {"name": "Joe Rodon", "position": "DEF", "age": 28, "overall": 73, "potential": 73, "pace": 54, "shooting": 38, "passing": 52, "defense": 74, "physical": 78}, {"name": "James Justin", "position": "DEF", "age": 28, "overall": 73, "potential": 73, "pace": 74, "shooting": 50, "passing": 62, "defense": 68, "physical": 70}, {"name": "Sam Byram", "position": "DEF", "age": 32, "overall": 66, "potential": 66, "pace": 66, "shooting": 42, "passing": 58, "defense": 62, "physical": 64}, {"name": "Sebastiaan Bornauw", "position": "DEF", "age": 26, "overall": 70, "potential": 72, "pace": 58, "shooting": 38, "passing": 52, "defense": 68, "physical": 76}, {"name": "Jaka Bijol", "position": "DEF", "age": 25, "overall": 74, "potential": 77, "pace": 62, "shooting": 40, "passing": 52, "defense": 74, "physical": 80}, {"name": "Ethan Ampadu", "position": "MID", "age": 25, "overall": 76, "potential": 77, "pace": 62, "shooting": 44, "passing": 68, "defense": 76, "physical": 74}, {"name": "Daniel James", "position": "MID", "age": 27, "overall": 71, "potential": 71, "pace": 88, "shooting": 60, "passing": 58, "defense": 38, "physical": 58}, {"name": "Sean Longstaff", "position": "MID", "age": 27, "overall": 72, "potential": 72, "pace": 64, "shooting": 54, "passing": 68, "defense": 64, "physical": 70}, {"name": "Brenden Aaronson", "position": "MID", "age": 25, "overall": 73, "potential": 75, "pace": 78, "shooting": 60, "passing": 66, "defense": 52, "physical": 58}, {"name": "Anton Stach", "position": "MID", "age": 26, "overall": 75, "potential": 78, "pace": 64, "shooting": 54, "passing": 68, "defense": 72, "physical": 78}, {"name": "Ao Tanaka", "position": "MID", "age": 27, "overall": 73, "potential": 73, "pace": 66, "shooting": 58, "passing": 68, "defense": 64, "physical": 66}, {"name": "Illan Gruev", "position": "MID", "age": 23, "overall": 68, "potential": 73, "pace": 62, "shooting": 46, "passing": 60, "defense": 64, "physical": 62}, {"name": "Dominic Calvert-Lewin", "position": "FWD", "age": 28, "overall": 74, "potential": 74, "pace": 62, "shooting": 72, "passing": 52, "defense": 32, "physical": 78}, {"name": "Joel Piroe", "position": "FWD", "age": 26, "overall": 74, "potential": 75, "pace": 66, "shooting": 72, "passing": 58, "defense": 32, "physical": 66}]}, "nottingham_forest": {"name": "Nottingham Forest", "players": [{"name": "Matz Sels", "position": "GK", "age": 33, "overall": 80, "potential": 80, "pace": 58, "shooting": 44, "passing": 68, "defense": 52, "physical": 76}, {"name": "Angus Gunn", "position": "GK", "age": 30, "overall": 70, "potential": 70, "pace": 58, "shooting": 42, "passing": 60, "defense": 42, "physical": 72}, {"name": "Neco Williams", "position": "DEF", "age": 24, "overall": 73, "potential": 76, "pace": 82, "shooting": 50, "passing": 64, "defense": 66, "physical": 66}, {"name": "Nikola Milenkovic", "position": "DEF", "age": 28, "overall": 78, "potential": 78, "pace": 66, "shooting": 44, "passing": 60, "defense": 78, "physical": 84}, {"name": "Murillo", "position": "DEF", "age": 23, "overall": 76, "potential": 82, "pace": 74, "shooting": 42, "passing": 58, "defense": 76, "physical": 78}, {"name": "Ola Aina", "position": "DEF", "age": 28, "overall": 73, "potential": 73, "pace": 76, "shooting": 48, "passing": 62, "defense": 68, "physical": 70}, {"name": "Ibrahim Sangare", "position": "MID", "age": 27, "overall": 76, "potential": 77, "pace": 66, "shooting": 58, "passing": 66, "defense": 74, "physical": 80}, {"name": "Elliot Anderson", "position": "MID", "age": 23, "overall": 76, "potential": 80, "pace": 72, "shooting": 60, "passing": 72, "defense": 60, "physical": 64}, {"name": "Morgan Gibbs-White", "position": "MID", "age": 25, "overall": 80, "potential": 82, "pace": 76, "shooting": 74, "passing": 78, "defense": 52, "physical": 64}, {"name": "James McAtee", "position": "MID", "age": 23, "overall": 74, "potential": 79, "pace": 68, "shooting": 64, "passing": 70, "defense": 50, "physical": 58}, {"name": "Callum Hudson-Odoi", "position": "MID", "age": 25, "overall": 73, "potential": 74, "pace": 84, "shooting": 66, "passing": 60, "defense": 36, "physical": 58}, {"name": "Nicolas Dominguez", "position": "MID", "age": 27, "overall": 75, "potential": 75, "pace": 62, "shooting": 58, "passing": 68, "defense": 72, "physical": 74}, {"name": "Igor Jesus", "position": "FWD", "age": 25, "overall": 74, "potential": 77, "pace": 72, "shooting": 72, "passing": 58, "defense": 36, "physical": 76}, {"name": "Chris Wood", "position": "FWD", "age": 34, "overall": 74, "potential": 74, "pace": 58, "shooting": 74, "passing": 52, "defense": 34, "physical": 80}, {"name": "Dan Ndoye", "position": "FWD", "age": 24, "overall": 76, "potential": 80, "pace": 86, "shooting": 70, "passing": 62, "defense": 38, "physical": 66}, {"name": "John Victor", "position": "GK", "age": 28, "overall": 68, "potential": 68, "pace": 56, "shooting": 40, "passing": 58, "defense": 40, "physical": 72}, {"name": "Morato", "position": "DEF", "age": 25, "overall": 70, "potential": 73, "pace": 58, "shooting": 38, "passing": 52, "defense": 70, "physical": 76}, {"name": "Nicolo Savona", "position": "DEF", "age": 21, "overall": 67, "potential": 74, "pace": 72, "shooting": 42, "passing": 56, "defense": 64, "physical": 66}, {"name": "Douglas Luiz", "position": "MID", "age": 27, "overall": 78, "potential": 78, "pace": 64, "shooting": 62, "passing": 76, "defense": 68, "physical": 68}, {"name": "Arnaud Kalimuendo", "position": "FWD", "age": 23, "overall": 74, "potential": 79, "pace": 76, "shooting": 72, "passing": 58, "defense": 32, "physical": 68}, {"name": "Omari Hutchinson", "position": "MID", "age": 22, "overall": 76, "potential": 82, "pace": 82, "shooting": 68, "passing": 68, "defense": 42, "physical": 58}]}, "sunderland": {"name": "Sunderland", "players": [{"name": "Anthony Patterson", "position": "GK", "age": 26, "overall": 75, "potential": 77, "pace": 60, "shooting": 42, "passing": 66, "defense": 50, "physical": 76}, {"name": "Robin Roefs", "position": "GK", "age": 23, "overall": 73, "potential": 78, "pace": 58, "shooting": 40, "passing": 62, "defense": 46, "physical": 72}, {"name": "Dennis Cirkin", "position": "DEF", "age": 24, "overall": 71, "potential": 74, "pace": 74, "shooting": 48, "passing": 64, "defense": 66, "physical": 64}, {"name": "Daniel Ballard", "position": "DEF", "age": 26, "overall": 73, "potential": 75, "pace": 56, "shooting": 40, "passing": 54, "defense": 74, "physical": 78}, {"name": "Lutsharel Geertruida", "position": "DEF", "age": 25, "overall": 74, "potential": 76, "pace": 74, "shooting": 46, "passing": 64, "defense": 70, "physical": 72}, {"name": "Luke O'Nien", "position": "DEF", "age": 31, "overall": 68, "potential": 68, "pace": 60, "shooting": 42, "passing": 56, "defense": 66, "physical": 72}, {"name": "Noah Sadiki", "position": "MID", "age": 24, "overall": 71, "potential": 76, "pace": 66, "shooting": 48, "passing": 60, "defense": 70, "physical": 74}, {"name": "Enzo Le Fee", "position": "MID", "age": 26, "overall": 74, "potential": 76, "pace": 66, "shooting": 60, "passing": 72, "defense": 58, "physical": 62}, {"name": "Granit Xhaka", "position": "MID", "age": 33, "overall": 77, "potential": 77, "pace": 50, "shooting": 58, "passing": 78, "defense": 74, "physical": 74}, {"name": "Chemsdine Talbi", "position": "MID", "age": 21, "overall": 72, "potential": 80, "pace": 80, "shooting": 64, "passing": 64, "defense": 38, "physical": 58}, {"name": "Brian Brobbey", "position": "FWD", "age": 24, "overall": 73, "potential": 76, "pace": 70, "shooting": 70, "passing": 54, "defense": 32, "physical": 78}, {"name": "Eliezer Mayenda", "position": "FWD", "age": 21, "overall": 70, "potential": 79, "pace": 74, "shooting": 66, "passing": 52, "defense": 30, "physical": 72}, {"name": "Romaine Mundle", "position": "MID", "age": 23, "overall": 68, "potential": 74, "pace": 80, "shooting": 58, "passing": 56, "defense": 34, "physical": 54}, {"name": "Wilson Isidor", "position": "FWD", "age": 25, "overall": 71, "potential": 73, "pace": 66, "shooting": 68, "passing": 52, "defense": 30, "physical": 74}, {"name": "Simon Adingra", "position": "MID", "age": 24, "overall": 73, "potential": 77, "pace": 84, "shooting": 64, "passing": 60, "defense": 38, "physical": 60}, {"name": "Bertrand Traore", "position": "FWD", "age": 30, "overall": 70, "potential": 70, "pace": 74, "shooting": 66, "passing": 62, "defense": 34, "physical": 58}]}, "coventry_city": {"name": "Coventry City", "players": [{"name": "Carl Rushworth", "position": "GK", "age": 24, "overall": 71, "potential": 76, "pace": 58, "shooting": 40, "passing": 62, "defense": 44, "physical": 72}, {"name": "Milan van Ewijk", "position": "DEF", "age": 25, "overall": 71, "potential": 73, "pace": 76, "shooting": 48, "passing": 62, "defense": 66, "physical": 68}, {"name": "Jake Bidwell", "position": "DEF", "age": 32, "overall": 64, "potential": 64, "pace": 64, "shooting": 40, "passing": 58, "defense": 62, "physical": 64}, {"name": "Liam Kitching", "position": "DEF", "age": 25, "overall": 70, "potential": 73, "pace": 58, "shooting": 38, "passing": 52, "defense": 70, "physical": 76}, {"name": "Joel Latibeaudiere", "position": "DEF", "age": 25, "overall": 68, "potential": 70, "pace": 58, "shooting": 36, "passing": 52, "defense": 68, "physical": 72}, {"name": "Kaine Kesler-Hayden", "position": "DEF", "age": 22, "overall": 68, "potential": 73, "pace": 76, "shooting": 46, "passing": 60, "defense": 62, "physical": 64}, {"name": "Ben Sheaf", "position": "MID", "age": 25, "overall": 70, "potential": 72, "pace": 62, "shooting": 52, "passing": 66, "defense": 66, "physical": 70}, {"name": "Josh Eccles", "position": "MID", "age": 24, "overall": 68, "potential": 72, "pace": 62, "shooting": 54, "passing": 66, "defense": 58, "physical": 60}, {"name": "Victor Torp", "position": "MID", "age": 25, "overall": 69, "potential": 72, "pace": 64, "shooting": 56, "passing": 66, "defense": 60, "physical": 64}, {"name": "Ephron Mason-Clark", "position": "MID", "age": 26, "overall": 69, "potential": 70, "pace": 84, "shooting": 62, "passing": 58, "defense": 34, "physical": 58}, {"name": "Raphael Borges Rodrigues", "position": "DEF", "age": 26, "overall": 66, "potential": 66, "pace": 62, "shooting": 36, "passing": 52, "defense": 64, "physical": 68}, {"name": "Haji Wright", "position": "FWD", "age": 27, "overall": 72, "potential": 73, "pace": 70, "shooting": 72, "passing": 54, "defense": 32, "physical": 74}, {"name": "Brandon Thomas-Asante", "position": "FWD", "age": 26, "overall": 66, "potential": 66, "pace": 68, "shooting": 62, "passing": 48, "defense": 28, "physical": 72}, {"name": "Ben Wilson", "position": "GK", "age": 32, "overall": 63, "potential": 63, "pace": 52, "shooting": 38, "passing": 58, "defense": 42, "physical": 68}, {"name": "Luis Binks", "position": "DEF", "age": 25, "overall": 68, "potential": 71, "pace": 58, "shooting": 38, "passing": 52, "defense": 68, "physical": 74}, {"name": "Jay Dasilva", "position": "DEF", "age": 27, "overall": 66, "potential": 66, "pace": 72, "shooting": 44, "passing": 60, "defense": 62, "physical": 64}, {"name": "Bobby Thomas", "position": "DEF", "age": 24, "overall": 66, "potential": 69, "pace": 58, "shooting": 36, "passing": 50, "defense": 66, "physical": 74}, {"name": "Justin Obikwu", "position": "DEF", "age": 21, "overall": 60, "potential": 66, "pace": 68, "shooting": 36, "passing": 48, "defense": 58, "physical": 64}, {"name": "Matt Grimes", "position": "MID", "age": 29, "overall": 71, "potential": 71, "pace": 58, "shooting": 54, "passing": 72, "defense": 66, "physical": 64}, {"name": "Jack Rudoni", "position": "MID", "age": 23, "overall": 67, "potential": 71, "pace": 66, "shooting": 58, "passing": 64, "defense": 54, "physical": 58}, {"name": "Tatsuhiro Sakamoto", "position": "MID", "age": 27, "overall": 68, "potential": 68, "pace": 80, "shooting": 58, "passing": 60, "defense": 42, "physical": 58}, {"name": "Ellis Simms", "position": "FWD", "age": 24, "overall": 66, "potential": 70, "pace": 64, "shooting": 64, "passing": 48, "defense": 28, "physical": 74}, {"name": "Norman Bassette", "position": "FWD", "age": 21, "overall": 60, "potential": 66, "pace": 76, "shooting": 54, "passing": 46, "defense": 24, "physical": 58}, {"name": "Isaac Moore", "position": "FWD", "age": 20, "overall": 57, "potential": 65, "pace": 70, "shooting": 50, "passing": 42, "defense": 22, "physical": 56}]}, "ipswich_town": {"name": "Ipswich Town", "players": [{"name": "Arijanet Muric", "position": "GK", "age": 27, "overall": 72, "potential": 74, "pace": 58, "shooting": 42, "passing": 64, "defense": 46, "physical": 74}, {"name": "Leif Davis", "position": "DEF", "age": 26, "overall": 73, "potential": 75, "pace": 74, "shooting": 52, "passing": 68, "defense": 66, "physical": 66}, {"name": "Jacob Greaves", "position": "DEF", "age": 25, "overall": 69, "potential": 73, "pace": 58, "shooting": 38, "passing": 52, "defense": 68, "physical": 74}, {"name": "Cameron Burgess", "position": "DEF", "age": 29, "overall": 66, "potential": 66, "pace": 54, "shooting": 36, "passing": 48, "defense": 66, "physical": 76}, {"name": "Ben Johnson", "position": "DEF", "age": 25, "overall": 66, "potential": 68, "pace": 72, "shooting": 44, "passing": 58, "defense": 62, "physical": 64}, {"name": "Jens Cajuste", "position": "MID", "age": 26, "overall": 70, "potential": 72, "pace": 68, "shooting": 54, "passing": 62, "defense": 66, "physical": 74}, {"name": "Conor Chaplin", "position": "MID", "age": 27, "overall": 71, "potential": 71, "pace": 68, "shooting": 66, "passing": 66, "defense": 42, "physical": 58}, {"name": "Sammie Szmodics", "position": "MID", "age": 26, "overall": 72, "potential": 73, "pace": 78, "shooting": 68, "passing": 62, "defense": 38, "physical": 58}, {"name": "Jack Clarke", "position": "MID", "age": 25, "overall": 74, "potential": 77, "pace": 84, "shooting": 70, "passing": 64, "defense": 38, "physical": 60}, {"name": "George Hirst", "position": "FWD", "age": 24, "overall": 67, "potential": 70, "pace": 66, "shooting": 66, "passing": 50, "defense": 28, "physical": 70}, {"name": "Christian Walton", "position": "GK", "age": 29, "overall": 68, "potential": 68, "pace": 56, "shooting": 40, "passing": 58, "defense": 42, "physical": 70}, {"name": "Axel Tuanzebe", "position": "DEF", "age": 27, "overall": 66, "potential": 68, "pace": 66, "shooting": 40, "passing": 54, "defense": 66, "physical": 72}, {"name": "Harry Clarke", "position": "DEF", "age": 23, "overall": 68, "potential": 72, "pace": 70, "shooting": 44, "passing": 58, "defense": 66, "physical": 68}, {"name": "Luke Woolfenden", "position": "DEF", "age": 26, "overall": 66, "potential": 68, "pace": 56, "shooting": 38, "passing": 50, "defense": 66, "physical": 74}, {"name": "Sam Morsy", "position": "MID", "age": 33, "overall": 70, "potential": 70, "pace": 58, "shooting": 50, "passing": 62, "defense": 72, "physical": 76}, {"name": "Jack Taylor", "position": "MID", "age": 27, "overall": 66, "potential": 68, "pace": 64, "shooting": 50, "passing": 62, "defense": 58, "physical": 62}, {"name": "Azor Matusiwa", "position": "MID", "age": 26, "overall": 68, "potential": 70, "pace": 66, "shooting": 50, "passing": 60, "defense": 68, "physical": 70}, {"name": "Daniel Neil", "position": "MID", "age": 23, "overall": 68, "potential": 72, "pace": 66, "shooting": 54, "passing": 64, "defense": 60, "physical": 62}, {"name": "Marcelino Nunez", "position": "MID", "age": 25, "overall": 69, "potential": 71, "pace": 68, "shooting": 56, "passing": 66, "defense": 58, "physical": 60}, {"name": "Kasey McAteer", "position": "MID", "age": 23, "overall": 68, "potential": 72, "pace": 78, "shooting": 58, "passing": 60, "defense": 42, "physical": 58}, {"name": "Omari Hutchinson", "position": "MID", "age": 21, "overall": 75, "potential": 82, "pace": 80, "shooting": 66, "passing": 66, "defense": 42, "physical": 58}, {"name": "Anis Mehmeti", "position": "MID", "age": 23, "overall": 68, "potential": 72, "pace": 72, "shooting": 58, "passing": 62, "defense": 42, "physical": 56}, {"name": "Chiedozie Ogbene", "position": "FWD", "age": 28, "overall": 68, "potential": 68, "pace": 84, "shooting": 58, "passing": 50, "defense": 38, "physical": 74}]}, "hull_city": {"name": "Hull City", "players": [{"name": "Ivor Pandur", "position": "GK", "age": 24, "overall": 70, "potential": 75, "pace": 58, "shooting": 40, "passing": 60, "defense": 44, "physical": 74}, {"name": "Lewie Coyle", "position": "DEF", "age": 29, "overall": 67, "potential": 67, "pace": 72, "shooting": 44, "passing": 58, "defense": 64, "physical": 66}, {"name": "Akin Famewo", "position": "DEF", "age": 27, "overall": 65, "potential": 65, "pace": 58, "shooting": 36, "passing": 50, "defense": 66, "physical": 74}, {"name": "John Egan", "position": "DEF", "age": 32, "overall": 68, "potential": 68, "pace": 52, "shooting": 38, "passing": 52, "defense": 70, "physical": 76}, {"name": "Charlie Hughes", "position": "DEF", "age": 23, "overall": 66, "potential": 71, "pace": 58, "shooting": 36, "passing": 50, "defense": 66, "physical": 74}, {"name": "Cody Drameh", "position": "DEF", "age": 23, "overall": 66, "potential": 70, "pace": 76, "shooting": 44, "passing": 58, "defense": 62, "physical": 62}, {"name": "Ryan Giles", "position": "DEF", "age": 25, "overall": 70, "potential": 73, "pace": 74, "shooting": 50, "passing": 68, "defense": 62, "physical": 62}, {"name": "Semi Ajayi", "position": "DEF", "age": 31, "overall": 65, "potential": 65, "pace": 54, "shooting": 38, "passing": 50, "defense": 66, "physical": 76}, {"name": "Regan Slater", "position": "MID", "age": 25, "overall": 67, "potential": 69, "pace": 68, "shooting": 52, "passing": 60, "defense": 64, "physical": 68}, {"name": "John Lundstram", "position": "MID", "age": 31, "overall": 68, "potential": 68, "pace": 60, "shooting": 52, "passing": 62, "defense": 68, "physical": 74}, {"name": "Eliot Matazo", "position": "MID", "age": 24, "overall": 66, "potential": 70, "pace": 64, "shooting": 48, "passing": 62, "defense": 60, "physical": 60}, {"name": "Matt Crooks", "position": "MID", "age": 31, "overall": 70, "potential": 70, "pace": 66, "shooting": 66, "passing": 62, "defense": 58, "physical": 74}, {"name": "Joe Gelhardt", "position": "FWD", "age": 23, "overall": 71, "potential": 76, "pace": 72, "shooting": 68, "passing": 58, "defense": 34, "physical": 64}, {"name": "Kieran Dowell", "position": "MID", "age": 27, "overall": 68, "potential": 68, "pace": 62, "shooting": 58, "passing": 66, "defense": 44, "physical": 54}, {"name": "Oli McBurnie", "position": "FWD", "age": 29, "overall": 72, "potential": 72, "pace": 58, "shooting": 72, "passing": 54, "defense": 32, "physical": 80}, {"name": "Kyle Joseph", "position": "FWD", "age": 24, "overall": 66, "potential": 70, "pace": 74, "shooting": 64, "passing": 48, "defense": 28, "physical": 66}]}};
+
 function realPlayerToRuntime(p) {
   return {
     id: uid(),
@@ -491,7 +507,7 @@ function tryoutSigningCost(overall) {
    HINTS — simple rule-based "what should I do next" suggestions
    ============================================================ */
 
-function computeHints(club, matchday, seenOneTimeHints, recentForm) {
+function computeHints(club, matchday, seenOneTimeHints, recentForm, tier) {
   const seen = seenOneTimeHints instanceof Set ? seenOneTimeHints : new Set(seenOneTimeHints || []);
   const hints = [];
   // Recurring, state-dependent hints always get a fresh check every time —
@@ -885,6 +901,20 @@ function startingXI(club, matchday) {
 
 // Club-level DEF/MID/ATT star ratings (out of 5), based on the average
 // overall of the best players in each line — roughly how many would start.
+// Star ratings are for display/reasoning only — the actual match engine
+// uses raw overalls via effectiveRating/squadStrength, never these star
+// buckets.
+//
+// This briefly used a percentile-within-tier scale instead of this fixed
+// formula, to spread ratings out more (checked against real MLS data, the
+// fixed formula did compress 28 of 30 clubs into a single 2.5★ defense
+// bucket). But percentile ranking meant a tier's best club always showed
+// 5★ regardless of that tier's actual absolute quality — a "5-star" USL
+// Championship defense could still lose to a mediocre MLS attack, which
+// read as nonsensical ("5 stars in all but I still lose"). Reverted back
+// to the absolute scale: stars reflect real ability level, not just rank
+// within your own tier, even if that means some tiers rarely show the
+// full range.
 function clubLineRatings(club) {
   const byPos = { GK: [], DEF: [], MID: [], FWD: [] };
   club.squad.forEach((p) => { (byPos[p.position] || byPos.MID).push(p.overall); });
@@ -1483,22 +1513,30 @@ function runFlatPlayoffBracket(table, clubs, matchday, size) {
 // entrant here is wrapped with the tier it came from, purely so the
 // giant-killer bonus (a lower-league team beating a higher-league one)
 // can be detected and so the bracket display can show tier badges.
-function playCupRound(entrants, matchday) {
+function drawCupPairs(entrants) {
   const roster = shuffle(entrants);
   let byeEntrant = null;
   if (roster.length % 2 === 1) byeEntrant = roster.pop();
-  const matches = [];
-  for (let i = 0; i < roster.length; i += 2) {
-    const homeEntrant = roster[i];
-    const awayEntrant = roster[i + 1];
+  const pairs = [];
+  for (let i = 0; i < roster.length; i += 2) pairs.push([roster[i], roster[i + 1]]);
+  return { pairs, byeEntrant };
+}
+
+function resolveCupPairs(pairs, matchday) {
+  return pairs.map(([homeEntrant, awayEntrant]) => {
     const outcome = resolveKnockoutMatch(homeEntrant.club, awayEntrant.club, matchday);
     const winnerEntrant = outcome.winner.id === homeEntrant.club.id ? homeEntrant : awayEntrant;
     const loserEntrant = winnerEntrant === homeEntrant ? awayEntrant : homeEntrant;
     // Giant-killer: a club from a numerically higher tier index (a lower
     // league) beating one from a lower tier index (a higher league).
     const isUpset = winnerEntrant.tierIdx > loserEntrant.tierIdx;
-    matches.push({ homeEntrant, awayEntrant, outcome, winnerEntrant, loserEntrant, isUpset });
-  }
+    return { homeEntrant, awayEntrant, outcome, winnerEntrant, loserEntrant, isUpset };
+  });
+}
+
+function playCupRound(entrants, matchday) {
+  const { pairs, byeEntrant } = drawCupPairs(entrants);
+  const matches = resolveCupPairs(pairs, matchday);
   const advancing = byeEntrant ? [...matches.map((m) => m.winnerEntrant), byeEntrant] : matches.map((m) => m.winnerEntrant);
   return { matches, byeEntrant, advancing };
 }
@@ -1542,17 +1580,11 @@ function cupRoundLabel(roundIndex) {
   return LATER_CUP_ROUND_LABELS[Math.min(roundIndex - 2, LATER_CUP_ROUND_LABELS.length - 1)];
 }
 
-// Plays exactly the next round of the US Open Cup and returns updated
-// progress. `progress` is null/undefined before Round 1. `qualifiers` is
-// last season's final standings ({ uslcTop16, mlsBottom16 } club ID
-// arrays) — real Open Cup qualification is based on the PREVIOUS season,
-// not whatever's in progress this year. In Season 1 there is no previous
-// season, so this falls back to current standings just that one time.
-function playNextUsOpenCupRound(progress, tiers, qualifiers) {
-  const matchday = 9999; // sentinel — distinguishes cup matches from any real league matchday for card/injury logic
+// Builds the entrant pool for the next round without resolving anything —
+// shared by the preview draw and the actual play-the-round path.
+function computeCupRoundPool(progress, tiers, qualifiers) {
   const wrap = (club, tierIdx) => ({ club, tierIdx });
   const roundIndex = progress ? progress.rounds.length : 0;
-
   const findClubAnywhere = (id) => {
     for (let ti = 0; ti < tiers.length; ti++) {
       const c = tiers[ti].clubs.find((cl) => cl.id === id);
@@ -1560,24 +1592,54 @@ function playNextUsOpenCupRound(progress, tiers, qualifiers) {
     }
     return null;
   };
-
-  let pool;
   if (roundIndex === 0) {
-    pool = tiers[3].clubs.map((c) => wrap(c, 3)); // all USL2
+    return tiers[3].clubs.map((c) => wrap(c, 3)); // all USL2
   } else if (roundIndex === 1) {
     const usl1Entrants = tiers[2].clubs.map((c) => wrap(c, 2));
     const uslcTop16Ids = qualifiers?.uslcTop16 ?? computeTable(tiers[1]).slice(0, 16).map((r) => r.clubId);
     const top16UslcEntrants = uslcTop16Ids.map(findClubAnywhere).filter(Boolean);
-    pool = [...progress.pool, ...usl1Entrants, ...top16UslcEntrants];
+    return [...progress.pool, ...usl1Entrants, ...top16UslcEntrants];
   } else if (roundIndex === 2) {
     const mlsBottom16Ids = qualifiers?.mlsBottom16 ?? computeTable(tiers[0]).slice(-16).map((r) => r.clubId);
     const bottom16MlsEntrants = mlsBottom16Ids.map(findClubAnywhere).filter(Boolean);
-    pool = [...progress.pool, ...bottom16MlsEntrants];
+    return [...progress.pool, ...bottom16MlsEntrants];
+  }
+  return progress.pool;
+}
+
+// Draws (but does not play) the next round — a stable pairing that can be
+// shown as "who you're about to play" before the match actually happens.
+// Store the result and reuse it when actually resolving, since drawing
+// again would shuffle to a different pairing.
+function drawNextUsOpenCupRound(progress, tiers, qualifiers) {
+  const pool = computeCupRoundPool(progress, tiers, qualifiers);
+  const { pairs, byeEntrant } = drawCupPairs(pool);
+  return { roundIndex: progress ? progress.rounds.length : 0, pairs, byeEntrant };
+}
+
+// Plays exactly the next round of the US Open Cup and returns updated
+// progress. `progress` is null/undefined before Round 1. `qualifiers` is
+// last season's final standings ({ uslcTop16, mlsBottom16 } club ID
+// arrays) — real Open Cup qualification is based on the PREVIOUS season,
+// not whatever's in progress this year. In Season 1 there is no previous
+// season, so this falls back to current standings just that one time.
+// `preDrawn`, if provided (from drawNextUsOpenCupRound), is resolved
+// as-is instead of drawing a fresh pairing — keeps the previewed
+// opponent consistent with what actually gets played.
+function playNextUsOpenCupRound(progress, tiers, qualifiers, preDrawn) {
+  const matchday = 9999; // sentinel — distinguishes cup matches from any real league matchday for card/injury logic
+  const roundIndex = progress ? progress.rounds.length : 0;
+
+  let result;
+  if (preDrawn && preDrawn.roundIndex === roundIndex) {
+    const matches = resolveCupPairs(preDrawn.pairs, matchday);
+    const advancing = preDrawn.byeEntrant ? [...matches.map((m) => m.winnerEntrant), preDrawn.byeEntrant] : matches.map((m) => m.winnerEntrant);
+    result = { matches, byeEntrant: preDrawn.byeEntrant, advancing };
   } else {
-    pool = progress.pool;
+    const pool = computeCupRoundPool(progress, tiers, qualifiers);
+    result = playCupRound(pool, matchday);
   }
 
-  const result = playCupRound(pool, matchday);
   const roundGiantKillers = result.matches.filter((m) => m.isUpset).map((m) => ({ clubId: m.winnerEntrant.club.id, clubName: m.winnerEntrant.club.name }));
   const newRound = { label: cupRoundLabel(roundIndex), ...result };
   const rounds = [...(progress?.rounds || []), newRound];
@@ -1599,7 +1661,8 @@ function playNextUsOpenCupRound(progress, tiers, qualifiers) {
 // manual "Play This Round" button and the bulk Sim Season / Sim to
 // Window auto-resolution.
 function resolveCupRoundInPlace(next) {
-  const progress = playNextUsOpenCupRound(next.usOpenCup, next.tiers, next.usOpenCupQualifiers);
+  const preDrawn = next.usOpenCup?.pendingDraw;
+  const progress = playNextUsOpenCupRound(next.usOpenCup, next.tiers, next.usOpenCupQualifiers, preDrawn);
   const allClubs = next.tiers.flatMap((t) => t.clubs);
   const payOut = (clubId, amount) => {
     const c = allClubs.find((cl) => cl.id === clubId);
@@ -1611,7 +1674,7 @@ function resolveCupRoundInPlace(next) {
     payOut(progress.champion.club.id, US_OPEN_CUP_CHAMPION_PRIZE);
     payOut(progress.runnerUp.club.id, US_OPEN_CUP_RUNNERUP_PRIZE);
   }
-  next.usOpenCup = progress;
+  next.usOpenCup = { ...progress, pendingDraw: null };
   return newRound;
 }
 
@@ -2091,7 +2154,14 @@ function runTransferWindow(tiers, userClubId) {
       const isUserSeller = seller.id === userClubId;
       const listedNow = seller.squad.filter((p) => p.transferListed);
       listedNow.forEach((p) => {
-        const buyChance = isUserSeller ? 0.6 : 0.35;
+        // A player auto-listed from unhappiness (transferRequested) isn't
+        // something the user necessarily chose to sell — that's still the
+        // user's call ("play them more or let them go"), so it moves at a
+        // normal market pace instead of the fast rate meant for a
+        // deliberate voluntary listing. Otherwise several unhappy players
+        // could get sold off in a single bulk sim with no real say from
+        // the user, suddenly gutting the squad below the minimum.
+        const buyChance = isUserSeller ? (p.transferRequested ? 0.2 : 0.6) : 0.35;
         if (Math.random() >= buyChance) return;
         const buyers = t.clubs.filter((c) => c.id !== seller.id && c.id !== userClubId && c.budget >= p.askingPrice && c.squad.length < MAX_SQUAD_SIZE);
         if (!buyers.length) return;
@@ -2195,7 +2265,253 @@ function formatMoney(amount) {
   return `$${Math.round(amount / 1000)}K`;
 }
 
-function DifficultySelectScreen({ onChoose }) {
+function CountrySelectScreen({ onChoose }) {
+  const countries = [
+    {
+      key: "usa",
+      flag: "🇺🇸",
+      title: "United States",
+      tagline: "MLS · USL Championship · USL League One · USL League Two",
+      points: ["Fully playable — real rosters, real rules", "Designated Players, SuperDraft, US Open Cup"],
+      ready: true,
+    },
+    {
+      key: "england",
+      flag: "🏴",
+      title: "England",
+      tagline: "Premier League · Championship · League One · League Two",
+      points: ["In progress — real rosters and rules are still being researched", "Selecting this shows what's built so far, not a finished pyramid yet"],
+      ready: false,
+    },
+  ];
+  return (
+    <div style={{ minHeight: "100vh", background: PALETTE.pitchDark, ...serif }}>
+      <style>{FONT_IMPORT}</style>
+      <div style={{ maxWidth: 900, margin: "0 auto", padding: "56px 20px 80px" }}>
+        <div style={{ textAlign: "center", marginBottom: 40 }}>
+          <div style={{ ...display, fontSize: 44, fontWeight: 700, color: PALETTE.parchment, lineHeight: 1 }}>
+            ASCENT
+          </div>
+          <div style={{ color: PALETTE.gold, fontSize: 14, marginTop: 10, letterSpacing: "0.08em", textTransform: "uppercase", ...display }}>
+            Choose your pyramid
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 }}>
+          {countries.map((c) => (
+            <button
+              key={c.key}
+              onClick={() => onChoose(c.key)}
+              style={{
+                textAlign: "left", background: PALETTE.pitch, border: `1px solid ${PALETTE.gold}55`, borderRadius: 12,
+                padding: 20, cursor: "pointer", color: PALETTE.parchment, display: "flex", flexDirection: "column", gap: 10,
+                opacity: c.ready ? 1 : 0.85,
+              }}
+            >
+              <div style={{ ...display, fontSize: 22, fontWeight: 700, color: PALETTE.gold, display: "flex", alignItems: "center", gap: 8 }}>
+                {c.flag} {c.title}
+                {!c.ready && (
+                  <span style={{ fontSize: 10, fontWeight: 700, background: PALETTE.crimson, color: "#fff", padding: "2px 7px", borderRadius: 4, letterSpacing: "0.04em" }}>
+                    IN PROGRESS
+                  </span>
+                )}
+              </div>
+              <div style={{ ...display, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.05em", opacity: 0.8 }}>{c.tagline}</div>
+              <div style={{ height: 1, background: `${PALETTE.gold}33`, margin: "4px 0" }} />
+              {c.points.map((pt, i) => (
+                <div key={i} style={{ fontSize: 13, ...serif, opacity: 0.9 }}>{pt}</div>
+              ))}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EnglandComingSoonScreen({ onBack, onTryTestMode }) {
+  return (
+    <div style={{ minHeight: "100vh", background: PALETTE.pitchDark, ...serif, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <style>{FONT_IMPORT}</style>
+      <div style={{ maxWidth: 480, textAlign: "center" }}>
+        <div style={{ ...display, fontSize: 32, fontWeight: 700, color: PALETTE.gold, marginBottom: 12 }}>
+          🏴 England
+        </div>
+        <div style={{ color: PALETTE.parchment, fontSize: 15, lineHeight: 1.6, marginBottom: 8 }}>
+          The full Championship/League One/League Two pyramid isn't built yet — but all 20 real Premier League clubs and their researched rosters are ready to test.
+        </div>
+        <div style={{ color: PALETTE.parchment, fontSize: 15, lineHeight: 1.6, marginBottom: 24, opacity: 0.8 }}>
+          No promotion/relegation, no FA Cup, no transfers yet — just real clubs, real ratings, and match simulation, standalone for now.
+        </div>
+        <button
+          onClick={onTryTestMode}
+          style={{ padding: "12px 24px", borderRadius: 8, border: "none", background: PALETTE.gold, color: PALETTE.ink, fontSize: 14, fontWeight: 700, cursor: "pointer", ...display, marginBottom: 12, width: "100%" }}
+        >
+          Try Premier League Test Mode →
+        </button>
+        <button
+          onClick={onBack}
+          style={{ padding: "12px 24px", borderRadius: 8, border: `1px solid ${PALETTE.gold}`, background: "none", color: PALETTE.gold, fontSize: 14, fontWeight: 600, cursor: "pointer", ...display, width: "100%" }}
+        >
+          ← Back to pyramid select
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// ENGLAND TEST MODE — standalone, minimal harness for trying the
+// researched Premier League data. Deliberately separate from the main
+// Dashboard: no promotion/relegation (nothing to move to/from yet), no
+// cups, no DP/board mechanics. Just real clubs, real ratings, and match
+// simulation, so the data itself can be evaluated before building the
+// full pyramid around it.
+function buildEnglandTestWorld() {
+  const clubs = PREMIER_LEAGUE_CLUBS.map((name) => {
+    const slug = Object.keys(ENGLAND_ROSTERS).find((k) => ENGLAND_ROSTERS[k].name === name);
+    const team = ENGLAND_ROSTERS[slug];
+    return makeClub({
+      name: team.name,
+      squad: team.players.map(realPlayerToRuntime),
+      isReal: true,
+      budget: randInt(50_000_000, 150_000_000),
+      academyEligible: false,
+    });
+  });
+  const tier = { id: 0, name: "Premier League", clubs, fixtures: [] };
+  tier.fixtures = generateRoundRobin(clubs.map((c) => c.id));
+  return tier;
+}
+
+function EnglandTestScreen({ onBack }) {
+  const [tier, setTier] = useState(() => buildEnglandTestWorld());
+  const [userClubId, setUserClubId] = useState(null);
+  const [tab, setTab] = useState("table");
+  const [recap, setRecap] = useState(null);
+
+  if (!userClubId) {
+    return (
+      <div style={{ minHeight: "100vh", background: PALETTE.pitchDark, ...serif }}>
+        <style>{FONT_IMPORT}</style>
+        <div style={{ maxWidth: 700, margin: "0 auto", padding: "40px 20px 80px" }}>
+          <button onClick={onBack} style={{ background: "none", border: "none", color: PALETTE.gold, fontSize: 13, cursor: "pointer", ...display, marginBottom: 16 }}>
+            ← Back
+          </button>
+          <div style={{ ...display, fontSize: 28, fontWeight: 700, color: PALETTE.gold, marginBottom: 20, textAlign: "center" }}>
+            Pick a Premier League Club
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 10 }}>
+            {tier.clubs.map((c) => {
+              const avgOvr = Math.round(c.squad.reduce((s, p) => s + p.overall, 0) / c.squad.length);
+              return (
+                <button
+                  key={c.id}
+                  onClick={() => setUserClubId(c.id)}
+                  style={{ textAlign: "left", background: PALETTE.pitch, border: `1px solid ${PALETTE.gold}55`, borderRadius: 8, padding: 12, cursor: "pointer", color: PALETTE.parchment }}
+                >
+                  <div style={{ ...display, fontWeight: 700, fontSize: 14 }}>{c.name}</div>
+                  <div style={{ fontSize: 11, opacity: 0.7, ...mono }}>Avg {avgOvr} OVR</div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const userClub = tier.clubs.find((c) => c.id === userClubId);
+  const table = computeTable(tier);
+  const currentMatchday = tier.fixtures.some((f) => !f.played)
+    ? Math.min(...tier.fixtures.filter((f) => !f.played).map((f) => f.matchday))
+    : null;
+
+  const handleSimMatchday = () => {
+    if (currentMatchday === null) return;
+    const next = { ...tier, clubs: tier.clubs, fixtures: [...tier.fixtures] };
+    const matches = [];
+    next.fixtures.filter((f) => f.matchday === currentMatchday).forEach((fx) => {
+      const home = next.clubs.find((c) => c.id === fx.homeClubId);
+      const away = next.clubs.find((c) => c.id === fx.awayClubId);
+      const result = simulateMatch(fx, home, away, currentMatchday, "pro");
+      matches.push(result);
+    });
+    setTier({ ...next });
+    setRecap({ matchday: currentMatchday, matches });
+  };
+
+  const userFixtures = tier.fixtures.filter((f) => f.homeClubId === userClubId || f.awayClubId === userClubId);
+  const nextFixture = userFixtures.find((f) => !f.played);
+
+  return (
+    <div style={{ minHeight: "100vh", background: PALETTE.pitchDark, ...serif }}>
+      <style>{FONT_IMPORT}</style>
+      <div style={{ maxWidth: 700, margin: "0 auto", padding: "24px 16px 80px" }}>
+        <button onClick={onBack} style={{ background: "none", border: "none", color: PALETTE.gold, fontSize: 13, cursor: "pointer", ...display, marginBottom: 12 }}>
+          ← Exit test mode
+        </button>
+        <div style={{ ...display, fontSize: 22, fontWeight: 700, color: PALETTE.gold, marginBottom: 4 }}>{userClub.name}</div>
+        <div style={{ color: PALETTE.parchment, fontSize: 12, opacity: 0.7, marginBottom: 16, ...mono }}>
+          {currentMatchday !== null ? `Matchday ${currentMatchday}` : "Season complete"}
+          {nextFixture && ` — next: ${nextFixture.homeClubId === userClubId ? "vs" : "@"} ${tier.clubs.find((c) => c.id === (nextFixture.homeClubId === userClubId ? nextFixture.awayClubId : nextFixture.homeClubId)).name}`}
+        </div>
+        <button
+          onClick={handleSimMatchday}
+          disabled={currentMatchday === null}
+          style={{ padding: "10px 20px", borderRadius: 6, border: "none", background: PALETTE.gold, color: PALETTE.ink, fontSize: 13, fontWeight: 700, cursor: currentMatchday === null ? "default" : "pointer", opacity: currentMatchday === null ? 0.5 : 1, ...display, marginBottom: 20 }}
+        >
+          Sim Matchday
+        </button>
+        <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+          {["table", "squad"].map((t) => (
+            <button key={t} onClick={() => setTab(t)} style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${PALETTE.gold}`, background: tab === t ? PALETTE.gold : "none", color: tab === t ? PALETTE.ink : PALETTE.gold, fontSize: 12, fontWeight: 600, cursor: "pointer", ...display, textTransform: "capitalize" }}>
+              {t}
+            </button>
+          ))}
+        </div>
+        {tab === "table" && (
+          <div style={{ background: PALETTE.pitch, borderRadius: 8, overflow: "hidden" }}>
+            {table.map((row, i) => {
+              const club = tier.clubs.find((c) => c.id === row.clubId);
+              const isUser = row.clubId === userClubId;
+              return (
+                <div key={row.clubId} style={{ display: "flex", justifyContent: "space-between", padding: "6px 12px", background: isUser ? `${PALETTE.gold}33` : i % 2 ? "#00000022" : "none", color: PALETTE.parchment, fontSize: 12.5, ...serif }}>
+                  <span>{i + 1}. {club.name}</span>
+                  <span style={{ ...mono }}>{row.points} pts ({row.played}p)</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {tab === "squad" && (
+          <div style={{ background: PALETTE.pitch, borderRadius: 8, padding: 8 }}>
+            {[...userClub.squad].sort((a, b) => b.overall - a.overall).map((p) => (
+              <div key={p.id} style={{ display: "flex", justifyContent: "space-between", padding: "5px 8px", color: PALETTE.parchment, fontSize: 12.5, ...serif }}>
+                <span>{p.name} <span style={{ opacity: 0.6, ...mono, fontSize: 10.5 }}>{p.position}</span></span>
+                <span style={{ ...mono, fontWeight: 700 }}>{p.overall}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {recap && (
+          <div style={{ position: "fixed", inset: 0, background: "#000000cc", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 40, padding: 20 }} onClick={() => setRecap(null)}>
+            <div style={{ background: PALETTE.parchment, borderRadius: 12, maxWidth: 420, width: "100%", padding: 20, maxHeight: "70vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+              <div style={{ ...display, fontWeight: 700, fontSize: 16, marginBottom: 10 }}>Matchday {recap.matchday}</div>
+              {recap.matches.map((m, i) => (
+                <div key={i} style={{ ...serif, fontSize: 13, padding: "4px 0", borderBottom: `1px solid ${PALETTE.parchmentDim}` }}>
+                  {m.homeClub} <span style={{ ...mono }}>{m.homeScore}-{m.awayScore}</span> {m.awayClub}
+                </div>
+              ))}
+              <button onClick={() => setRecap(null)} style={{ marginTop: 12, width: "100%", padding: "8px 0", borderRadius: 6, border: "none", background: PALETTE.ink, color: "#fff", cursor: "pointer", ...display }}>Close</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DifficultySelectScreen({ onChoose, onBack }) {
   const modes = [
     {
       key: "rookie",
@@ -2220,6 +2536,14 @@ function DifficultySelectScreen({ onChoose }) {
     <div style={{ minHeight: "100vh", background: PALETTE.pitchDark, ...serif }}>
       <style>{FONT_IMPORT}</style>
       <div style={{ maxWidth: 900, margin: "0 auto", padding: "56px 20px 80px" }}>
+        {onBack && (
+          <button
+            onClick={onBack}
+            style={{ background: "none", border: "none", color: PALETTE.gold, fontSize: 13, cursor: "pointer", ...display, marginBottom: 16 }}
+          >
+            ← Back to pyramid select
+          </button>
+        )}
         <div style={{ textAlign: "center", marginBottom: 40 }}>
           <div style={{ ...display, fontSize: 44, fontWeight: 700, color: PALETTE.parchment, lineHeight: 1 }}>
             ASCENT
@@ -2252,13 +2576,21 @@ function DifficultySelectScreen({ onChoose }) {
   );
 }
 
-function ClubSelectScreen({ world, onPick, saveWasReset, difficulty }) {
+function ClubSelectScreen({ world, onPick, saveWasReset, difficulty, onBack }) {
   const [openTier, setOpenTier] = useState(0);
 
   return (
     <div style={{ minHeight: "100vh", background: PALETTE.pitchDark, ...serif }}>
       <style>{FONT_IMPORT}</style>
       <div style={{ maxWidth: 880, margin: "0 auto", padding: "48px 20px 80px" }}>
+        {onBack && (
+          <button
+            onClick={onBack}
+            style={{ background: "none", border: "none", color: PALETTE.gold, fontSize: 13, cursor: "pointer", ...display, marginBottom: 16 }}
+          >
+            ← Back to difficulty select
+          </button>
+        )}
         <div style={{ textAlign: "center", marginBottom: 48 }}>
           <div style={{ ...display, fontSize: 56, fontWeight: 700, color: PALETTE.parchment, lineHeight: 1 }}>
             ASCENT
@@ -2745,7 +3077,7 @@ function MatchdayRecap({ results, userClubName, tier, onClose }) {
    DASHBOARD TABS
    ============================================================ */
 
-function SquadTab({ club, matchday, onToggleList, onRenew, onSetCaptain, tierId, difficulty, onToggleDP, onToggleRest, onToggleHoldBack, onLoanOut, playersOnLoan }) {
+function SquadTab({ club, matchday, onToggleList, onRenew, onSetCaptain, tierId, difficulty, onToggleDP, onToggleRest, onToggleHoldBack, onLoanOut, playersOnLoan, tier }) {
   const [lineupOpen, setLineupOpen] = useState(false);
   const xi = startingXI(club, matchday);
   const xiIds = new Set(xi.map((p) => p.id));
@@ -2956,7 +3288,7 @@ function SquadTab({ club, matchday, onToggleList, onRenew, onSetCaptain, tierId,
 // reason. This is what answers "how do I set my team up" instead of
 // leaving formation/style as unlabeled buttons with no connection to who's
 // actually on the roster.
-function suggestTactics(club, oppRatings) {
+function suggestTactics(club, oppRatings, tier) {
   const lineRatings = clubLineRatings(club);
   const lines = [["def", lineRatings.def], ["mid", lineRatings.mid], ["att", lineRatings.att]];
   const strongest = lines.reduce((a, b) => (b[1] > a[1] ? b : a));
@@ -3041,7 +3373,7 @@ function TacticsTab({ club, matchday, onChange, tier }) {
       if (opponent) nextOppRatings = clubLineRatings(opponent);
     }
   }
-  const suggestion = suggestTactics(club, nextOppRatings);
+  const suggestion = suggestTactics(club, nextOppRatings, tier);
   const matchesSuggestion = club.tactics.formation === suggestion.formation && club.tactics.style === suggestion.style && club.tactics.press === suggestion.press;
   const applySuggestion = () => {
     onChange("formation", suggestion.formation);
@@ -3244,10 +3576,24 @@ function CupMatchLine({ match, userClubId }) {
   );
 }
 
+// Once a round's been drawn (but not yet played), find who the user's own
+// club is paired against — or whether they drew a bye — so it can be
+// shown as a real opponent preview instead of just "a round is coming up."
+function findUserDrawnOpponent(pendingDraw, userClubId) {
+  if (!pendingDraw) return null;
+  if (pendingDraw.byeEntrant?.club.id === userClubId) return { bye: true };
+  for (const [home, away] of pendingDraw.pairs) {
+    if (home.club.id === userClubId) return { opponent: away, isHome: true };
+    if (away.club.id === userClubId) return { opponent: home, isHome: false };
+  }
+  return null; // not in this round's draw at all (not yet qualified, or eliminated)
+}
+
 function UsOpenCupTab({ usOpenCup, pendingRoundIndex, onPlayRound, userClubId }) {
   const hasStarted = !!usOpenCup;
   const done = usOpenCup?.done ?? false;
   const champion = usOpenCup?.champion;
+  const drawnOpponent = pendingRoundIndex !== null ? findUserDrawnOpponent(usOpenCup?.pendingDraw, userClubId) : null;
 
   if (!hasStarted && pendingRoundIndex === null) {
     return (
@@ -3269,6 +3615,13 @@ function UsOpenCupTab({ usOpenCup, pendingRoundIndex, onPlayRound, userClubId })
           <div style={{ ...display, fontWeight: 700, fontSize: 14, color: PALETTE.ink, marginBottom: 8 }}>
             {cupRoundLabel(pendingRoundIndex)} is up this week — league fixtures are on hold until it's played.
           </div>
+          {drawnOpponent && (
+            <div style={{ ...serif, fontSize: 13, color: PALETTE.ink, marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+              {drawnOpponent.bye
+                ? "You've drawn a bye this round — straight through to the next one."
+                : <>Your draw: <TierBadge tierId={drawnOpponent.opponent.tierIdx} /> <strong>{drawnOpponent.isHome ? "vs" : "@"} {drawnOpponent.opponent.club.name}</strong></>}
+            </div>
+          )}
           <button
             onClick={onPlayRound}
             style={{ padding: "9px 16px", borderRadius: 6, border: "none", background: PALETTE.ink, color: PALETTE.parchment, fontSize: 13, fontWeight: 600, cursor: "pointer", ...display }}
@@ -3510,7 +3863,7 @@ function buildUpcomingSchedule(tier, userClubId, usOpenCup, startMatchday, count
   for (let md = startMatchday; items.length < count && md <= startMatchday + 40; md++) {
     const cupIdx = US_OPEN_CUP_ROUND_MATCHDAYS.indexOf(md);
     if (!cupDone && cupIdx !== -1 && cupIdx === cupRoundsAssumedPlayed) {
-      items.push({ type: "cup", label: cupRoundLabel(cupIdx), matchday: md });
+      items.push({ type: "cup", label: cupRoundLabel(cupIdx), matchday: md, roundIndex: cupIdx });
       cupRoundsAssumedPlayed++;
       if (cupRoundsAssumedPlayed >= US_OPEN_CUP_TOTAL_ROUNDS) cupDone = true;
       continue;
@@ -3581,15 +3934,23 @@ function FixturesTab({ tier, userClubId, usOpenCup }) {
             Upcoming
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {upcoming.map((item, i) => (
-              <div key={i} style={{
-                padding: "6px 10px", borderRadius: 6, fontSize: 12, ...serif,
-                background: item.type === "cup" ? `${PALETTE.gold}22` : PALETTE.parchmentDim,
-                border: item.type === "cup" ? `1px solid ${PALETTE.gold}` : `1px solid ${PALETTE.parchmentDim}`,
-              }}>
-                {item.type === "cup" ? `⭐ ${item.label}` : `${item.isHome ? "vs" : "@"} ${item.label}`}
-              </div>
-            ))}
+            {upcoming.map((item, i) => {
+              const drawn = item.type === "cup" && usOpenCup?.pendingDraw?.roundIndex === item.roundIndex
+                ? findUserDrawnOpponent(usOpenCup.pendingDraw, userClubId)
+                : null;
+              const cupText = drawn
+                ? drawn.bye ? `⭐ ${item.label} (bye)` : `⭐ ${item.label}: ${drawn.isHome ? "vs" : "@"} ${drawn.opponent.club.name}`
+                : `⭐ ${item.label}`;
+              return (
+                <div key={i} style={{
+                  padding: "6px 10px", borderRadius: 6, fontSize: 12, ...serif,
+                  background: item.type === "cup" ? `${PALETTE.gold}22` : PALETTE.parchmentDim,
+                  border: item.type === "cup" ? `1px solid ${PALETTE.gold}` : `1px solid ${PALETTE.parchmentDim}`,
+                }}>
+                  {item.type === "cup" ? cupText : `${item.isHome ? "vs" : "@"} ${item.label}`}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -3810,6 +4171,27 @@ function MarketTab({ tiers, userClub, userTierId, onBuy, difficulty, matchday })
           Based on your squad's needs, depth, contract situation, and what you can actually afford — not just raw ratings.
         </div>
       )}
+      {isRecommended && recommendedList.length > 0 && (() => {
+        // Cumulative affordability: how many of these, taken in order, could
+        // you actually sign TOGETHER before running out of budget — not just
+        // "is this one individually affordable," which said nothing about
+        // whether you could make more than one move.
+        let remaining = userClub.budget;
+        let affordableCount = 0;
+        let totalCost = 0;
+        for (const entry of recommendedList) {
+          if (entry.player.askingPrice > remaining) break;
+          remaining -= entry.player.askingPrice;
+          totalCost += entry.player.askingPrice;
+          affordableCount++;
+        }
+        if (affordableCount < 2) return null;
+        return (
+          <div style={{ background: `${PALETTE.gold}22`, border: `1px solid ${PALETTE.gold}`, borderRadius: 8, padding: "8px 12px", marginBottom: 12, ...serif, fontSize: 12.5, color: PALETTE.ink }}>
+            💰 You could afford your top {affordableCount} picks here together — ${totalCost.toLocaleString()} total, ${remaining.toLocaleString()} left over.
+          </div>
+        );
+      })()}
       {activeList.length === 0 && (
         <div style={{ ...serif, color: PALETTE.inkSoft, fontSize: 13, padding: "12px 0" }}>
           {isRecommended ? "Nothing affordable stands out as a priority signing right now." : "No players listed right now — check back after the next transfer window."}
@@ -4176,7 +4558,7 @@ function HintButton({ club, matchday, tier, managerHistory, setManagerHistory })
   const [open, setOpen] = useState(false);
   const seenOneTimeHints = managerHistory?.seenOneTimeHints || [];
   const recentForm = tier ? (computeTable(tier).find((r) => r.clubId === club.id)?.form.slice(-5) ?? []) : [];
-  const hints = computeHints(club, matchday, seenOneTimeHints, recentForm);
+  const hints = computeHints(club, matchday, seenOneTimeHints, recentForm, tier);
   const urgentCount = hints[0]?.id === "all-clear" ? 0 : hints.length;
 
   // Mark one-time hints as seen only when the panel CLOSES, not when it
@@ -4515,11 +4897,16 @@ function simulateMatchdayAcrossTiers(next, currentMatchday) {
       // applies (bragging rights matter regardless of difficulty), while
       // the extra gate revenue only makes sense once revenue is actually
       // tracked (Pro/Executive).
-      if (isRivalryMatch(home.name, away.name) && fx.homeScore !== fx.awayScore) {
-        const winner = fx.homeScore > fx.awayScore ? home : away;
-        winner.reputation = clamp(winner.reputation + RIVALRY_REPUTATION_BUMP, 20, 95);
-        if (eventBonusesOn) winner.budget += RIVALRY_REVENUE_BONUS;
+      // A rivalry match gets flagged regardless of result — a draw still
+      // deserves the recap/badge treatment, it just doesn't earn anyone
+      // the reputation/revenue bump (there's no winner to give it to).
+      if (isRivalryMatch(home.name, away.name)) {
         result.isRivalryMatch = true;
+        if (fx.homeScore !== fx.awayScore) {
+          const winner = fx.homeScore > fx.awayScore ? home : away;
+          winner.reputation = clamp(winner.reputation + RIVALRY_REPUTATION_BUMP, 20, 95);
+          if (eventBonusesOn) winner.budget += RIVALRY_REVENUE_BONUS;
+        }
       }
       if (t.id === next.userTierId) matches.push(result);
     });
@@ -4534,8 +4921,14 @@ function simulateMatchdayAcrossTiers(next, currentMatchday) {
     // within a season, which was the actual point of the original fix.
     t.clubs.forEach((seller) => {
       const isUserSeller = seller.id === next.userClubId;
-      const buyChance = isUserSeller ? 0.1 : 0.025;
       seller.squad.forEach((p) => {
+        // Same distinction as the preseason window: an unhappy player
+        // auto-listed from being benched isn't a listing the user actually
+        // chose to make, so it shouldn't move at the fast voluntary-sale
+        // rate — that compounding across many matchdays in one bulk sim
+        // (Sim to Next Window, Sim Season) is what could suddenly gut a
+        // squad below the minimum with no real say from the user.
+        const buyChance = isUserSeller ? (p.transferRequested ? 0.03 : 0.1) : 0.025;
         if (p.transferListed && Math.random() < buyChance) {
           // The user's own club must never be randomly picked as the
           // "AI" buyer here — this was silently signing random players
@@ -4623,7 +5016,19 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
 
   const simulateMatchday = () => {
     if (currentMatchday === null) return;
-    if (pendingCupRoundIndex !== null) { setTab("opencup"); return; }
+    if (pendingCupRoundIndex !== null) {
+      // Auto-resolve the cup round in place rather than force-navigating
+      // to the Open Cup tab — that was an intrusive interruption,
+      // especially now that the Fixtures tab already surfaces the
+      // upcoming cup round and your drawn opponent ahead of time. The
+      // match summary for your own cup game still pops up either way.
+      mutateAndSave((next) => {
+        const newRound = resolveCupRoundInPlace(next);
+        const match = findUserCupMatch(newRound);
+        if (match) setCupRecap({ roundLabel: newRound.label, match });
+      });
+      return;
+    }
     mutateAndSave((next) => {
       const { matches, disqualificationNotice } = simulateMatchdayAcrossTiers(next, currentMatchday);
       const w = maybeTriggerMidWindow(next, currentMatchday);
@@ -4737,6 +5142,24 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
   const pendingCupRoundIndex = currentMatchday !== null && isCupCheckpointPending(state, currentMatchday)
     ? US_OPEN_CUP_ROUND_MATCHDAYS.indexOf(currentMatchday)
     : null;
+
+  // The pairing for a cup round is random — drawing it fresh every render
+  // would show a different "next opponent" each time. Draw it once, the
+  // moment the round becomes due, and store it so the preview stays
+  // stable until the round is actually played (which reuses this exact
+  // pairing rather than redrawing).
+  useEffect(() => {
+    if (pendingCupRoundIndex === null) return;
+    const existingDraw = state.usOpenCup?.pendingDraw;
+    if (existingDraw && existingDraw.roundIndex === pendingCupRoundIndex) return;
+    mutateAndSave((next) => {
+      const draw = drawNextUsOpenCupRound(next.usOpenCup, next.tiers, next.usOpenCupQualifiers);
+      next.usOpenCup = next.usOpenCup
+        ? { ...next.usOpenCup, pendingDraw: draw }
+        : { rounds: [], giantKillerBonuses: [], pool: null, done: false, champion: null, runnerUp: null, pendingDraw: draw };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingCupRoundIndex]);
 
   const handlePlayCupRound = () => {
     mutateAndSave((next) => {
@@ -5325,7 +5748,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
       </div>
 
       <div style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
-        {tab === "squad" && <SquadTab club={userClub} matchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)} onToggleList={handleToggleList} onRenew={handleRenew} onSetCaptain={handleSetCaptain} tierId={state.userTierId} difficulty={state.difficulty} onToggleDP={handleToggleDP} onToggleRest={handleToggleRest} onToggleHoldBack={handleToggleHoldBack} onLoanOut={handleLoanOut} playersOnLoan={state.playersOnLoan} />}
+        {tab === "squad" && <SquadTab club={userClub} matchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)} onToggleList={handleToggleList} onRenew={handleRenew} onSetCaptain={handleSetCaptain} tierId={state.userTierId} difficulty={state.difficulty} onToggleDP={handleToggleDP} onToggleRest={handleToggleRest} onToggleHoldBack={handleToggleHoldBack} onLoanOut={handleLoanOut} playersOnLoan={state.playersOnLoan} tier={tier} />}
         {tab === "tactics" && <TacticsTab club={userClub} matchday={currentMatchday ?? 1} onChange={handleTacticsChange} tier={tier} />}
         {tab === "table" && <TableTab tier={tier} userClubId={userClub.id} seasonPlayoffs={seasonPlayoffs} revealedRounds={revealedRounds} onSimRound={handleSimRound} onSimRest={handleSimRestOfPostseason} />}
         {tab === "fixtures" && <FixturesTab tier={tier} userClubId={userClub.id} usOpenCup={state.usOpenCup} />}
@@ -5426,6 +5849,8 @@ export default function App() {
   const [loaded, setLoaded] = useState(false);
   const [saveWasReset, setSaveWasReset] = useState(false);
   const [pendingDifficulty, setPendingDifficulty] = useState(null);
+  const [pendingCountry, setPendingCountry] = useState(null);
+  const [showEnglandTest, setShowEnglandTest] = useState(false);
   const [managerHistory, setManagerHistory] = useState(DEFAULT_MANAGER_HISTORY);
 
   useEffect(() => {
@@ -5480,6 +5905,8 @@ export default function App() {
     } catch (e) {}
     setState(null);
     setPendingDifficulty(null);
+    setPendingCountry(null);
+    setShowEnglandTest(false);
   };
 
   // Getting sacked isn't the same as starting fresh — you keep your
@@ -5506,12 +5933,21 @@ export default function App() {
   }
 
   if (!state) {
+    if (!pendingCountry) {
+      return <CountrySelectScreen onChoose={setPendingCountry} />;
+    }
+    if (pendingCountry === "england") {
+      if (showEnglandTest) {
+        return <EnglandTestScreen onBack={() => setShowEnglandTest(false)} />;
+      }
+      return <EnglandComingSoonScreen onBack={() => setPendingCountry(null)} onTryTestMode={() => setShowEnglandTest(true)} />;
+    }
     if (!pendingDifficulty) {
-      return <DifficultySelectScreen onChoose={setPendingDifficulty} />;
+      return <DifficultySelectScreen onChoose={setPendingDifficulty} onBack={() => setPendingCountry(null)} />;
     }
     const previewWorld = buildInitialWorld();
     previewWorld.forEach((t) => { t.fixtures = generateRoundRobin(t.clubs.map((c) => c.id)); });
-    return <ClubSelectScreen world={previewWorld} saveWasReset={saveWasReset} difficulty={pendingDifficulty} onPick={(tierId, clubId) => {
+    return <ClubSelectScreen world={previewWorld} saveWasReset={saveWasReset} difficulty={pendingDifficulty} onBack={() => setPendingDifficulty(null)} onPick={(tierId, clubId) => {
       // re-derive the same picked club/tier from a freshly built world containing it
       handlePickFromPreview(previewWorld, tierId, clubId, pendingDifficulty, setState);
     }} />;
