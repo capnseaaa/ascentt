@@ -2487,7 +2487,9 @@ function RolloverModal({ events, userClubId, seasonNumber, windowResult, userPri
                 return (
                   <div key={i} style={{ display: "grid", gridTemplateColumns: "70px 1fr 1fr", background: tint, borderTop: `1px solid ${PALETTE.parchmentDim}`, fontSize: 13, ...serif, color: PALETTE.ink }}>
                     <div style={{ padding: "7px 8px", display: "flex", alignItems: "center" }}>
-                      {r.tierIdx === null ? <span style={{ ...mono, fontSize: 10, fontWeight: 700 }}>CUP</span> : <TierBadge tierId={r.tierIdx} />}
+                      {r.tierIdx === null
+                        ? <span style={{ background: PALETTE.gold, color: PALETTE.ink, padding: "2px 10px", borderRadius: 4, fontSize: 12, fontWeight: 700, ...display }}>CUP</span>
+                        : <TierBadge tierId={r.tierIdx} />}
                     </div>
                     <div style={{ padding: "7px 8px", fontWeight: 600 }}>{r.label}</div>
                     <div style={{ padding: "7px 8px" }}>{r.winner}</div>
@@ -2555,6 +2557,48 @@ function RolloverModal({ events, userClubId, seasonNumber, windowResult, userPri
 /* ============================================================
    MATCHDAY RECAP PANEL
    ============================================================ */
+
+function RivalryRecapModal({ recap, onClose }) {
+  if (!recap) return null;
+  const { homeClub, awayClub, homeScore, awayScore, userIsHome, difficulty } = recap;
+  const userGoals = userIsHome ? homeScore : awayScore;
+  const oppGoals = userIsHome ? awayScore : homeScore;
+  const userWon = userGoals > oppGoals;
+  const draw = userGoals === oppGoals;
+  const eventBonusesOn = DIFFICULTY_MODES[difficulty]?.eventBonuses;
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, background: "#000000cc", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 45, padding: 20 }}
+      onClick={onClose}
+    >
+      <div style={{ background: PALETTE.parchment, borderRadius: 12, maxWidth: 420, width: "100%", padding: 24, border: `3px solid ${PALETTE.crimson}` }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+          <div style={{ ...display, fontSize: 22, fontWeight: 700, color: PALETTE.crimson, display: "flex", alignItems: "center", gap: 8 }}>
+            🔥 RIVALRY MATCH
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer" }}><X size={20} color={PALETTE.inkSoft} /></button>
+        </div>
+        <div style={{ ...display, fontSize: 18, fontWeight: 700, color: PALETTE.ink, textAlign: "center", margin: "14px 0" }}>
+          {homeClub} <span style={{ ...mono }}>{homeScore} - {awayScore}</span> {awayClub}
+        </div>
+        <div style={{ ...serif, fontSize: 15, color: draw ? PALETTE.inkSoft : userWon ? "#2E7D32" : PALETTE.crimson, textAlign: "center", marginBottom: 8, fontWeight: 600 }}>
+          {draw ? "A draw in a fixture like this — nobody's happy, nobody's thrilled." : userWon ? "Bragging rights are yours!" : "A tough one to take from your rivals."}
+        </div>
+        {userWon && (
+          <div style={{ ...serif, fontSize: 13, color: PALETTE.inkSoft, textAlign: "center" }}>
+            A small reputation bump for the win{eventBonusesOn ? ", plus a boost in gate revenue from the derby atmosphere." : "."}
+          </div>
+        )}
+        <button
+          onClick={onClose}
+          style={{ width: "100%", marginTop: 16, background: PALETTE.crimson, color: "#fff", border: "none", borderRadius: 8, padding: "10px 0", fontSize: 14, fontWeight: 600, cursor: "pointer", ...display }}
+        >
+          Close
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function CupRecapModal({ recap, userClubId, onClose }) {
   if (!recap) return null;
@@ -4546,6 +4590,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
   const [seasonPlayoffs, setSeasonPlayoffs] = useState(null);
   const [revealedRounds, setRevealedRounds] = useState(0);
   const [cupRecap, setCupRecap] = useState(null);
+  const [rivalryRecap, setRivalryRecap] = useState(null);
   const [sackedNotice, setSackedNotice] = useState(null);
   const [showPayroll, setShowPayroll] = useState(false);
 
@@ -4574,6 +4619,8 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
     });
   }, [setState]);
 
+  const findUserRivalryMatch = (matches) => matches.find((m) => m.isRivalryMatch && (m.homeClub === userClub.name || m.awayClub === userClub.name));
+
   const simulateMatchday = () => {
     if (currentMatchday === null) return;
     if (pendingCupRoundIndex !== null) { setTab("opencup"); return; }
@@ -4587,6 +4634,10 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
           ? `${disqualificationNotice.clubName} is back above the minimum squad size — disqualification lifted, you're clear to compete normally again.`
           : `${disqualificationNotice.clubName} dropped below the ${MIN_SQUAD_SIZE}-player minimum (short ${disqualificationNotice.short}) — you're disqualified from competing until you sign back up to strength. Emergency funding of $${disqualificationNotice.funding.toLocaleString()} has been added to your budget to help.`);
       }
+      const userRivalry = findUserRivalryMatch(matches);
+      if (userRivalry) {
+        setRivalryRecap({ homeClub: userRivalry.homeClub, awayClub: userRivalry.awayClub, homeScore: userRivalry.homeScore, awayScore: userRivalry.awayScore, userIsHome: userRivalry.homeClub === userClub.name, difficulty: next.difficulty });
+      }
     });
   };
 
@@ -4596,6 +4647,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
       let md = getCurrentMatchday(next);
       let lastNotice = null;
       let lastUserCupMatch = null;
+      let lastUserRivalry = null;
       while (md !== null) {
         if (isCupCheckpointPending(next, md)) {
           const newRound = resolveCupRoundInPlace(next);
@@ -4604,8 +4656,10 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
           md = getCurrentMatchday(next);
           continue;
         }
-        const { disqualificationNotice } = simulateMatchdayAcrossTiers(next, md);
+        const { matches, disqualificationNotice } = simulateMatchdayAcrossTiers(next, md);
         if (disqualificationNotice) lastNotice = disqualificationNotice;
+        const userRivalry = findUserRivalryMatch(matches);
+        if (userRivalry) lastUserRivalry = userRivalry;
         maybeTriggerMidWindow(next, md);
         md = getCurrentMatchday(next);
       }
@@ -4615,6 +4669,8 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
           : `${lastNotice.clubName} dropped below the ${MIN_SQUAD_SIZE}-player minimum during this run — you're disqualified from competing until you sign back up to strength. Emergency funding of $${lastNotice.funding.toLocaleString()} has been added to your budget to help.`);
       } else if (lastUserCupMatch) {
         setCupRecap(lastUserCupMatch);
+      } else if (lastUserRivalry) {
+        setRivalryRecap({ homeClub: lastUserRivalry.homeClub, awayClub: lastUserRivalry.awayClub, homeScore: lastUserRivalry.homeScore, awayScore: lastUserRivalry.awayScore, userIsHome: lastUserRivalry.homeClub === userClub.name, difficulty: next.difficulty });
       }
     });
   };
@@ -4626,6 +4682,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
       let fired = null;
       let lastNotice = null;
       let lastUserCupMatch = null;
+      let lastUserRivalry = null;
       while (md !== null) {
         if (isCupCheckpointPending(next, md)) {
           const newRound = resolveCupRoundInPlace(next);
@@ -4634,8 +4691,10 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
           md = getCurrentMatchday(next);
           continue;
         }
-        const { disqualificationNotice } = simulateMatchdayAcrossTiers(next, md);
+        const { matches, disqualificationNotice } = simulateMatchdayAcrossTiers(next, md);
         if (disqualificationNotice) lastNotice = disqualificationNotice;
+        const userRivalry = findUserRivalryMatch(matches);
+        if (userRivalry) lastUserRivalry = userRivalry;
         fired = maybeTriggerMidWindow(next, md);
         md = getCurrentMatchday(next);
         if (fired) break;
@@ -4647,6 +4706,8 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
           : `${lastNotice.clubName} dropped below the ${MIN_SQUAD_SIZE}-player minimum — you're disqualified from competing until you sign back up to strength. Emergency funding of $${lastNotice.funding.toLocaleString()} has been added to your budget to help.`);
       } else if (lastUserCupMatch) {
         setCupRecap(lastUserCupMatch);
+      } else if (lastUserRivalry) {
+        setRivalryRecap({ homeClub: lastUserRivalry.homeClub, awayClub: lastUserRivalry.awayClub, homeScore: lastUserRivalry.homeScore, awayScore: lastUserRivalry.awayScore, userIsHome: lastUserRivalry.homeClub === userClub.name, difficulty: next.difficulty });
       }
     });
   };
@@ -5296,6 +5357,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
 
       {recap && <MatchdayRecap results={recap} userClubName={userClub.name} tier={tier} onClose={() => setRecap(null)} />}
       {cupRecap && <CupRecapModal recap={cupRecap} userClubId={state.userClubId} onClose={() => setCupRecap(null)} />}
+      {rivalryRecap && <RivalryRecapModal recap={rivalryRecap} onClose={() => setRivalryRecap(null)} />}
       {windowNotice && <WindowNotice notice={windowNotice} onClose={() => setWindowNotice(null)} />}
       {renewalNotice && <RenewalNotice notice={renewalNotice} onClose={() => setRenewalNotice(null)} />}
       {infoNotice && <InfoNotice message={infoNotice} onClose={() => setInfoNotice(null)} />}
