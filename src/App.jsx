@@ -317,7 +317,7 @@ function buildEnglandWorld(sharedUsedNames, tierIdOffset = 0) {
     const players = findEnglandRealRoster(name);
     return makeClub({
       name,
-      squad: players.map(realPlayerToRuntime),
+      squad: players.map((p) => realPlayerToRuntime(p, tierIdOffset + 0)),
       isReal: true,
       budget: randInt(80_000_000, 300_000_000),
       academyEligible: true,
@@ -327,7 +327,7 @@ function buildEnglandWorld(sharedUsedNames, tierIdOffset = 0) {
     const players = findEnglandRealRoster(name);
     return makeClub({
       name,
-      squad: players.map(realPlayerToRuntime),
+      squad: players.map((p) => realPlayerToRuntime(p, tierIdOffset + 1)),
       isReal: true,
       budget: randInt(8_000_000, 50_000_000),
       academyEligible: true,
@@ -430,7 +430,7 @@ function buildFullWorld() {
   return [...usaTiers, ...englandTiers];
 }
 
-function realPlayerToRuntime(p) {
+function realPlayerToRuntime(p, tierIdx) {
   return {
     id: uid(),
     name: p.name,
@@ -452,8 +452,13 @@ function realPlayerToRuntime(p) {
     caps: 0,
     lastPlayedMatchday: null,
     contractYearsLeft: randInt(2, 5),
-    wage: Math.round(p.overall * 50), // crude placeholder — corrected the first time it passes through rolloverSeason
-    wageSet: false,
+    // Real wage computed immediately — this used to be a crude overall*50
+    // placeholder only corrected the first time a player passed through a
+    // season rollover, which meant every real player showed a tiny,
+    // unrealistic wage for the entirety of Season 1 (rollover doesn't run
+    // until a season ends). Now it's right from the very first matchday.
+    wage: computeRealisticWage(p.overall, p.age, tierIdx ?? 0),
+    wageSet: true,
     transferListed: false,
     askingPrice: null,
   };
@@ -828,7 +833,7 @@ function buildInitialWorld(sharedUsedNames) {
     team.players.forEach((p) => usedNames.add(p.name));
     return makeClub({
       name: team.name,
-      squad: team.players.map(realPlayerToRuntime),
+      squad: team.players.map((p) => realPlayerToRuntime(p, 0)),
       isReal: true,
       budget: randInt(8_000_000, 18_000_000),
       academyEligible: true,
@@ -1189,6 +1194,25 @@ function startingXI(club, matchday) {
   const chosenIds = new Set();
   Object.entries(slots).forEach(([pos, count]) => {
     (byPos[pos] || []).slice(0, count).forEach((p) => { chosen.push(p); chosenIds.add(p.id); });
+  });
+  // If a specific position came up short (usually because the rest
+  // threshold preference benched someone there), first look for another
+  // player who plays that same position and is actually eligible to play
+  // — just resting below the preferred threshold, not injured/suspended/
+  // held back — before falling back to filling the gap with a different
+  // position entirely. A tired-but-fit attacker should fill an attacking
+  // gap before a fresh midfielder does.
+  Object.entries(slots).forEach(([pos, count]) => {
+    const filledInPos = chosen.filter((p) => p.position === pos).length;
+    if (filledInPos >= count) return;
+    const samePositionReserves = hardAvailable
+      .filter((p) => p.position === pos && !chosenIds.has(p.id))
+      .sort((a, b) => lineupScore(mode, b) - lineupScore(mode, a));
+    for (const p of samePositionReserves) {
+      if (chosen.filter((c) => c.position === pos).length >= count) break;
+      chosen.push(p);
+      chosenIds.add(p.id);
+    }
   });
   const totalSlots = Object.values(slots).reduce((a, b) => a + b, 0);
   if (chosen.length < totalSlots) {
@@ -3197,8 +3221,15 @@ function DifficultySelectScreen({ onChoose, onBack }) {
   );
 }
 
-function ClubSelectScreen({ world, onPick, saveWasReset, difficulty, onBack, defaultCountry }) {
+function ClubSelectScreen({ world, onPick, saveWasReset, difficulty, onBack, defaultCountry, managerReputation }) {
   const [openTier, setOpenTier] = useState(defaultCountry === "england" ? 4 : 0);
+  // Reputation gating is a Pro/Executive-only wrinkle — Rookie mode stays
+  // "pick anyone" so a first-time player isn't blocked from anywhere.
+  // Prestigious clubs (high club.reputation) want some proven pedigree
+  // first; modest clubs will take a chance on anyone. requiredRep scales
+  // with how far above average the club's own reputation sits.
+  const repGatingActive = difficulty !== "rookie";
+  const requiredRepFor = (club) => Math.max(0, club.reputation - 25);
 
   return (
     <div style={{ minHeight: "100vh", background: PALETTE.pitchDark, ...serif }}>
@@ -3255,14 +3286,17 @@ function ClubSelectScreen({ world, onPick, saveWasReset, difficulty, onBack, def
                 <div style={{ background: PALETTE.pitch, padding: 16, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 10 }}>
                   {tier.clubs.map((club) => {
                     const avgOvr = Math.round(club.squad.reduce((s, p) => s + p.overall, 0) / club.squad.length);
+                    const requiredRep = requiredRepFor(club);
+                    const rejected = repGatingActive && (managerReputation ?? 40) < requiredRep;
                     return (
                       <button
                         key={club.id}
-                        onClick={() => onPick(meta.id, club.id)}
+                        onClick={() => { if (!rejected) onPick(meta.id, club.id); }}
+                        disabled={rejected}
                         style={{
                           display: "flex", alignItems: "center", gap: 10, padding: "10px 12px",
-                          background: PALETTE.parchment, border: "none", borderRadius: 8, cursor: "pointer",
-                          textAlign: "left",
+                          background: rejected ? PALETTE.parchmentDim : PALETTE.parchment, border: "none", borderRadius: 8,
+                          cursor: rejected ? "default" : "pointer", textAlign: "left", opacity: rejected ? 0.7 : 1,
                         }}
                       >
                         <Crest name={club.name} size={34} />
@@ -3270,8 +3304,8 @@ function ClubSelectScreen({ world, onPick, saveWasReset, difficulty, onBack, def
                           <div style={{ ...display, fontWeight: 600, fontSize: 14, color: PALETTE.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {club.name}
                           </div>
-                          <div style={{ fontSize: 12, color: PALETTE.inkSoft, ...mono }}>
-                            {club.isReal ? "real roster" : "generated roster"} · OVR {avgOvr}
+                          <div style={{ fontSize: 12, color: rejected ? PALETTE.crimson : PALETTE.inkSoft, ...mono }}>
+                            {rejected ? "wants a more proven manager first" : `${club.isReal ? "real roster" : "generated roster"} · OVR ${avgOvr}`}
                           </div>
                         </div>
                       </button>
@@ -4749,17 +4783,51 @@ function FixturesTab({ tier, userClubId, usOpenCup, faCup, eflCup }) {
           <div style={{ ...serif, fontSize: 12.5, color: PALETTE.ink }}>{scouting.tip}</div>
         </div>
       )}
-      {userFixtures.map((f) => (
-        <div key={f.id} style={{
-          display: "flex", justifyContent: "space-between", padding: "8px 10px", fontSize: 13,
-          borderBottom: `1px solid ${PALETTE.parchmentDim}`, ...serif,
-          background: (!f.played && f.id === nextFixture?.id) ? `${PALETTE.gold}18` : "none",
-        }}>
-          <span style={{ color: PALETTE.inkSoft, ...mono, width: 32 }}>MD{f.matchday}</span>
-          <span style={{ flex: 1 }}>{clubName(f.homeClubId)} vs {clubName(f.awayClubId)}</span>
-          <span style={{ ...mono, fontWeight: 700 }}>{f.played ? `${f.homeScore} - ${f.awayScore}` : "—"}</span>
-        </div>
-      ))}
+      {(() => {
+        // Build the set of matchdays where an unplayed cup round will
+        // interrupt league play, so the full list can show it right where
+        // it actually happens instead of leaving it looking like the
+        // league fixture at that matchday is just... missing context.
+        const cupCheckpointsByMatchday = {};
+        if (hasOpenCup) {
+          const played = usOpenCup?.rounds?.length ?? 0;
+          const done = usOpenCup?.done ?? false;
+          if (!done) US_OPEN_CUP_ROUND_MATCHDAYS.forEach((md, idx) => {
+            if (idx >= played) cupCheckpointsByMatchday[md] = { cupName: "US Open Cup", label: cupRoundLabel(idx) };
+          });
+        } else if (faCup !== undefined || eflCup !== undefined) {
+          const faPlayed = faCup?.rounds?.length ?? 0;
+          if (!faCup?.done) FA_CUP_ROUND_MATCHDAYS.forEach((md, idx) => {
+            if (idx >= faPlayed) cupCheckpointsByMatchday[md] = { cupName: "FA Cup", label: previewStageLabel(idx) };
+          });
+          const eflPlayed = eflCup?.rounds?.length ?? 0;
+          if (!eflCup?.done) EFL_CUP_ROUND_MATCHDAYS.forEach((md, idx) => {
+            if (idx >= eflPlayed) cupCheckpointsByMatchday[md] = { cupName: "EFL Cup", label: previewStageLabel(idx) };
+          });
+        }
+        return userFixtures.map((f) => {
+          const cupHere = !f.played ? cupCheckpointsByMatchday[f.matchday] : null;
+          return (
+            <React.Fragment key={f.id}>
+              {cupHere && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", fontSize: 12, ...serif, background: `${PALETTE.gold}18`, borderBottom: `1px solid ${PALETTE.parchmentDim}` }}>
+                  <Star size={13} color={PALETTE.gold} />
+                  <span>Before this fixture: <strong>{cupHere.cupName} — {cupHere.label}</strong></span>
+                </div>
+              )}
+              <div style={{
+                display: "flex", justifyContent: "space-between", padding: "8px 10px", fontSize: 13,
+                borderBottom: `1px solid ${PALETTE.parchmentDim}`, ...serif,
+                background: (!f.played && f.id === nextFixture?.id) ? `${PALETTE.gold}18` : "none",
+              }}>
+                <span style={{ color: PALETTE.inkSoft, ...mono, width: 32 }}>MD{f.matchday}</span>
+                <span style={{ flex: 1 }}>{clubName(f.homeClubId)} vs {clubName(f.awayClubId)}</span>
+                <span style={{ ...mono, fontWeight: 700 }}>{f.played ? `${f.homeScore} - ${f.awayScore}` : "—"}</span>
+              </div>
+            </React.Fragment>
+          );
+        });
+      })()}
     </div>
   );
 }
@@ -6240,10 +6308,24 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
     }
 
     // The trophy case belongs to the manager, not the club — record this
-    // season's results either way, sacked or not.
+    // season's results either way, sacked or not. Manager reputation is
+    // also career-long (not tied to any one club) — it's what a new club
+    // judges you on when you go looking for your next job, in Pro/
+    // Executive mode. Ratchets with clear season outcomes: title wins and
+    // promotions build it, relegations knock it down, cup wins add a
+    // smaller bump each.
+    let repDelta = 0;
+    if (userChamp) repDelta += 15;
+    if (userMove?.type === "promoted") repDelta += 10;
+    else if (userMove?.type === "relegated") repDelta -= 15;
+    [userMlsPlayoff, userUslcPlayoff, userUsOpenCup, userFaCup, userEflCup].forEach((r) => {
+      if (r?.result === "champion") repDelta += 8;
+    });
     setManagerHistory((prev) => ({
+      ...prev,
       trophyLog: [...prev.trophyLog, ...trophyEntries],
       bestFinish,
+      managerReputation: clamp((prev.managerReputation ?? 40) + repDelta, 5, 99),
     }));
 
     if (sackNotice) {
@@ -6798,7 +6880,7 @@ const SAVE_VERSION = 2; // bumped: pre-v2 saves could have NaN budgets (from the
 // survives being sacked or starting a new career, so it lives in its own
 // storage key rather than inside the per-club save.
 const MANAGER_KEY = "ascent_manager_history_v1";
-const DEFAULT_MANAGER_HISTORY = { trophyLog: [], bestFinish: null, hasSeenTutorial: false, seenOneTimeHints: [] };
+const DEFAULT_MANAGER_HISTORY = { trophyLog: [], bestFinish: null, hasSeenTutorial: false, seenOneTimeHints: [], managerReputation: 40 };
 
 function isValidSave(parsed) {
   return (
@@ -6888,6 +6970,7 @@ export default function App() {
     } catch (e) {}
     setState(null);
     setPendingDifficulty(currentDifficulty || "rookie");
+    setManagerHistory((prev) => ({ ...prev, managerReputation: clamp((prev.managerReputation ?? 40) - 20, 5, 99) }));
   };
 
   if (!loaded) {
@@ -6913,7 +6996,7 @@ export default function App() {
     }
     const previewWorld = buildFullWorld();
     previewWorld.forEach((t) => { t.fixtures = generateDoubleRoundRobin(t.clubs.map((c) => c.id)); });
-    return <ClubSelectScreen world={previewWorld} defaultCountry={pendingCountry} saveWasReset={saveWasReset} difficulty={pendingDifficulty} onBack={() => setPendingLeagueTutorialSeen(false)} onPick={(tierId, clubId) => {
+    return <ClubSelectScreen world={previewWorld} defaultCountry={pendingCountry} saveWasReset={saveWasReset} difficulty={pendingDifficulty} managerReputation={managerHistory.managerReputation} onBack={() => setPendingLeagueTutorialSeen(false)} onPick={(tierId, clubId) => {
       // re-derive the same picked club/tier from a freshly built world containing it
       handlePickFromPreview(previewWorld, tierId, clubId, pendingDifficulty, setState);
     }} />;
