@@ -3221,14 +3221,16 @@ function DifficultySelectScreen({ onChoose, onBack }) {
   );
 }
 
-function ClubSelectScreen({ world, onPick, saveWasReset, difficulty, onBack, defaultCountry, managerReputation }) {
+function ClubSelectScreen({ world, onPick, saveWasReset, difficulty, onBack, defaultCountry, managerReputation, isJobSearch }) {
   const [openTier, setOpenTier] = useState(defaultCountry === "england" ? 4 : 0);
-  // Reputation gating is a Pro/Executive-only wrinkle — Rookie mode stays
-  // "pick anyone" so a first-time player isn't blocked from anywhere.
-  // Prestigious clubs (high club.reputation) want some proven pedigree
-  // first; modest clubs will take a chance on anyone. requiredRep scales
-  // with how far above average the club's own reputation sits.
-  const repGatingActive = difficulty !== "rookie";
+  // Reputation gating is a Pro/Executive-only wrinkle, and only applies
+  // when this is an actual job search (sacked, or left voluntarily) — a
+  // brand new career or a full restart should never be locked out of a
+  // club just because reputation hasn't been earned yet. Prestigious clubs
+  // (high club.reputation) want some proven pedigree first; modest clubs
+  // will take a chance on anyone. requiredRep scales with how far above
+  // average the club's own reputation sits.
+  const repGatingActive = difficulty !== "rookie" && isJobSearch;
   const requiredRepFor = (club) => Math.max(0, club.reputation - 25);
 
   return (
@@ -5873,7 +5875,7 @@ function maybeTriggerMidWindow(next, justPlayedMatchday) {
   return result;
 }
 
-function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setManagerHistory }) {
+function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerHistory, setManagerHistory }) {
   const [tab, setTab] = useState("squad");
   const [recap, setRecap] = useState(null);
   const [windowNotice, setWindowNotice] = useState(null);
@@ -6750,6 +6752,9 @@ function Dashboard({ state, setState, onNewGame, onSacked, managerHistory, setMa
               </button>
             </>
           )}
+          <button onClick={onLeaveClub} title="Leave this club and look for a new job elsewhere" style={{ ...display, fontWeight: 600, fontSize: 12, background: "none", color: PALETTE.parchment, border: `1px solid ${PALETTE.parchment}55`, borderRadius: 6, padding: "10px 12px", cursor: "pointer" }}>
+            Leave Club
+          </button>
           <button onClick={onNewGame} title="Abandon career" style={{ background: "none", border: `1px solid ${PALETTE.parchment}55`, borderRadius: 6, padding: "10px", cursor: "pointer" }}>
             <RotateCcw size={16} color={PALETTE.parchment} />
           </button>
@@ -6901,6 +6906,11 @@ export default function App() {
   const [pendingCountry, setPendingCountry] = useState(null);
   const [pendingLeagueTutorialSeen, setPendingLeagueTutorialSeen] = useState(false);
   const [showEnglandTest, setShowEnglandTest] = useState(false);
+  // Reputation gating in ClubSelectScreen only applies when this is true —
+  // a fresh career (or a full restart) should never lock you out of a
+  // club just because you haven't proven yourself yet. It's earned
+  // context (sacked, or voluntarily leaving) that makes reputation matter.
+  const [isJobSearch, setIsJobSearch] = useState(false);
   const [managerHistory, setManagerHistory] = useState(DEFAULT_MANAGER_HISTORY);
 
   useEffect(() => {
@@ -6958,11 +6968,13 @@ export default function App() {
     setPendingCountry(null);
     setPendingLeagueTutorialSeen(false);
     setShowEnglandTest(false);
+    setIsJobSearch(false);
   };
 
   // Getting sacked isn't the same as starting fresh — you keep your
   // difficulty mode and go straight to picking a new club, not back through
-  // difficulty selection.
+  // difficulty selection. Reputation gating turns on here: a struggling
+  // manager looking for their next job has to answer for their record.
   const handleSacked = () => {
     const currentDifficulty = state?.difficulty;
     try {
@@ -6970,7 +6982,22 @@ export default function App() {
     } catch (e) {}
     setState(null);
     setPendingDifficulty(currentDifficulty || "rookie");
+    setIsJobSearch(true);
     setManagerHistory((prev) => ({ ...prev, managerReputation: clamp((prev.managerReputation ?? 40) - 20, 5, 99) }));
+  };
+
+  // Leaving voluntarily — same flow as being sacked (straight to club
+  // select, same difficulty, reputation gating applies since it's a
+  // mid-career move) but no reputation penalty, since nobody fired you.
+  const handleLeaveClub = () => {
+    if (!window.confirm("Leave this club and look for a new job? Your reputation will decide which clubs are willing to take you on.")) return;
+    const currentDifficulty = state?.difficulty;
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch (e) {}
+    setState(null);
+    setPendingDifficulty(currentDifficulty || "rookie");
+    setIsJobSearch(true);
   };
 
   if (!loaded) {
@@ -6996,13 +7023,13 @@ export default function App() {
     }
     const previewWorld = buildFullWorld();
     previewWorld.forEach((t) => { t.fixtures = generateDoubleRoundRobin(t.clubs.map((c) => c.id)); });
-    return <ClubSelectScreen world={previewWorld} defaultCountry={pendingCountry} saveWasReset={saveWasReset} difficulty={pendingDifficulty} managerReputation={managerHistory.managerReputation} onBack={() => setPendingLeagueTutorialSeen(false)} onPick={(tierId, clubId) => {
+    return <ClubSelectScreen world={previewWorld} defaultCountry={pendingCountry} saveWasReset={saveWasReset} difficulty={pendingDifficulty} managerReputation={managerHistory.managerReputation} isJobSearch={isJobSearch} onBack={() => setPendingLeagueTutorialSeen(false)} onPick={(tierId, clubId) => {
       // re-derive the same picked club/tier from a freshly built world containing it
       handlePickFromPreview(previewWorld, tierId, clubId, pendingDifficulty, setState);
     }} />;
   }
 
-  return <Dashboard state={state} setState={setState} onNewGame={handleNewGame} onSacked={handleSacked} managerHistory={managerHistory} setManagerHistory={setManagerHistory} />;
+  return <Dashboard state={state} setState={setState} onNewGame={handleNewGame} onSacked={handleSacked} onLeaveClub={handleLeaveClub} managerHistory={managerHistory} setManagerHistory={setManagerHistory} />;
 }
 
 function handlePickFromPreview(previewWorld, tierId, clubId, difficulty, setState) {
