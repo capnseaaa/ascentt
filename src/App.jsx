@@ -1085,7 +1085,7 @@ function rolloverEnglandSeason(tiers, parachutePayments, difficulty, prizePools,
         ...club,
         squad,
         reputation,
-        budget: club.budget + prize + ownershipDepositFor(t.id, difficulty) - payroll,
+        budget: club.budget + prize + ownershipDepositFor(t.id, difficulty, club) - payroll,
       };
     });
     return { id: t.id, name: t.name, clubs, fixtures: generateDoubleRoundRobin(clubs.map((c) => c.id)) };
@@ -1642,8 +1642,27 @@ const OWNERSHIP_DEPOSIT = [5_000_000, 2_000_000, 900_000, 350_000, 20_000_000, 3
 // where wages can run high; the other tiers' payrolls were already roughly
 // in range of their Rookie-level deposit.
 const OWNERSHIP_DEPOSIT_WAGED = [16_000_000, 2_400_000, 1_000_000, 350_000, 60_000_000, 4_000_000, 900_000, 350_000];
-function ownershipDepositFor(tierIdx, difficulty) {
-  return DIFFICULTY_MODES[difficulty]?.wagesDeducted ? OWNERSHIP_DEPOSIT_WAGED[tierIdx] : OWNERSHIP_DEPOSIT[tierIdx];
+// A simple, deterministic string hash — used so a club's funding
+// "inconsistency" is stable (same club always lands on the same value)
+// rather than re-rolling randomly every time this gets called.
+function stableUnitFromString(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return (h % 1000) / 1000; // 0..1
+}
+
+function ownershipDepositFor(tierIdx, difficulty, club) {
+  const base = DIFFICULTY_MODES[difficulty]?.wagesDeducted ? OWNERSHIP_DEPOSIT_WAGED[tierIdx] : OWNERSHIP_DEPOSIT[tierIdx];
+  if (!club) return base; // generic per-tier figure when no specific club is in play (e.g. the funds preview on Club Select)
+  // The stated baseline is what a modest club in the tier gets — richer
+  // clubs (reputation clearly above the tier's middle) give more, and
+  // funding isn't perfectly uniform even among similar clubs: a small
+  // deterministic per-club factor gives some "slightly more," "about the
+  // same," "a bit erratic" texture rather than every club being identical.
+  const wealthBonus = Math.max(0, (club.reputation ?? 60) - 60) / 40; // 0 at reputation<=60, up to ~0.9 at reputation 95
+  const noise = (stableUnitFromString(club.id) - 0.5) * 0.2; // ±10%
+  const multiplier = Math.max(0.9, 1 + wealthBonus * 0.7 + noise);
+  return Math.round(base * multiplier);
 }
 
 function distributePrizeMoney(table, poolAmount) {
@@ -2628,7 +2647,7 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty, precomputedPl
         ...club,
         squad,
         reputation,
-        budget: club.budget + prize + ownershipDepositFor(i, difficulty) + dpRevenue - payroll,
+        budget: club.budget + prize + ownershipDepositFor(i, difficulty, club) + dpRevenue - payroll,
         academyEligible: !!club.academyEligible || i <= 1,
         youthPlayers,
         tryoutCandidates: [], // last window's tryout candidates don't carry over — sign or lose them
@@ -3330,7 +3349,7 @@ function ClubSelectScreen({ world, onPick, saveWasReset, difficulty, onBack, def
   // will take a chance on anyone. requiredRep scales with how far above
   // average the club's own reputation sits.
   const repGatingActive = difficulty !== "rookie" && isJobSearch;
-  const requiredRepFor = (club) => Math.max(0, club.reputation - 38);
+  const requiredRepFor = (club) => Math.max(0, club.reputation - 28);
 
   return (
     <div style={{ minHeight: "100vh", background: PALETTE.pitchDark, ...serif }}>
@@ -3341,7 +3360,7 @@ function ClubSelectScreen({ world, onPick, saveWasReset, difficulty, onBack, def
             onClick={onBack}
             style={{ background: "none", border: "none", color: PALETTE.silver, fontSize: 11, cursor: "pointer", ...display, marginBottom: 16, opacity: 0.8 }}
           >
-            ← Back to difficulty select
+            {isJobSearch ? "← Back to league selection" : "← Back to difficulty select"}
           </button>
         )}
         <div style={{ textAlign: "center", marginBottom: 48 }}>
@@ -3378,7 +3397,11 @@ function ClubSelectScreen({ world, onPick, saveWasReset, difficulty, onBack, def
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
                   <span style={{ fontSize: 12.5, ...mono, opacity: 0.85, whiteSpace: "nowrap" }}>
-                    Funds: {formatMoney(ownershipDepositFor(meta.id, difficulty))}/season
+                    {(() => {
+                      const deposits = tier.clubs.map((c) => ownershipDepositFor(meta.id, difficulty, c));
+                      const lo = Math.min(...deposits), hi = Math.max(...deposits);
+                      return lo === hi ? `Funds: ${formatMoney(lo)}/season` : `Funds: ${formatMoney(lo)}-${formatMoney(hi)}/season`;
+                    })()}
                   </span>
                   <ChevronRight size={20} style={{ transform: isOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
                 </div>
@@ -3546,25 +3569,6 @@ function RolloverModal({ events, userClubId, userTierId, seasonNumber, windowRes
           </div>
         )}
 
-        {userPromotionPlayoff?.bracket && (
-          <div style={{ background: "#D9C6E822", borderRadius: 8, padding: 12, marginBottom: 16 }}>
-            <div style={{ ...display, fontWeight: 700, fontSize: 13, color: PALETTE.ink, marginBottom: 8 }}>
-              Promotion Playoff — the last spot up went through this
-            </div>
-            {[
-              { label: "Semifinal", m: userPromotionPlayoff.bracket.semi1 },
-              { label: "Semifinal", m: userPromotionPlayoff.bracket.semi2 },
-              { label: "Final", m: userPromotionPlayoff.bracket.final },
-            ].map((row, i) => (
-              <div key={i} style={{ ...serif, fontSize: 12.5, color: PALETTE.ink, padding: "3px 0" }}>
-                <span style={{ ...mono, fontSize: 10, opacity: 0.6, marginRight: 6 }}>{row.label}</span>
-                {row.m.result.homeClub} <span style={{ ...mono, fontWeight: 700 }}>{row.m.result.homeScore}-{row.m.result.awayScore}</span> {row.m.result.awayClub}
-                {row.m.wentToPenalties ? " (pens)" : ""}
-              </div>
-            ))}
-          </div>
-        )}
-
         {windowResult && (
           <div style={{ ...serif, fontSize: 13, color: PALETTE.inkSoft, marginBottom: 16 }}>
             Preseason window: {windowResult.listedCount} players listed, {windowResult.transferCount} deals done across the pyramid. Check the Market tab.
@@ -3676,6 +3680,25 @@ function RolloverModal({ events, userClubId, userTierId, seasonNumber, windowRes
             </div>
           ))}
         </div>
+
+        {userPromotionPlayoff?.bracket && (
+          <div style={{ background: "#D9C6E822", borderRadius: 8, padding: 12, marginTop: 16 }}>
+            <div style={{ ...display, fontWeight: 700, fontSize: 13, color: PALETTE.ink, marginBottom: 8 }}>
+              Promotion Playoff — the last spot up went through this
+            </div>
+            {[
+              { label: "Semifinal", m: userPromotionPlayoff.bracket.semi1 },
+              { label: "Semifinal", m: userPromotionPlayoff.bracket.semi2 },
+              { label: "Final", m: userPromotionPlayoff.bracket.final },
+            ].map((row, i) => (
+              <div key={i} style={{ ...serif, fontSize: 12.5, color: PALETTE.ink, padding: "3px 0" }}>
+                <span style={{ ...mono, fontSize: 10, opacity: 0.6, marginRight: 6 }}>{row.label}</span>
+                {row.m.result.homeClub} <span style={{ ...mono, fontWeight: 700 }}>{row.m.result.homeScore}-{row.m.result.awayScore}</span> {row.m.result.awayClub}
+                {row.m.wentToPenalties ? " (pens)" : ""}
+              </div>
+            ))}
+          </div>
+        )}
 
         <button
           onClick={onContinue}
@@ -6439,7 +6462,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     // Executive mode. Ratchets with clear season outcomes: title wins and
     // promotions build it, relegations knock it down, cup wins add a
     // smaller bump each.
-    let repDelta = 5; // simply completing a season builds some credibility, even without silverware
+    let repDelta = 2; // a modest nod to accumulated experience — achievements below still matter far more than just surviving seasons
     if (userChamp) repDelta += 15;
     if (userMove?.type === "promoted") repDelta += 10;
     else if (userMove?.type === "relegated") repDelta -= 15;
@@ -6502,7 +6525,8 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       eflCup: null,
       playersOnLoan: stillOnLoan,
     }));
-    setRollover({ events, seasonNumber: state.seasonNumber, windowResult, userPrize, ownershipDeposit: ownershipDepositFor(state.userTierId, state.difficulty), userRetirements, userPayroll, mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, userPromotionPlayoff, boardNotice, userDpRevenue, userParachutePayment, usOpenCup: cup, faCup: faCupSnapshot, eflCup: eflCupSnapshot, userUsOpenCup, userFaCup, userEflCup, seasonAwards });
+    const userClubForDeposit = state.tiers[state.userTierId].clubs.find((c) => c.id === state.userClubId);
+    setRollover({ events, seasonNumber: state.seasonNumber, windowResult, userPrize, ownershipDeposit: ownershipDepositFor(state.userTierId, state.difficulty, userClubForDeposit), userRetirements, userPayroll, mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, userPromotionPlayoff, boardNotice, userDpRevenue, userParachutePayment, usOpenCup: cup, faCup: faCupSnapshot, eflCup: eflCupSnapshot, userUsOpenCup, userFaCup, userEflCup, seasonAwards });
     setEnglandPlayoffProgress(null);
     if (userDraftPicks && userDraftPicks.length) setDraftPicks(userDraftPicks);
     setSeasonPlayoffs(null);
@@ -6841,16 +6865,13 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
 
             if (isEnglandUser) {
               let onClick, label;
-              if (!englandQual.qualifies) {
-                onClick = () => doRollover();
-                label = "Continue to Next Season →";
-              } else if (!englandPlayoffProgress) {
-                onClick = () => setEnglandPlayoffProgress({ seeds: englandQual.seeds, autoCount: englandQual.autoCount, semi1: null, semi2: null, final: null });
-                label = "View Promotion Playoff";
-              } else if (!englandPlayoffDone) {
+              if (englandPlayoffProgress && !englandPlayoffDone) {
+                // A playoff is actively in progress — this always wins,
+                // regardless of what qualification would recompute to right
+                // now. Never show "Continue" while the final is still open.
                 onClick = null;
                 label = "Finish the playoff below ↓";
-              } else {
+              } else if (englandPlayoffProgress && englandPlayoffDone) {
                 onClick = () => {
                   const precomputed = {
                     [tier.id]: {
@@ -6861,6 +6882,12 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
                   };
                   doRollover(precomputed);
                 };
+                label = "Continue to Next Season →";
+              } else if (englandQual.qualifies) {
+                onClick = () => setEnglandPlayoffProgress({ seeds: englandQual.seeds, autoCount: englandQual.autoCount, semi1: null, semi2: null, final: null });
+                label = "View Promotion Playoff";
+              } else {
+                onClick = () => doRollover();
                 label = "Continue to Next Season →";
               }
               return (
@@ -6924,12 +6951,12 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       </div>
 
       {englandPlayoffProgress && (() => {
-        const { seeds, semi1, semi2 } = englandPlayoffProgress;
+        const { seeds, semi1, semi2, final } = englandPlayoffProgress;
         const matchday = 9997;
         const rows = [
           { key: "semi1", label: "Semifinal 1", a: seeds.s1, b: seeds.s4, result: semi1, ready: true },
           { key: "semi2", label: "Semifinal 2", a: seeds.s2, b: seeds.s3, result: semi2, ready: true },
-          { key: "final", label: "Final", a: semi1?.winner, b: semi2?.winner, result: null, ready: !!semi1 && !!semi2 },
+          { key: "final", label: "Final", a: semi1?.winner, b: semi2?.winner, result: final, ready: !!semi1 && !!semi2 },
         ];
         return (
           <div style={{ background: PALETTE.pitch, padding: "16px 24px", borderBottom: `2px solid ${PALETTE.parchmentDim}` }}>
