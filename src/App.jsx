@@ -207,14 +207,26 @@ const WAGE_BANDS = [
   { young: 15_000, senior: 25_000, vetLow: 35_000, vetHigh: 55_000, starLow: 60_000, starHigh: 100_000 }, // League Two
 ];
 
-function computeRealisticWage(overall, age, tierIdx) {
+function computeRealisticWage(overall, age, tierIdx, potential) {
   const b = WAGE_BANDS[tierIdx] ?? WAGE_BANDS[3];
   if (b.starHigh === 0) return 0;
   if (overall >= 82) {
     const t = clamp((overall - 82) / 13, 0, 1);
     return Math.round(b.starLow + t * (b.starHigh - b.starLow));
   }
-  if (age <= 23) return b.young;
+  if (age <= 23) {
+    // A real wonderkid's wage reflects the transfer premium clubs pay for
+    // their ceiling, not just their current, still-developing overall — a
+    // splashy signing should feel like one in the wage bill too, not just
+    // the one-time fee. Scales the same "young" baseline up toward the
+    // veteran-star range as the gap to potential grows.
+    const gap = potential != null ? Math.max(0, potential - overall) : 0;
+    if (gap >= 8) {
+      const t = clamp((gap - 8) / 17, 0, 1);
+      return Math.round(b.young + t * (b.starLow - b.young));
+    }
+    return b.young;
+  }
   if (overall <= 65) return b.senior;
   const t = clamp((overall - 65) / 17, 0, 1);
   return Math.round(b.vetLow + t * (b.vetHigh - b.vetLow));
@@ -431,12 +443,13 @@ function buildFullWorld() {
 }
 
 function realPlayerToRuntime(p, tierIdx) {
+  const potential = computePotential(p.age, p.overall);
   return {
     id: uid(),
     name: p.name,
     position: p.position,
     age: p.age,
-    potential: computePotential(p.age, p.overall),
+    potential,
     overall: p.overall,
     pace: p.pace,
     shooting: p.shooting,
@@ -457,7 +470,7 @@ function realPlayerToRuntime(p, tierIdx) {
     // season rollover, which meant every real player showed a tiny,
     // unrealistic wage for the entirety of Season 1 (rollover doesn't run
     // until a season ends). Now it's right from the very first matchday.
-    wage: computeRealisticWage(p.overall, p.age, tierIdx ?? 0),
+    wage: computeRealisticWage(p.overall, p.age, tierIdx ?? 0, potential),
     wageSet: true,
     transferListed: false,
     askingPrice: null,
@@ -1095,7 +1108,7 @@ function rolloverEnglandSeason(tiers, parachutePayments, difficulty, prizePools,
       // never happening for England at all, since England has its own
       // rollover function that didn't include this step.
       squad = squad.map((p) => (
-        !p.wageSet ? { ...p, wage: computeRealisticWage(p.overall, p.age, t.id), wageSet: true } : p
+        !p.wageSet ? { ...p, wage: computeRealisticWage(p.overall, p.age, t.id, p.potential), wageSet: true } : p
       ));
       const payroll = DIFFICULTY_MODES[difficulty]?.wagesDeducted ? effectivePayroll(squad, club.designatedPlayerIds) : 0;
       if (id === userClubId) userPayroll = payroll;
@@ -2698,7 +2711,7 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty, precomputedPl
       // is — even through a promotion or relegation — until their
       // contract actually comes up for renewal.
       squad = squad.map((p) => (
-        !p.wageSet ? { ...p, wage: computeRealisticWage(p.overall, p.age, i), wageSet: true } : p
+        !p.wageSet ? { ...p, wage: computeRealisticWage(p.overall, p.age, i, p.potential), wageSet: true } : p
       ));
       const payroll = DIFFICULTY_MODES[difficulty]?.wagesDeducted ? effectivePayroll(squad, club.designatedPlayerIds) : 0;
 
@@ -2824,7 +2837,14 @@ function marketValue(p) {
   // true megastars keep real commercial/marquee value even late in their
   // career — an aging legend doesn't collapse to bench-player money
   if (p.overall >= 85) ageFactor = Math.max(ageFactor, 0.6);
-  const potFactor = 1 + (p.potential - p.overall) * 0.04;
+  // Wonderkid premium: a real gap to potential is worth far more than a
+  // small linear bump, and matters more the younger the player is (more
+  // years of runway to actually get there, more resale value ahead) — real
+  // transfer markets often price a teenage wonderkid above an established
+  // veteran at the same current overall for exactly this reason.
+  const gap = p.potential - p.overall;
+  const youthBonus = p.age <= 21 ? 1.4 : p.age <= 23 ? 1.15 : 1.0;
+  const potFactor = 1 + gap * 0.09 * youthBonus;
   // form: we don't track a separate running form stat, but morale already
   // reflects recent results for this exact player, so it doubles as one
   const formFactor = 0.85 + (p.morale / 100) * 0.3;
