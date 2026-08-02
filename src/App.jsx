@@ -2360,7 +2360,28 @@ function resolveEnglandCupRoundInPlace(next, cupKey) {
   // qualification works — not whatever's in progress this year. Season 1
   // has no previous season, so it falls back to current in-progress
   // standings just that one time, same pattern as the US Open Cup uses.
-  const eflCupQualifiers = next.eflCupQualifiers ?? { plTop5: computeTable(englandTiers[0]).slice(0, 5).map((r) => r.clubId) };
+  const eflCupQualifiers = next.eflCupQualifiers ?? {
+    // Season 1 has no real previous-season table to draw from — falling
+    // back to the CURRENT in-progress table was meaningless (and actively
+    // unfair) this early, since every club is still tied 0-0-0 and the
+    // "top 5" just came out as whatever arbitrary order ties happened to
+    // break in, silently excluding a real mid-table club from Round 2 of
+    // the EFL Cup for the rest of the season. Reputation is a far more
+    // meaningful stand-in for "presumed top 5" before a ball's been kicked.
+    plTop5: [...englandTiers[0].clubs]
+      .sort((a, b) => {
+        // Reputation alone isn't enough here — most established Premier
+        // League clubs share the exact same reputation ceiling, which
+        // just replaces one arbitrary tie-break with another. Average
+        // squad overall actually differentiates between them.
+        if (b.reputation !== a.reputation) return b.reputation - a.reputation;
+        const avgA = a.squad.reduce((s, p) => s + p.overall, 0) / a.squad.length;
+        const avgB = b.squad.reduce((s, p) => s + p.overall, 0) / b.squad.length;
+        return avgB - avgA;
+      })
+      .slice(0, 5)
+      .map((c) => c.id),
+  };
   const progress = playNextEnglandCupRound(cupKey, next[stateKey], englandTiers, preDrawn, eflCupQualifiers);
   const allClubs = next.tiers.flatMap((t) => t.clubs);
   const payOut = (clubId, amount) => {
@@ -5100,8 +5121,9 @@ function FixturesTab({ tier, userClubId, usOpenCup, faCup, eflCup }) {
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {upcoming.map((item, i) => {
-              const drawn = item.type === "cup" && item.cupName === "US Open Cup" && usOpenCup?.pendingDraw?.roundIndex === item.roundIndex
-                ? findUserDrawnOpponent(usOpenCup.pendingDraw, userClubId)
+              const relevantCup = item.type === "cup" ? (item.cupName === "US Open Cup" ? usOpenCup : item.cupName === "FA Cup" ? faCup : item.cupName === "EFL Cup" ? eflCup : null) : null;
+              const drawn = relevantCup && relevantCup.pendingDraw?.roundIndex === item.roundIndex
+                ? findUserDrawnOpponent(relevantCup.pendingDraw, userClubId)
                 : null;
               const cupText = drawn
                 ? drawn.bye ? `⭐ ${item.cupName} — ${item.label} (bye)` : `⭐ ${item.cupName} — ${item.label}: ${drawn.isHome ? "vs" : "@"} ${drawn.opponent.club.name}`
@@ -6517,6 +6539,49 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingCupRoundIndex]);
+
+  // Same idea for England's two cups — draw the pairing once, the moment
+  // a round becomes due, so the "next opponent" preview stays stable
+  // instead of only appearing after the round is actually played. This
+  // mechanic already existed for the US Open Cup; England's cups had the
+  // resolve-side plumbing for it but nothing was ever triggering the draw.
+  useEffect(() => {
+    if (!pendingEnglandCupKey) return;
+    const stateKey = pendingEnglandCupKey === "fa" ? "faCup" : "eflCup";
+    const existingDraw = state[stateKey]?.pendingDraw;
+    const roundIndex = state[stateKey]?.rounds?.length ?? 0;
+    if (existingDraw && existingDraw.roundIndex === roundIndex) return;
+    mutateAndSave((next) => {
+      const englandTiers = next.tiers.slice(4, 8);
+      const eflCupQualifiers = next.eflCupQualifiers ?? {
+    // Season 1 has no real previous-season table to draw from — falling
+    // back to the CURRENT in-progress table was meaningless (and actively
+    // unfair) this early, since every club is still tied 0-0-0 and the
+    // "top 5" just came out as whatever arbitrary order ties happened to
+    // break in, silently excluding a real mid-table club from Round 2 of
+    // the EFL Cup for the rest of the season. Reputation is a far more
+    // meaningful stand-in for "presumed top 5" before a ball's been kicked.
+    plTop5: [...englandTiers[0].clubs]
+      .sort((a, b) => {
+        // Reputation alone isn't enough here — most established Premier
+        // League clubs share the exact same reputation ceiling, which
+        // just replaces one arbitrary tie-break with another. Average
+        // squad overall actually differentiates between them.
+        if (b.reputation !== a.reputation) return b.reputation - a.reputation;
+        const avgA = a.squad.reduce((s, p) => s + p.overall, 0) / a.squad.length;
+        const avgB = b.squad.reduce((s, p) => s + p.overall, 0) / b.squad.length;
+        return avgB - avgA;
+      })
+      .slice(0, 5)
+      .map((c) => c.id),
+  };
+      const draw = drawNextEnglandCupRound(pendingEnglandCupKey, next[stateKey], englandTiers, eflCupQualifiers);
+      next[stateKey] = next[stateKey]
+        ? { ...next[stateKey], pendingDraw: draw }
+        : { rounds: [], giantKillerBonuses: [], pool: null, done: false, champion: null, runnerUp: null, pendingDraw: draw };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingEnglandCupKey]);
 
   const handlePlayCupRound = () => {
     mutateAndSave((next) => {
