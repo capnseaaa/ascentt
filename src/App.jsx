@@ -746,7 +746,7 @@ function computeHints(club, matchday, seenOneTimeHints, recentForm, tier) {
   }
 
   if (hints.length < 2) {
-    push("all-clear", "Squad and finances look solid — a good time to check the Draft or Market for a squad upgrade before your rivals do.");
+    pushOnce("all-clear", "Squad and finances look solid — a good time to check the Draft or Market for a squad upgrade before your rivals do.");
   }
 
   return hints;
@@ -1050,13 +1050,42 @@ function rolloverEnglandSeason(tiers, parachutePayments, difficulty, prizePools,
   const newTiers = tiers.map((t, i) => {
     const clubs = newTierClubIds[i].map((id) => {
       const club = clubsById[id];
+      const isUser = id === userClubId;
       let squad = club.squad.map((p) => {
         const grown = growPlayer(p);
-        return { ...grown, fitness: 100, morale: 60, injuredUntilMatchday: null, suspendedUntilMatchday: null, lastYellowMatchday: null, seasonGoals: 0 };
+        // contractYearsLeft was never being decremented here at all — this
+        // is England's own rollover, separate from MLS's, and this step
+        // had simply never been ported over. Real players' contracts never
+        // actually reached the renewal threshold as a result, so the Renew
+        // button could never appear for anyone, ever.
+        return { ...grown, contractYearsLeft: grown.contractYearsLeft - 1, fitness: 100, morale: 60, injuredUntilMatchday: null, suspendedUntilMatchday: null, lastYellowMatchday: null, seasonGoals: 0 };
       });
       const retiring = squad.filter((p) => Math.random() < retirementChance(p.age));
       const retiredIds = new Set(retiring.map((p) => p.id));
       squad = squad.filter((p) => !retiredIds.has(p.id));
+      if (isUser) {
+        squad = squad.filter((p) => p.contractYearsLeft > 0);
+        if (club.designatedPlayerIds?.length) {
+          const stillOnRoster = new Set(squad.map((p) => p.id));
+          club.designatedPlayerIds = club.designatedPlayerIds.filter((id) => stillOnRoster.has(id));
+        }
+      } else {
+        // AI renews its good players instead of always churning them —
+        // same shape as MLS's own logic: best 1-2 players almost always
+        // renewed, mid-tier squad players usually do, fringe players are
+        // what actually turns over most seasons.
+        const byRank = [...squad].sort((a, b) => b.overall - a.overall);
+        const rankById = new Map(byRank.map((p, idx) => [p.id, idx]));
+        squad = squad.map((p) => {
+          if (p.contractYearsLeft > 0) return p;
+          const rank = rankById.get(p.id);
+          const renewChance = rank <= 1 ? 0.9 : rank <= 5 ? 0.7 : 0.4;
+          if (Math.random() < renewChance) {
+            return { ...p, contractYearsLeft: randInt(2, 4), wage: Math.round(p.wage * 1.05) };
+          }
+          return null;
+        }).filter(Boolean);
+      }
       while (squad.length < MIN_SQUAD_SIZE) {
         squad.push(makePlayer(choice(["GK", "DEF", "MID", "FWD"]), ENGLAND_TIER_META[i].baseRating + randInt(-8, 8)));
       }
@@ -1085,7 +1114,7 @@ function rolloverEnglandSeason(tiers, parachutePayments, difficulty, prizePools,
         ...club,
         squad,
         reputation,
-        budget: club.budget + prize + ownershipDepositFor(t.id, difficulty, club) - payroll,
+        budget: club.budget + prize + ownershipDepositFor(t.id, difficulty, club, t.clubs) - payroll,
       };
     });
     return { id: t.id, name: t.name, clubs, fixtures: generateDoubleRoundRobin(clubs.map((c) => c.id)) };
@@ -1179,6 +1208,7 @@ const FORMATION_SLOTS = {
   "4-2-3-1": { GK: 1, DEF: 4, MID: 5, FWD: 1 },
   "4-3-2-1": { GK: 1, DEF: 4, MID: 5, FWD: 1 },
   "3-4-3": { GK: 1, DEF: 3, MID: 4, FWD: 3 },
+  "4-3-1-2": { GK: 1, DEF: 4, MID: 4, FWD: 2 },
 };
 
 // One-line "what this is good for" so the formation buttons aren't just
@@ -1191,6 +1221,7 @@ const FORMATION_NOTES = {
   "4-2-3-1": "Flexible, MID-heavy setup — good if you have one standout striker and depth through the middle.",
   "4-3-2-1": "The \"Christmas tree\" — a deep midfield block feeding one out-and-out striker, same shape as 4-2-3-1 in this game's terms but built for control through the middle.",
   "3-4-3": "Committed and attacking — three at the back freeing up numbers further forward, but exposed if your defense isn't sharp.",
+  "4-3-1-2": "A flat midfield three feeding a playmaker in the hole, with two strikers up top — same shape as 4-4-2 in this game's terms, built for a creative #10.",
 };
 
 function samplePoisson(lambda) {
@@ -1258,19 +1289,28 @@ function startingXI(club, matchday) {
   // picked FROM, not how picking within that pool works.
   let available = hardAvailable.filter((p) => {
     if (isCupMatch && p.holdBackForCup) return false;
-    if (p.restRequested) return false;
+    if (p.restRequested || p.restIndefinitely) return false;
     if (p.fitness < restThreshold) return false;
     return true;
   });
-  // Safety valve: rest/hold-back preferences should never leave a club
-  // unable to field a real team — if they'd drop available players below
-  // a full XI, fall back to everyone who's actually fit to play instead.
-  if (available.length < 11) available = hardAvailable;
 
   const slots = FORMATION_SLOTS[club.tactics.formation] || FORMATION_SLOTS["4-4-2"];
   const byPos = { GK: [], DEF: [], MID: [], FWD: [] };
   available.forEach((p) => { (byPos[p.position] || byPos.MID).push(p); });
-  Object.keys(byPos).forEach((pos) => byPos[pos].sort((a, b) => lineupScore(mode, b) - lineupScore(mode, a)));
+  // Custom mode: the manager's own picks come first within each position
+  // bucket (highest priority), everyone else still sorted by score behind
+  // them — so a custom XI stays exactly what was chosen whenever those
+  // players are actually available, and reuses all the same gap-filling
+  // logic below (same-position reserves, then hardAvailable as a last
+  // resort) the moment a chosen player is injured, suspended, or rested.
+  const customSet = mode === "custom" && club.tactics.customXI ? new Set(club.tactics.customXI) : null;
+  Object.keys(byPos).forEach((pos) => byPos[pos].sort((a, b) => {
+    if (customSet) {
+      const aIn = customSet.has(a.id), bIn = customSet.has(b.id);
+      if (aIn !== bIn) return aIn ? -1 : 1;
+    }
+    return lineupScore(mode, b) - lineupScore(mode, a);
+  }));
 
   const chosen = [];
   const chosenIds = new Set();
@@ -1283,7 +1323,14 @@ function startingXI(club, matchday) {
   // — just resting below the preferred threshold, not injured/suspended/
   // held back — before falling back to filling the gap with a different
   // position entirely. A tired-but-fit attacker should fill an attacking
-  // gap before a fresh midfielder does.
+  // gap before a fresh midfielder does. Deliberately does NOT use a
+  // blanket "if too few players remain, ignore every rest preference"
+  // safety valve here — that used to silently undo ALL of a user's rest
+  // choices at once (even for unrelated positions) the moment resting
+  // several players pushed the total pool below 11, which is exactly why
+  // a deliberately-rested-around player still wouldn't get picked. Instead
+  // each shortfall is filled individually, only reaching past a rest
+  // preference for the specific slot that's actually short.
   Object.entries(slots).forEach(([pos, count]) => {
     const filledInPos = chosen.filter((p) => p.position === pos).length;
     if (filledInPos >= count) return;
@@ -1298,9 +1345,11 @@ function startingXI(club, matchday) {
   });
   const totalSlots = Object.values(slots).reduce((a, b) => a + b, 0);
   if (chosen.length < totalSlots) {
-    // backfill only from outfield players — a reserve keeper should never
-    // end up filling an outfield slot just because he's next-best-rated
-    const remaining = available.filter((p) => !chosenIds.has(p.id) && p.position !== "GK").sort((a, b) => lineupScore(mode, b) - lineupScore(mode, a));
+    // Last resort — draw from hardAvailable (still respects injury/
+    // suspension/hold-back-for-cup, just not the soft rest preferences),
+    // so a real XI is always fielded without wiping out every rest choice
+    // to do it.
+    const remaining = hardAvailable.filter((p) => !chosenIds.has(p.id) && p.position !== "GK").sort((a, b) => lineupScore(mode, b) - lineupScore(mode, a));
     for (const p of remaining) {
       if (chosen.length >= totalSlots) break;
       chosen.push(p);
@@ -1512,12 +1561,18 @@ function applyCardsAndInjuries(xi, clubName, matchday, events, difficulty) {
     }
     carded.add(p.id);
     events.push({ type: "yellow_card", club: clubName, player: p.name });
-    if (p.lastYellowMatchday === matchday - 1) {
+    p.seasonYellowCards = (p.seasonYellowCards || 0) + 1;
+    // Real accumulation rule (simplified): a 1-match ban every 5th yellow
+    // card banked in a season, then the count resets. The old rule — a
+    // suspension for being booked in two CONSECUTIVE matches — was far
+    // more punishing than reality over a full 38-46 game season, since
+    // that coincidence happens often across a whole squad; 5-per-season
+    // is genuinely rare, matching how seldom this actually bites in
+    // real football.
+    if (p.seasonYellowCards >= 5) {
       p.suspendedUntilMatchday = matchday + 1;
-      p.lastYellowMatchday = null;
-      events.push({ type: "suspension", club: clubName, player: p.name, reason: "booked in consecutive matches" });
-    } else {
-      p.lastYellowMatchday = matchday;
+      p.seasonYellowCards = 0;
+      events.push({ type: "suspension", club: clubName, player: p.name, reason: "five bookings this season" });
     }
   }
 
@@ -1641,7 +1696,7 @@ const OWNERSHIP_DEPOSIT = [5_000_000, 2_000_000, 900_000, 350_000, 20_000_000, 3
 // money, so the deposit scales up accordingly — mainly matters for MLS,
 // where wages can run high; the other tiers' payrolls were already roughly
 // in range of their Rookie-level deposit.
-const OWNERSHIP_DEPOSIT_WAGED = [16_000_000, 2_400_000, 1_000_000, 350_000, 60_000_000, 4_000_000, 900_000, 350_000];
+const OWNERSHIP_DEPOSIT_WAGED = [16_000_000, 2_400_000, 1_000_000, 350_000, 60_000_000, 2_600_000, 900_000, 350_000];
 // A simple, deterministic string hash — used so a club's funding
 // "inconsistency" is stable (same club always lands on the same value)
 // rather than re-rolling randomly every time this gets called.
@@ -1651,7 +1706,7 @@ function stableUnitFromString(s) {
   return (h % 1000) / 1000; // 0..1
 }
 
-function ownershipDepositFor(tierIdx, difficulty, club) {
+function ownershipDepositFor(tierIdx, difficulty, club, tierClubs) {
   const base = DIFFICULTY_MODES[difficulty]?.wagesDeducted ? OWNERSHIP_DEPOSIT_WAGED[tierIdx] : OWNERSHIP_DEPOSIT[tierIdx];
   if (!club) return base; // generic per-tier figure when no specific club is in play (e.g. the funds preview on Club Select)
   // The stated baseline is what a modest club in the tier gets — richer
@@ -1661,7 +1716,20 @@ function ownershipDepositFor(tierIdx, difficulty, club) {
   // same," "a bit erratic" texture rather than every club being identical.
   const wealthBonus = Math.max(0, (club.reputation ?? 60) - 60) / 40; // 0 at reputation<=60, up to ~0.9 at reputation 95
   const noise = (stableUnitFromString(club.id) - 0.5) * 0.2; // ±10%
-  const multiplier = Math.max(0.9, 1 + wealthBonus * 0.7 + noise);
+  let multiplier = Math.max(0.9, 1 + wealthBonus * 0.45 + noise);
+  // A real handful of clubs (the actual richest ownership groups) sit well
+  // above even the rest of the "rich" tier — Man City/Chelsea-style money,
+  // not just "a good, well-run club." Ranked by reputation within the
+  // tier's own clubs (ties broken by id, so it's deterministic and never
+  // more than the intended few), capped at the top 3. Toned down from an
+  // earlier pass — playtester feedback that Premier League money felt too
+  // high overall once both this and the wealth bonus above stacked up.
+  if (tierClubs && tierClubs.length > 3) {
+    const ranked = [...tierClubs].sort((a, b) => (b.reputation - a.reputation) || (a.id < b.id ? -1 : 1));
+    const rank = ranked.findIndex((c) => c.id === club.id);
+    if (rank === 0) multiplier *= 1.25;
+    else if (rank <= 2) multiplier *= 1.12;
+  }
   return Math.round(base * multiplier);
 }
 
@@ -2338,11 +2406,24 @@ function pendingEnglandCupCheckpoint(stateLike, matchdayNum) {
 // a title contender while almost no USLC club ever does. Rank the club's
 // reputation against its own tier-mates instead, so "title expectations"
 // means "one of the best in this tier" everywhere, not "above a fixed number".
-function generateBoardObjective(reputation, tierIdx, tierClubs) {
+function generateBoardObjective(reputation, tierIdx, tierClubs, recentFinishPosition) {
   const tierSize = tierClubs.length;
   const sorted = [...tierClubs.map((c) => c.reputation)].sort((a, b) => a - b);
   const rankBelowOrEqual = sorted.filter((r) => r <= reputation).length;
-  const percentile = tierSize > 0 ? rankBelowOrEqual / tierSize : 0.5;
+  const repPercentile = tierSize > 0 ? rankBelowOrEqual / tierSize : 0.5;
+
+  // Recent form matters too, not just reputation — reputation moves slowly
+  // (season-to-season drift is mostly retained, not reset) and can end up
+  // nearly uniform across a whole lower tier where every club started at
+  // the same generated baseline, so its percentile alone can be almost
+  // arbitrary. A club that just finished dead last shouldn't have the
+  // board demanding a title regardless of what reputation says — use
+  // whichever signal is more conservative.
+  let percentile = repPercentile;
+  if (recentFinishPosition != null && tierSize > 0) {
+    const formPercentile = 1 - (recentFinishPosition - 1) / tierSize;
+    percentile = Math.min(repPercentile, formPercentile);
+  }
 
   if (percentile >= 0.85) {
     return { type: "title", description: `Win the ${FULL_TIER_META[tierIdx].name} title`, targetPosition: 1 };
@@ -2564,6 +2645,7 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty, precomputedPl
           suspendedUntilMatchday: null,
           lastYellowMatchday: null,
           seasonGoals: 0,
+          seasonYellowCards: 0,
         };
       });
       const retiring = squad.filter((p) => Math.random() < retirementChance(p.age));
@@ -2647,7 +2729,7 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty, precomputedPl
         ...club,
         squad,
         reputation,
-        budget: club.budget + prize + ownershipDepositFor(i, difficulty, club) + dpRevenue - payroll,
+        budget: club.budget + prize + ownershipDepositFor(i, difficulty, club, t.clubs) + dpRevenue - payroll,
         academyEligible: !!club.academyEligible || i <= 1,
         youthPlayers,
         tryoutCandidates: [], // last window's tryout candidates don't carry over — sign or lose them
@@ -3339,7 +3421,7 @@ function DifficultySelectScreen({ onChoose, onBack }) {
   );
 }
 
-function ClubSelectScreen({ world, onPick, saveWasReset, difficulty, onBack, defaultCountry, managerReputation, isJobSearch }) {
+function ClubSelectScreen({ world, onPick, saveWasReset, difficulty, onBack, defaultCountry, managerReputation, isJobSearch, onResetToNewSave }) {
   const [openTier, setOpenTier] = useState(defaultCountry === "england" ? 4 : 0);
   // Reputation gating is a Pro/Executive-only wrinkle, and only applies
   // when this is an actual job search (sacked, or left voluntarily) — a
@@ -3349,20 +3431,58 @@ function ClubSelectScreen({ world, onPick, saveWasReset, difficulty, onBack, def
   // will take a chance on anyone. requiredRep scales with how far above
   // average the club's own reputation sits.
   const repGatingActive = difficulty !== "rookie" && isJobSearch;
-  const requiredRepFor = (club) => Math.max(0, club.reputation - 28);
+  // Tier-relative, not an absolute cross-country number: USA's club
+  // reputations run on a noticeably lower absolute scale than England's
+  // (MLS tops out around 87, the Premier League around 95), so a single
+  // flat "club.reputation minus X" comparison made a Championship-level
+  // manager's reputation clear England's bar easily while barely
+  // registering against most of the USA side — nowhere near fair. Instead,
+  // each club's requirement is expressed as where it sits within its OWN
+  // tier's reputation spread, so the weakest club in any tier is broadly
+  // reachable and that tier's own best club is genuinely hard — the same
+  // shape whether it's the Championship or USL Championship.
+  const requiredRepFor = (club, tierMin, tierMax) => {
+    const span = tierMax - tierMin || 1;
+    const percentile = (club.reputation - tierMin) / span;
+    return Math.round(35 + percentile * 55);
+  };
 
+  const [confirmingReset, setConfirmingReset] = useState(false);
   return (
     <div style={{ minHeight: "100vh", background: PALETTE.pitchDark, ...serif }}>
       <style>{FONT_IMPORT}</style>
       <div style={{ maxWidth: 880, margin: "0 auto", padding: "48px 20px 80px" }}>
-        {onBack && (
-          <button
-            onClick={onBack}
-            style={{ background: "none", border: "none", color: PALETTE.silver, fontSize: 11, cursor: "pointer", ...display, marginBottom: 16, opacity: 0.8 }}
-          >
-            {isJobSearch ? "← Back to league selection" : "← Back to difficulty select"}
-          </button>
-        )}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          {onBack ? (
+            <button
+              onClick={onBack}
+              style={{ background: "none", border: "none", color: PALETTE.silver, fontSize: 11, cursor: "pointer", ...display, opacity: 0.8 }}
+            >
+              ← Back to league selection
+            </button>
+          ) : <span />}
+          {isJobSearch && onResetToNewSave && (
+            confirmingReset ? (
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ ...serif, fontSize: 11, color: PALETTE.silver }}>Start a brand new save instead?</span>
+                <button onClick={onResetToNewSave} style={{ background: "none", border: `1px solid ${PALETTE.crimson}`, color: PALETTE.crimson, fontSize: 11, cursor: "pointer", ...display, padding: "4px 8px", borderRadius: 5 }}>
+                  Yes, reset
+                </button>
+                <button onClick={() => setConfirmingReset(false)} style={{ background: "none", border: `1px solid ${PALETTE.silver}55`, color: PALETTE.silver, fontSize: 11, cursor: "pointer", ...display, padding: "4px 8px", borderRadius: 5 }}>
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <button
+                onClick={() => setConfirmingReset(true)}
+                title="Give up on this career entirely and start a fresh save from scratch"
+                style={{ background: "none", border: `1px solid ${PALETTE.silver}55`, color: PALETTE.silver, fontSize: 11, cursor: "pointer", ...display, opacity: 0.8 }}
+              >
+                Reset to a new save
+              </button>
+            )
+          )}
+        </div>
         <div style={{ textAlign: "center", marginBottom: 48 }}>
           <div style={{ ...display, fontSize: 56, fontWeight: 700, color: PALETTE.parchment, lineHeight: 1 }}>
             ASCENT
@@ -3386,31 +3506,36 @@ function ClubSelectScreen({ world, onPick, saveWasReset, difficulty, onBack, def
               <button
                 onClick={() => setOpenTier(isOpen ? -1 : meta.id)}
                 style={{
-                  width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16,
+                  width: "100%", display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 6,
                   padding: "16px 20px", background: isOpen ? meta.color : `${meta.color}22`,
                   border: "none", cursor: "pointer", color: isOpen ? readableTextOn(meta.color) : PALETTE.parchment,
                   textAlign: "left",
                 }}
               >
-                <div style={{ display: "flex", alignItems: "center", gap: 12, textAlign: "left", flex: 1, minWidth: 0 }}>
-                  <span style={{ ...display, fontSize: 22, fontWeight: 700, textAlign: "left" }}>{meta.name}</span>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
+                <span style={{ ...display, fontSize: 22, fontWeight: 700, textAlign: "left" }}>{meta.name}</span>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", gap: 14 }}>
                   <span style={{ fontSize: 12.5, ...mono, opacity: 0.85, whiteSpace: "nowrap" }}>
                     {(() => {
-                      const deposits = tier.clubs.map((c) => ownershipDepositFor(meta.id, difficulty, c));
-                      const lo = Math.min(...deposits), hi = Math.max(...deposits);
-                      return lo === hi ? `Funds: ${formatMoney(lo)}/season` : `Funds: ${formatMoney(lo)}-${formatMoney(hi)}/season`;
+                      const roundToHalfStep = (amount) => {
+                        const step = amount >= 1_000_000 ? 500_000 : 50_000;
+                        return Math.round(amount / step) * step;
+                      };
+                      const deposits = tier.clubs.map((c) => roundToHalfStep(ownershipDepositFor(meta.id, difficulty, c, tier.clubs)));
+                      const lo = Math.min(...deposits);
+                      return `Funds: ${formatMoney(lo)}+/season`;
                     })()}
                   </span>
                   <ChevronRight size={20} style={{ transform: isOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
                 </div>
               </button>
-              {isOpen && (
+              {isOpen && (() => {
+                const tierReps = tier.clubs.map((c) => c.reputation);
+                const tierMin = Math.min(...tierReps), tierMax = Math.max(...tierReps);
+                return (
                 <div style={{ background: PALETTE.pitch, padding: 16, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 10 }}>
                   {tier.clubs.map((club) => {
                     const avgOvr = Math.round(club.squad.reduce((s, p) => s + p.overall, 0) / club.squad.length);
-                    const requiredRep = requiredRepFor(club);
+                    const requiredRep = requiredRepFor(club, tierMin, tierMax);
                     const rejected = repGatingActive && (managerReputation ?? 40) < requiredRep;
                     return (
                       <button
@@ -3436,7 +3561,8 @@ function ClubSelectScreen({ world, onPick, saveWasReset, difficulty, onBack, def
                     );
                   })}
                 </div>
-              )}
+                );
+              })()}
             </div>
           );
         })}
@@ -3908,7 +4034,8 @@ function MatchdayRecap({ results, userClubName, tier, onClose }) {
    DASHBOARD TABS
    ============================================================ */
 
-function SquadTab({ club, matchday, onToggleList, onRenew, onSetCaptain, tierId, difficulty, onToggleDP, onToggleRest, onToggleHoldBack, onLoanOut, playersOnLoan, tier }) {
+function SquadTab({ club, matchday, onToggleList, onRenew, tierId, difficulty, onToggleDP, onToggleRest, onToggleRestIndefinitely, onToggleHoldBack, onToggleCustomXI, onLoanOut, playersOnLoan, tier }) {
+  const [openActionMenuId, setOpenActionMenuId] = useState(null);
   const [lineupOpen, setLineupOpen] = useState(false);
   const xi = startingXI(club, matchday);
   const xiIds = new Set(xi.map((p) => p.id));
@@ -3998,11 +4125,11 @@ function SquadTab({ club, matchday, onToggleList, onRenew, onSetCaptain, tierId,
       </div>
 
       <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, ...serif }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5, ...serif }}>
           <thead>
             <tr style={{ textAlign: "left", color: PALETTE.inkSoft, borderBottom: `2px solid ${PALETTE.parchmentDim}` }}>
-              {["", "Pos", "Name", "Age", "OVR", "POT", "LDR", "Caps", "Since played", "Fitness", "Contract", "Status", ""].map((h) => (
-                <th key={h} style={{ padding: "6px 8px", ...display, fontWeight: 600, fontSize: 11, textTransform: "uppercase" }}>{h}</th>
+              {["", "Pos", "Name", "Age", "OVR", "POT", "LDR", "Fitness", "Yrs", "Status", ""].map((h) => (
+                <th key={h} style={{ padding: "5px 5px", ...display, fontWeight: 600, fontSize: 9.5, textTransform: "uppercase" }}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -4010,29 +4137,26 @@ function SquadTab({ club, matchday, onToggleList, onRenew, onSetCaptain, tierId,
             {sorted.map((p) => {
               const injured = p.injuredUntilMatchday != null && p.injuredUntilMatchday >= matchday;
               const suspended = !injured && p.suspendedUntilMatchday != null && p.suspendedUntilMatchday >= matchday;
-              const sinceLastPlayed = p.lastPlayedMatchday == null ? "—" : matchday - p.lastPlayedMatchday;
               const expiring = p.contractYearsLeft <= 1;
               const isCaptain = p.id === club.captainId;
               return (
                 <tr key={p.id} style={{ borderBottom: `1px solid ${PALETTE.parchmentDim}` }}>
-                  <td style={{ padding: "6px 4px" }}>{xiIds.has(p.id) ? <span style={{ color: PALETTE.gold, fontWeight: 700 }}>●</span> : ""}</td>
-                  <td style={{ padding: "6px 8px", ...mono, fontSize: 12 }}>{p.position}</td>
-                  <td style={{ padding: "6px 8px", fontWeight: 600 }}>{p.name}{isCaptain && <span title="Captain" style={{ color: PALETTE.gold, marginLeft: 4 }}>©</span>}</td>
-                  <td style={{ padding: "6px 8px", ...mono }}>{p.age}</td>
-                  <td style={{ padding: "6px 8px", ...mono, fontWeight: 700 }}>{p.overall}</td>
-                  <td style={{ padding: "6px 8px", ...mono, color: PALETTE.inkSoft }}>{p.potential}</td>
-                  <td style={{ padding: "6px 8px", ...mono, color: PALETTE.inkSoft }}>{p.leadership ?? "—"}</td>
-                  <td style={{ padding: "6px 8px", ...mono }}>{p.caps || 0}</td>
-                  <td style={{ padding: "6px 8px", ...mono }}>{sinceLastPlayed}</td>
-                  <td style={{ padding: "6px 8px", ...mono }}>{p.fitness}</td>
-                  <td style={{ padding: "6px 8px", ...mono, color: expiring ? PALETTE.crimson : PALETTE.ink }}>{p.contractYearsLeft}y</td>
-                  <td style={{ padding: "6px 8px" }}>
+                  <td style={{ padding: "5px 2px" }}>{xiIds.has(p.id) ? <span style={{ color: PALETTE.gold, fontWeight: 700 }}>●</span> : ""}</td>
+                  <td style={{ padding: "5px 5px", ...mono, fontSize: 10.5 }}>{p.position}</td>
+                  <td style={{ padding: "5px 5px", fontWeight: 600, fontSize: 12 }}>{p.name}{isCaptain && <span title="Captain" style={{ color: PALETTE.gold, marginLeft: 4 }}>©</span>}</td>
+                  <td style={{ padding: "5px 5px", ...mono, fontSize: 10.5 }}>{p.age}</td>
+                  <td style={{ padding: "5px 5px", ...mono, fontWeight: 700, fontSize: 11.5 }}>{p.overall}</td>
+                  <td style={{ padding: "5px 5px", ...mono, fontSize: 10.5, color: PALETTE.inkSoft }}>{p.potential}</td>
+                  <td style={{ padding: "5px 5px", ...mono, fontSize: 10.5, color: PALETTE.inkSoft }}>{p.leadership ?? "—"}</td>
+                  <td style={{ padding: "5px 5px", ...mono, fontSize: 10.5 }}>{p.fitness}</td>
+                  <td style={{ padding: "5px 5px", ...mono, fontSize: 10.5, color: expiring ? PALETTE.crimson : PALETTE.ink }}>{p.contractYearsLeft}</td>
+                  <td style={{ padding: "5px 5px", fontSize: 10.5, whiteSpace: "nowrap" }}>
                     {injured ? <span style={{ color: PALETTE.crimson }}>injured</span>
-                      : suspended ? <span style={{ color: PALETTE.crimson }}>suspended</span>
-                      : p.transferRequested ? <span style={{ color: PALETTE.crimson }} title="Unhappy about game time — asked to leave">😠 wants out — ${p.askingPrice?.toLocaleString()}</span>
-                      : p.transferListed ? <span style={{ color: PALETTE.gold }}>listed ${p.askingPrice?.toLocaleString()}</span> : ""}
+                      : suspended ? <span style={{ color: PALETTE.crimson }}>susp.</span>
+                      : p.transferRequested ? <span style={{ color: PALETTE.crimson }}>😠 out {formatMoney(p.askingPrice ?? 0)}</span>
+                      : p.transferListed ? <span style={{ color: PALETTE.gold }}>listed {formatMoney(p.askingPrice ?? 0)}</span> : ""}
                   </td>
-                  <td style={{ padding: "6px 8px", display: "flex", gap: 6 }}>
+                  <td style={{ padding: "5px 5px", display: "flex", gap: 4, alignItems: "center", position: "relative" }}>
                     <button
                       onClick={() => onToggleList(p.id)}
                       style={{ fontSize: 11, padding: "4px 8px", borderRadius: 5, border: `1px solid ${PALETTE.ink}`, background: "none", cursor: "pointer", ...display }}
@@ -4047,60 +4171,99 @@ function SquadTab({ club, matchday, onToggleList, onRenew, onSetCaptain, tierId,
                         Renew
                       </button>
                     )}
-                    {!isCaptain && (
+                    {club.tactics.lineupMode === "custom" && (
                       <button
-                        onClick={() => onSetCaptain(p.id)}
-                        style={{ fontSize: 11, padding: "4px 8px", borderRadius: 5, border: `1px solid ${PALETTE.inkSoft}`, background: "none", color: PALETTE.inkSoft, cursor: "pointer", ...display }}
-                      >
-                        Make captain
-                      </button>
-                    )}
-                    {dpEnabled && (dpIds.has(p.id) || dpIds.size < MAX_DESIGNATED_PLAYERS) && (
-                      <button
-                        onClick={() => onToggleDP(p.id)}
-                        title="Designated Player — wage exempt from payroll"
+                        onClick={() => onToggleCustomXI(p.id)}
+                        title="In your custom starting XI"
                         style={{
                           fontSize: 11, padding: "4px 8px", borderRadius: 5, cursor: "pointer", ...display,
-                          border: `1px solid ${PALETTE.gold}`, background: dpIds.has(p.id) ? PALETTE.gold : "none",
-                          color: dpIds.has(p.id) ? PALETTE.ink : PALETTE.gold, fontWeight: dpIds.has(p.id) ? 700 : 400,
+                          border: `1px solid ${PALETTE.gold}`,
+                          background: (club.tactics.customXI || []).includes(p.id) ? PALETTE.gold : "none",
+                          color: (club.tactics.customXI || []).includes(p.id) ? PALETTE.ink : PALETTE.gold,
+                          fontWeight: (club.tactics.customXI || []).includes(p.id) ? 700 : 400,
                         }}
                       >
-                        {dpIds.has(p.id) ? "DP ✓" : "Make DP"}
+                        {(club.tactics.customXI || []).includes(p.id) ? "In XI ✓" : "Add to XI"}
                       </button>
                     )}
                     <button
-                      onClick={() => onToggleRest(p.id)}
-                      title="Rest for the next match only"
+                      onClick={() => setOpenActionMenuId(openActionMenuId === p.id ? null : p.id)}
+                      title="More actions"
                       style={{
-                        fontSize: 12, width: 26, height: 26, borderRadius: 5, cursor: "pointer", padding: 0,
-                        border: `1px solid ${p.restRequested ? PALETTE.bronze : PALETTE.parchmentDim}`,
-                        background: p.restRequested ? PALETTE.bronze : "none", color: p.restRequested ? "#fff" : PALETTE.inkSoft,
+                        fontSize: 14, width: 24, height: 24, borderRadius: "50%", cursor: "pointer", padding: 0, lineHeight: "22px",
+                        border: `1px solid ${PALETTE.inkSoft}`, background: openActionMenuId === p.id ? PALETTE.ink : "none",
+                        color: openActionMenuId === p.id ? PALETTE.parchment : PALETTE.inkSoft, ...display, fontWeight: 700,
                       }}
                     >
-                      💤
+                      +
                     </button>
-                    <button
-                      onClick={() => onToggleHoldBack(p.id)}
-                      title="Hold back from US Open Cup matches"
-                      style={{
-                        fontSize: 12, width: 26, height: 26, borderRadius: 5, cursor: "pointer", padding: 0,
-                        border: `1px solid ${p.holdBackForCup ? PALETTE.gold : PALETTE.parchmentDim}`,
-                        background: p.holdBackForCup ? PALETTE.gold : "none", color: p.holdBackForCup ? PALETTE.ink : PALETTE.inkSoft,
-                      }}
-                    >
-                      🛡
-                    </button>
-                    {p.age <= 21 && (
-                      <button
-                        onClick={() => onLoanOut(p.id)}
-                        title="Loan out for the season — returns next season, having developed"
+                    {openActionMenuId === p.id && (
+                      <div
                         style={{
-                          fontSize: 11, padding: "4px 8px", borderRadius: 5, border: `1px solid ${PALETTE.inkSoft}`,
-                          background: "none", color: PALETTE.inkSoft, cursor: "pointer", ...display,
+                          position: "absolute", top: "100%", right: 0, marginTop: 4, zIndex: 10,
+                          background: PALETTE.parchment, border: `1px solid ${PALETTE.inkSoft}`, borderRadius: 8,
+                          boxShadow: "0 4px 12px rgba(0,0,0,0.2)", padding: 6, display: "flex", flexDirection: "column", gap: 4, minWidth: 140,
                         }}
                       >
-                        Loan Out
-                      </button>
+                        {dpEnabled && (dpIds.has(p.id) || dpIds.size < MAX_DESIGNATED_PLAYERS) && (
+                          <button
+                            onClick={() => { onToggleDP(p.id); setOpenActionMenuId(null); }}
+                            title="Designated Player — wage exempt from payroll"
+                            style={{
+                              fontSize: 12, padding: "6px 10px", borderRadius: 5, cursor: "pointer", ...display, textAlign: "left",
+                              border: `1px solid ${PALETTE.gold}`, background: dpIds.has(p.id) ? PALETTE.gold : "none",
+                              color: dpIds.has(p.id) ? PALETTE.ink : PALETTE.gold, fontWeight: dpIds.has(p.id) ? 700 : 400,
+                            }}
+                          >
+                            {dpIds.has(p.id) ? "DP ✓" : "Make DP"}
+                          </button>
+                        )}
+                        {p.age <= 21 && (
+                          <button
+                            onClick={() => { onLoanOut(p.id); setOpenActionMenuId(null); }}
+                            title="Loan out for the season — returns next season, having developed"
+                            style={{
+                              fontSize: 12, padding: "6px 10px", borderRadius: 5, border: `1px solid ${PALETTE.inkSoft}`,
+                              background: "none", color: PALETTE.inkSoft, cursor: "pointer", ...display, textAlign: "left",
+                            }}
+                          >
+                            Loan Out
+                          </button>
+                        )}
+                        <button
+                          onClick={() => { onToggleRest(p.id); setOpenActionMenuId(null); }}
+                          title="Rest for the next match only"
+                          style={{
+                            fontSize: 12, padding: "6px 10px", borderRadius: 5, cursor: "pointer", ...display, textAlign: "left",
+                            border: `1px solid ${p.restRequested ? PALETTE.bronze : PALETTE.inkSoft}`,
+                            background: p.restRequested ? PALETTE.bronze : "none", color: p.restRequested ? "#fff" : PALETTE.inkSoft,
+                          }}
+                        >
+                          💤 Rest 1 game
+                        </button>
+                        <button
+                          onClick={() => { onToggleRestIndefinitely(p.id); setOpenActionMenuId(null); }}
+                          title="Rest until you turn it back off"
+                          style={{
+                            fontSize: 12, padding: "6px 10px", borderRadius: 5, cursor: "pointer", ...display, textAlign: "left",
+                            border: `1px solid ${p.restIndefinitely ? PALETTE.crimson : PALETTE.inkSoft}`,
+                            background: p.restIndefinitely ? PALETTE.crimson : "none", color: p.restIndefinitely ? "#fff" : PALETTE.inkSoft,
+                          }}
+                        >
+                          ⏸ Rest till further notice
+                        </button>
+                        <button
+                          onClick={() => { onToggleHoldBack(p.id); setOpenActionMenuId(null); }}
+                          title="Hold back from cup matches"
+                          style={{
+                            fontSize: 12, padding: "6px 10px", borderRadius: 5, cursor: "pointer", ...display, textAlign: "left",
+                            border: `1px solid ${p.holdBackForCup ? PALETTE.gold : PALETTE.inkSoft}`,
+                            background: p.holdBackForCup ? PALETTE.gold : "none", color: p.holdBackForCup ? PALETTE.ink : PALETTE.inkSoft,
+                          }}
+                        >
+                          🛡 Sit out of Cup
+                        </button>
+                      </div>
                     )}
                   </td>
                 </tr>
@@ -4167,8 +4330,8 @@ function suggestTactics(club, oppRatings, tier) {
   return { formation, style, press, reason: `${formationReason[0].toUpperCase()}${formationReason.slice(1)} — ${styleReason === formationReason ? "which also points to" : "and"} ${style}, ${press} press.` };
 }
 
-function TacticsTab({ club, matchday, onChange, tier }) {
-  const formations = ["4-4-2", "4-3-3", "3-5-2", "5-3-2", "4-2-3-1", "4-3-2-1", "3-4-3"];
+function TacticsTab({ club, matchday, onChange, tier, onSetCaptain }) {
+  const formations = ["4-4-2", "4-3-3", "3-5-2", "5-3-2", "4-2-3-1", "4-3-2-1", "3-4-3", "4-3-1-2"];
   const posOrder = { GK: 0, DEF: 1, MID: 2, FWD: 3 };
   const projected = [...startingXI(club, matchday)].sort((a, b) => posOrder[a.position] - posOrder[b.position]);
   const lineRatings = xiLineRatings(projected);
@@ -4252,10 +4415,15 @@ function TacticsTab({ club, matchday, onChange, tier }) {
           <Row
             label="Lineup Selection"
             value={club.tactics.lineupMode || "best"}
-            options={["best", "youth", "auto"]}
-            optionLabels={{ best: "Best XI", youth: "Youth", auto: "Auto" }}
+            options={["best", "youth", "auto", "custom"]}
+            optionLabels={{ best: "Best XI", youth: "Youth", auto: "Auto", custom: "Custom" }}
             field="lineupMode"
           />
+          {(club.tactics.lineupMode === "custom") && (
+            <div style={{ ...serif, fontSize: 12, color: PALETTE.inkSoft, marginTop: -10, marginBottom: 18 }}>
+              Pick your XI below in the Squad tab — your picks start whenever they're actually available, same gap-filling as any other mode if someone's injured, suspended, or rested.
+            </div>
+          )}
           <div style={{ marginTop: 4, marginBottom: 18 }}>
             <div style={{ ...display, fontSize: 13, textTransform: "uppercase", letterSpacing: "0.06em", color: PALETTE.inkSoft, marginBottom: 6 }}>
               Rest threshold — {club.tactics.restThreshold ?? 0}% fitness
@@ -4271,16 +4439,29 @@ function TacticsTab({ club, matchday, onChange, tier }) {
             </div>
           </div>
         </div>
-        <div style={{ minWidth: 220 }}>
+        <div style={{ minWidth: 280 }}>
           <div style={{ ...display, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.06em", color: PALETTE.inkSoft, marginBottom: 8 }}>
             Projected lineup
           </div>
-          {projected.map((p) => (
-            <div key={p.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "5px 0", borderBottom: `1px solid ${PALETTE.parchmentDim}`, ...serif }}>
-              <span><span style={{ ...mono, color: PALETTE.inkSoft, marginRight: 8, fontSize: 11 }}>{p.position}</span>{p.name}</span>
-              <span style={{ ...mono, fontWeight: 700 }}>{p.overall}</span>
-            </div>
-          ))}
+          {projected.map((p) => {
+            const isCaptain = p.id === club.captainId;
+            return (
+              <div key={p.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, fontSize: 13, padding: "6px 0", borderBottom: `1px solid ${PALETTE.parchmentDim}`, ...serif }}>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <span style={{ ...mono, color: PALETTE.inkSoft, marginRight: 8, fontSize: 11 }}>{p.position}</span>
+                  {p.name}
+                  <span style={{ ...mono, fontWeight: 700, marginLeft: 6 }}>{p.overall}</span>
+                </span>
+                <button
+                  onClick={() => onSetCaptain(p.id)}
+                  title={isCaptain ? "Captain" : "Make captain"}
+                  style={{ fontSize: 14, width: 24, height: 24, borderRadius: 4, cursor: "pointer", padding: 0, border: "none", background: "none", color: isCaptain ? PALETTE.gold : `${PALETTE.inkSoft}66`, flexShrink: 0 }}
+                >
+                  ©
+                </button>
+              </div>
+            );
+          })}
           {projected.length < 11 && (
             <div style={{ fontSize: 12, color: PALETTE.crimson, marginTop: 8, ...serif }}>
               Only {projected.length} available this matchday.
@@ -4358,17 +4539,23 @@ function SeriesLine({ label, series, revealed = true }) {
 
 function ConferenceBracket({ label, conf, revealedRounds }) {
   if (!conf) return null;
+  const confChampion = revealedRounds > 3 && conf.confFinal ? conf.confFinal.winner : null;
   return (
     <div style={{ marginBottom: 14 }}>
       <div style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase", marginBottom: 4 }}>{label}</div>
-      <MatchLine label="Wild Card" outcome={conf.wildcard} revealed={revealedRounds > 0} />
+      {confChampion && (
+        <div style={{ ...display, fontWeight: 700, fontSize: 13, color: PALETTE.gold, marginBottom: 6 }}>
+          🏆 {confChampion.name} — {label} Champion
+        </div>
+      )}
+      <MatchLine label="Conf Final" outcome={conf.confFinal} revealed={revealedRounds > 3} />
+      <MatchLine label="Semifinal" outcome={conf.semiA} revealed={revealedRounds > 2} />
+      <MatchLine label="Semifinal" outcome={conf.semiB} revealed={revealedRounds > 2} />
       <SeriesLine label="1 seed" series={conf.r1a} revealed={revealedRounds > 1} />
       <SeriesLine label="2 seed" series={conf.r1b} revealed={revealedRounds > 1} />
       <SeriesLine label="3 seed" series={conf.r1c} revealed={revealedRounds > 1} />
       <SeriesLine label="4 seed" series={conf.r1d} revealed={revealedRounds > 1} />
-      <MatchLine label="Semifinal" outcome={conf.semiA} revealed={revealedRounds > 2} />
-      <MatchLine label="Semifinal" outcome={conf.semiB} revealed={revealedRounds > 2} />
-      <MatchLine label="Conf Final" outcome={conf.confFinal} revealed={revealedRounds > 3} />
+      <MatchLine label="Wild Card" outcome={conf.wildcard} revealed={revealedRounds > 0} />
     </div>
   );
 }
@@ -4617,25 +4804,25 @@ function PlayoffBracketSection({ seasonPlayoffs, tierId, revealedRounds, onSimRo
               🏆 {seasonPlayoffs.mlsPlayoffResult.champion.name} win the MLS Cup
             </div>
           )}
+          <MatchLine label="MLS Cup" outcome={seasonPlayoffs.mlsPlayoffResult.finalResult} revealed={revealedRounds > 4} />
           <ConferenceBracket label="Eastern Conference" conf={seasonPlayoffs.mlsPlayoffResult.east} revealedRounds={revealedRounds} />
           <ConferenceBracket label="Western Conference" conf={seasonPlayoffs.mlsPlayoffResult.west} revealedRounds={revealedRounds} />
-          <MatchLine label="MLS Cup" outcome={seasonPlayoffs.mlsPlayoffResult.finalResult} revealed={revealedRounds > 4} />
         </div>
       )}
 
       {showUslc && (
         <div>
-          <div style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase", marginBottom: 4 }}>Quarterfinals</div>
-          {seasonPlayoffs.uslcPlayoffResult.rounds[0]?.map((o, i) => <MatchLine key={i} label={`QF${i + 1}`} outcome={o} revealed={revealedRounds > 0} />)}
-          <div style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase", margin: "8px 0 4px" }}>Semifinals</div>
-          {seasonPlayoffs.uslcPlayoffResult.rounds[1]?.map((o, i) => <MatchLine key={i} label={`SF${i + 1}`} outcome={o} revealed={revealedRounds > 1} />)}
-          <div style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase", margin: "8px 0 4px" }}>Final</div>
-          {seasonPlayoffs.uslcPlayoffResult.rounds[2]?.map((o, i) => <MatchLine key={i} label="Final" outcome={o} revealed={revealedRounds > 2} />)}
           {revealedRounds > 2 && (
-            <div style={{ ...display, fontWeight: 700, fontSize: 14, color: PALETTE.gold, marginTop: 8 }}>
+            <div style={{ ...display, fontWeight: 700, fontSize: 14, color: PALETTE.gold, marginBottom: 8 }}>
               🏆 {seasonPlayoffs.uslcPlayoffResult.champion.name} win the USL Cup
             </div>
           )}
+          <div style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase", marginBottom: 4 }}>Final</div>
+          {seasonPlayoffs.uslcPlayoffResult.rounds[2]?.map((o, i) => <MatchLine key={i} label="Final" outcome={o} revealed={revealedRounds > 2} />)}
+          <div style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase", margin: "8px 0 4px" }}>Semifinals</div>
+          {seasonPlayoffs.uslcPlayoffResult.rounds[1]?.map((o, i) => <MatchLine key={i} label={`SF${i + 1}`} outcome={o} revealed={revealedRounds > 1} />)}
+          <div style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase", margin: "8px 0 4px" }}>Quarterfinals</div>
+          {seasonPlayoffs.uslcPlayoffResult.rounds[0]?.map((o, i) => <MatchLine key={i} label={`QF${i + 1}`} outcome={o} revealed={revealedRounds > 0} />)}
         </div>
       )}
 
@@ -4664,7 +4851,7 @@ function PlayoffBracketSection({ seasonPlayoffs, tierId, revealedRounds, onSimRo
   );
 }
 
-function StandingsTable({ table, userClubId }) {
+function StandingsTable({ table, userClubId, autoQualifyCutoff, wildcardCutoff }) {
   return (
     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, ...serif }}>
       <thead>
@@ -4675,9 +4862,12 @@ function StandingsTable({ table, userClubId }) {
         </tr>
       </thead>
       <tbody>
-        {table.map((row, i) => (
+        {table.map((row, i) => {
+          const isAutoQualifyLine = autoQualifyCutoff != null && i === autoQualifyCutoff - 1;
+          const isWildcardLine = wildcardCutoff != null && i === wildcardCutoff - 1;
+          return (
           <tr key={row.clubId} style={{
-            borderBottom: `1px solid ${PALETTE.parchmentDim}`,
+            borderBottom: isAutoQualifyLine ? `2px solid ${PALETTE.ink}` : isWildcardLine ? `2px dashed ${PALETTE.inkSoft}` : `1px solid ${PALETTE.parchmentDim}`,
             background: row.clubId === userClubId ? `${PALETTE.gold}33` : "transparent",
           }}>
             <td style={{ padding: "6px 8px", ...mono }}>{i + 1}</td>
@@ -4692,8 +4882,19 @@ function StandingsTable({ table, userClubId }) {
             <td style={{ padding: "6px 8px", ...mono, fontWeight: 700 }}>{row.points}</td>
             <td style={{ padding: "6px 8px" }}><FormBadges form={row.form} /></td>
           </tr>
-        ))}
+          );
+        })}
       </tbody>
+      {(autoQualifyCutoff != null || wildcardCutoff != null) && (
+        <tfoot>
+          <tr>
+            <td colSpan={11} style={{ padding: "6px 8px", fontSize: 11, ...serif, color: PALETTE.inkSoft }}>
+              {autoQualifyCutoff != null && <span>— solid line: automatic playoff spot </span>}
+              {wildcardCutoff != null && <span>&nbsp;&nbsp;·&nbsp;&nbsp;- - - dotted line: wild card contention</span>}
+            </td>
+          </tr>
+        </tfoot>
+      )}
     </table>
   );
 }
@@ -4756,11 +4957,11 @@ function TableTab({ tier, userClubId, seasonPlayoffs, revealedRounds, onSimRound
               <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
                 <div style={{ flex: 1, minWidth: 320 }}>
                   <div style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase", marginBottom: 6 }}>Eastern Conference</div>
-                  <StandingsTable table={table.filter((r) => conferenceByClubId.get(r.clubId) === "East")} userClubId={userClubId} />
+                  <StandingsTable table={table.filter((r) => conferenceByClubId.get(r.clubId) === "East")} userClubId={userClubId} autoQualifyCutoff={7} wildcardCutoff={9} />
                 </div>
                 <div style={{ flex: 1, minWidth: 320 }}>
                   <div style={{ ...display, fontSize: 12, fontWeight: 700, color: PALETTE.inkSoft, textTransform: "uppercase", marginBottom: 6 }}>Western Conference</div>
-                  <StandingsTable table={table.filter((r) => conferenceByClubId.get(r.clubId) === "West")} userClubId={userClubId} />
+                  <StandingsTable table={table.filter((r) => conferenceByClubId.get(r.clubId) === "West")} userClubId={userClubId} autoQualifyCutoff={7} wildcardCutoff={9} />
                 </div>
               </div>
             );
@@ -4978,6 +5179,10 @@ const MARKET_PAGE_SIZE = 20;
 // and whether the club can really afford them (price up front, and wage
 // room if wages are tracked). Higher score = better recommendation.
 function computeRecommendationScore(player, userClub, difficulty, tierIdx) {
+  // Roster's already full — there's no realistic recommendation here at
+  // all until someone's sold or released first.
+  if (userClub.squad.length >= MAX_SQUAD_SIZE) return -Infinity;
+
   const squadAtPos = userClub.squad.filter((p) => p.position === player.position);
   const avgAtPos = squadAtPos.length ? squadAtPos.reduce((s, p) => s + p.overall, 0) / squadAtPos.length : 0;
   const bestAtPos = squadAtPos.length ? Math.max(...squadAtPos.map((p) => p.overall)) : 0;
@@ -5016,17 +5221,35 @@ function computeRecommendationScore(player, userClub, difficulty, tierIdx) {
   if (player.age <= 26) ageScore += 6;
   else if (player.age >= 31 && upgrade < 8) ageScore -= 10;
 
-  // Afford it at all? If not, this isn't a real recommendation regardless
-  // of how good a fit it looks on paper.
+  // Afford it at all? Transfer fee first — if not, this isn't a real
+  // recommendation regardless of how good a fit it looks on paper.
   if (userClub.budget < player.askingPrice) return -Infinity;
+
+  // Wage affordability was previously just a soft penalty on the score,
+  // meaning a signing whose wage would actually blow the budget (or, in
+  // MLS, the hard salary cap) could still surface as "recommended" —
+  // exactly the bug reported. Both are now a hard exclusion, not a nudge.
   let financeScore = 10;
   if (DIFFICULTY_MODES[difficulty]?.wagesDeducted) {
     const currentPayroll = effectivePayroll(userClub.squad, userClub.designatedPlayerIds);
+    const isDpEligible = tierIdx === 0 && DIFFICULTY_MODES[difficulty]?.dps && (userClub.designatedPlayerIds || []).length < MAX_DESIGNATED_PLAYERS;
+    const capRoom = tierIdx === 0 ? MLS_SALARY_CAP - currentPayroll : Infinity;
+    if (!isDpEligible && player.wage > capRoom) return -Infinity; // would blow the MLS cap outright, and can't be shielded as a DP
     const remainingRoom = userClub.budget - currentPayroll;
-    if (player.wage > 0 && remainingRoom > 0) {
-      const wageShare = player.wage / Math.max(remainingRoom, 1);
-      financeScore -= clamp(wageShare * 15, 0, 20);
-    }
+    if (player.wage > 0 && remainingRoom <= 0) return -Infinity; // wage bill already exceeds budget — no real room for anyone
+    if (player.wage > remainingRoom * 0.9) return -Infinity; // would eat almost all remaining budget room on wages alone
+    const wageShare = player.wage / Math.max(remainingRoom, 1);
+    financeScore -= clamp(wageShare * 15, 0, 20);
+  }
+
+  // When the squad is genuinely below the minimum needed to field a full
+  // team, filling numbers with affordable depth matters more than one
+  // marquee name that eats the whole transfer budget and leaves nothing
+  // for the other gaps still needed — bias toward cheaper signings here
+  // instead of just the single best-scoring player regardless of price.
+  if (userClub.squad.length < MIN_SQUAD_SIZE && userClub.budget > 0) {
+    const priceShare = player.askingPrice / userClub.budget;
+    if (priceShare > 0.5) financeScore -= clamp((priceShare - 0.5) * 40, 0, 30);
   }
 
   return needScore + upgradeScore + ageScore + financeScore;
@@ -5237,7 +5460,7 @@ function MarketTab({ tiers, userClub, userTierId, onBuy, difficulty, matchday })
   );
 }
 
-function TrophyTab({ trophyLog, bestFinish, currentClubName }) {
+function TrophyTab({ trophyLog, bestFinish, bestFinishUsa, bestFinishEngland, currentClubName }) {
   const ordinal = (n) => {
     const s = ["th", "st", "nd", "rd"];
     const v = n % 100;
@@ -5248,30 +5471,67 @@ function TrophyTab({ trophyLog, bestFinish, currentClubName }) {
   // Relegations only matter as a live warning sign for the club you're
   // currently at — once you've moved on, an old club's relegation is just
   // noise in your own career log, so drop it from History entirely.
-  const visibleLog = trophyLog.filter((t) => t.type !== "relegation" || t.clubName === currentClubName);
+  // Season markers exist purely for counting seasons at a club — never
+  // shown in the chronological log itself.
+  const visibleLog = trophyLog.filter((t) => t.type !== "season-marker" && (t.type !== "relegation" || t.clubName === currentClubName));
   const promotions = trophyLog.filter((t) => t.type === "promotion");
   const history = visibleLog.filter((t) => t.type !== "promotion");
+
+  // Trophy summary — a quick, flexable "here's my haul" view: how many
+  // seasons at this club, and a count of each specific trophy type won,
+  // rather than needing to scroll the whole chronological log to count.
+  const allSeasonsAtClub = new Set(trophyLog.filter((t) => t.type === "season-marker" && t.clubName === currentClubName).map((t) => t.season));
+  const winsAtClub = trophyLog.filter((t) => t.clubName === currentClubName && t.note?.startsWith("Won"));
+  const trophyCounts = {};
+  winsAtClub.forEach((t) => {
+    const label = t.note.replace(/^Won the /, "");
+    trophyCounts[label] = (trophyCounts[label] || 0) + 1;
+  });
+  const trophyCountEntries = Object.entries(trophyCounts).sort((a, b) => b[1] - a[1]);
+
+  const bestFinishRow = (label, finish) => finish && (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", background: `${PALETTE.gold}22`, border: `1px solid ${PALETTE.gold}55`, borderRadius: 8, marginBottom: 8 }}>
+      <Trophy size={22} color={PALETTE.gold} />
+      <div>
+        <div style={{ ...display, fontWeight: 700, fontSize: 15, color: PALETTE.ink }}>
+          {label}Highest finish: {ordinal(finish.position)} place
+        </div>
+        <div style={{ ...serif, fontSize: 12.5, color: PALETTE.inkSoft }}>
+          {FULL_TIER_META[finish.tierIdx].name} · Season {finish.season}
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div>
       <div style={{ ...display, fontSize: 13, textTransform: "uppercase", letterSpacing: "0.06em", color: PALETTE.inkSoft, marginBottom: 10 }}>
         Career Highlights
       </div>
-      {bestFinish ? (
-        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", background: `${PALETTE.gold}22`, border: `1px solid ${PALETTE.gold}55`, borderRadius: 8, marginBottom: 12 }}>
-          <Trophy size={22} color={PALETTE.gold} />
-          <div>
-            <div style={{ ...display, fontWeight: 700, fontSize: 15, color: PALETTE.ink }}>
-              Highest finish: {ordinal(bestFinish.position)} place
-            </div>
-            <div style={{ ...serif, fontSize: 12.5, color: PALETTE.inkSoft }}>
-              {FULL_TIER_META[bestFinish.tierIdx].name} · Season {bestFinish.season}
-            </div>
-          </div>
-        </div>
+      {bestFinishUsa && bestFinishEngland ? (
+        <>
+          {bestFinishRow("USA — ", bestFinishUsa)}
+          {bestFinishRow("England — ", bestFinishEngland)}
+        </>
+      ) : bestFinish ? (
+        bestFinishRow("", bestFinish)
       ) : (
         <div style={{ ...serif, color: PALETTE.inkSoft, fontSize: 13, marginBottom: 12 }}>No seasons completed yet.</div>
       )}
+
+      {(allSeasonsAtClub.size > 0 || trophyCountEntries.length > 0) && (
+        <div style={{ padding: "12px 14px", background: PALETTE.parchmentDim, borderRadius: 8, marginTop: 12, marginBottom: 4 }}>
+          <div style={{ ...display, fontWeight: 700, fontSize: 14, color: PALETTE.ink, marginBottom: trophyCountEntries.length > 0 ? 8 : 0 }}>
+            {currentClubName} — {allSeasonsAtClub.size} season{allSeasonsAtClub.size === 1 ? "" : "s"}
+          </div>
+          {trophyCountEntries.map(([label, count]) => (
+            <div key={label} style={{ ...serif, fontSize: 13, color: PALETTE.ink, padding: "2px 0" }}>
+              {count}× {label}
+            </div>
+          ))}
+        </div>
+      )}
+
       {promotions.map((t, i) => (
         <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 4px", borderBottom: `1px solid ${PALETTE.parchmentDim}` }}>
           <TrendingUp size={18} color={PALETTE.gold} />
@@ -5641,27 +5901,27 @@ const ONBOARDING_STEPS = [
 const LEAGUE_TUTORIAL_CONTENT = {
   usa_rookie: {
     title: "American Soccer — Rookie",
-    body: "Four tiers: MLS at the top, then USL Championship, USL League One, and USL League Two. MLS and USL Championship clubs run academies; League One and League Two clubs hold open tryouts instead. In Rookie mode there's no wage pressure or board to answer to — just pick the team and get results.",
+    body: "Four tiers: MLS at the top, then USL Championship, USL League One, and USL League Two. MLS and USL Championship clubs run academies; League One and League Two clubs hold open tryouts instead. Ownership funding isn't identical across clubs — bigger, more storied clubs get more from their owners than a modest one in the same league. In Rookie mode there's no wage pressure or board to answer to — just pick the team and get results.",
   },
   usa_pro: {
     title: "American Soccer — Pro",
-    body: "Same four-tier pyramid as Rookie, but now your budget is real. Wages come out of it every payroll, so a squad you can't afford will run you into debt. No board yet at this level — just you managing the money and the results together.",
+    body: "Same four-tier pyramid as Rookie, but now your budget is real. Wages come out of it every payroll, so a squad you can't afford will run you into debt. Ownership funding scales with a club's own reputation and standing — a storied, successful club's owners back it more than a modest one gets. No board yet at this level — just you managing the money and the results together.",
   },
   usa_executive: {
     title: "American Soccer — Executive",
-    body: "The full MLS experience: a salary cap, Designated Players (marquee signings exempt from it), an annual draft, and a board that sets objectives and can sack you if happiness drops too low. Every decision — from a big signing to a bad losing streak — has consequences beyond just the table.",
+    body: "The full MLS experience: a salary cap, Designated Players (marquee signings exempt from it), an annual draft, and a board that sets objectives and can sack you if happiness drops too low. Ownership funding varies by club — reputation, history, and standing all factor into what the owners actually put in season to season. Every decision — from a big signing to a bad losing streak — has consequences beyond just the table.",
   },
   england_rookie: {
     title: "English Football — Rookie",
-    body: "Four tiers: the Premier League at the top, then the Championship, League One, and League Two — real seasons throughout (38 games in the Premier League, 46 everywhere else). Premier League, Championship, and League One clubs all run their own academies, with the strongest academies belonging to the biggest clubs; League Two clubs hold open tryouts instead. Below the Premier League, the final promotion spot in each tier isn't just about finishing position — the clubs just below the automatic places go into a playoff for it. No wage pressure or board in Rookie mode — just pick the team and get results.",
+    body: "Four tiers: the Premier League at the top, then the Championship, League One, and League Two — real seasons throughout (38 games in the Premier League, 46 everywhere else). Premier League, Championship, and League One clubs all run their own academies, with the strongest academies belonging to the biggest clubs; League Two clubs hold open tryouts instead. Below the Premier League, the final promotion spot in each tier isn't just about finishing position — the clubs just below the automatic places go into a playoff for it. Club funding also varies with reputation and history, not just league — a big name gets more from its owners than a modest club at the same level. No wage pressure or board in Rookie mode — just pick the team and get results.",
   },
   england_pro: {
     title: "English Football — Pro",
-    body: "Same four-tier pyramid as Rookie — real 38/46-game seasons, academies scaled to each club's real stature, and a promotion playoff below the top two in the Championship, League One, and League Two. Your budget is real at this level too: wages come out of it every payroll, so keeping the wage bill in line with what you're bringing in matters as much as results.",
+    body: "Same four-tier pyramid as Rookie — real 38/46-game seasons, academies scaled to each club's real stature, and a promotion playoff below the top two in the Championship, League One, and League Two. Your budget is real at this level too: wages come out of it every payroll, so keeping the wage bill in line with what you're bringing in matters as much as results. What owners actually put in varies by club — reputation, history, and league standing all factor in, so a big name gets more than a modest club in the same division.",
   },
   england_executive: {
     title: "English Football — Executive",
-    body: "Everything from Pro — real wages, academies scaled to each club's real stature, and a promotion playoff below the top two in the Championship, League One, and League Two — plus a board with its own objectives and sacking risk. Here it's wages, results, and keeping the board happy.",
+    body: "Everything from Pro — real wages, academies scaled to each club's real stature, and a promotion playoff below the top two in the Championship, League One, and League Two — plus a board with its own objectives and sacking risk. Ownership funding isn't flat across a league either: it scales with a club's own reputation, history, and standing, the same way real ownership groups back their clubs differently. Here it's wages, results, and keeping the board happy.",
   },
 };
 
@@ -6276,6 +6536,24 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     const englandResult = rolloverEnglandSeason(englandTiers, state.parachutePayments, state.difficulty, state.prizePools.slice(4, 8), state.userClubId, precomputedEnglandPlayoffs);
 
     const newTiers = [...usaResult.newTiers, ...englandResult.tiers];
+    // A manager who's actually won things commands more investment from
+    // whatever club they're at — not just the slow reputation drift, a
+    // direct, visible reward for silverware. Counts real wins only (not
+    // runner-up finishes, which share the same trophyLog "trophy" type),
+    // capped so a very long career doesn't runaway-scale forever.
+    const careerTrophyWins = (managerHistory.trophyLog || []).filter((t) => t.note?.startsWith("Won")).length;
+    if (careerTrophyWins > 0) {
+      const trophyFundingMultiplier = 1 + Math.min(careerTrophyWins * 0.04, 0.6);
+      let userClubInNewTiers = null, userClubNewTierId = null;
+      newTiers.forEach((t) => {
+        const found = t.clubs.find((c) => c.id === state.userClubId);
+        if (found) { userClubInNewTiers = found; userClubNewTierId = t.id; }
+      });
+      if (userClubInNewTiers) {
+        const bonus = Math.round(ownershipDepositFor(userClubNewTierId, state.difficulty, userClubInNewTiers) * (trophyFundingMultiplier - 1));
+        userClubInNewTiers.budget += bonus;
+      }
+    }
     const tables = [...usaResult.tables, ...englandResult.tables];
     const events = [...usaResult.events, ...englandResult.events];
     const newPrizePools = [...usaResult.newPrizePools, ...englandResult.newPrizePools];
@@ -6331,6 +6609,11 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     const userChamp = events.find((e) => e.clubId === state.userClubId && e.type === "champion");
     const currentClubName = state.tiers[state.userTierId].clubs.find((c) => c.id === state.userClubId)?.name ?? "";
     const trophyEntries = [];
+    // Logged every season regardless of trophies, purely so "seasons at
+    // this club" can be counted accurately — a quiet mid-table season
+    // wouldn't otherwise leave any entry at all. Filtered out of the
+    // visible chronological history in TrophyTab, used only for the count.
+    trophyEntries.push({ season: state.seasonNumber, note: "Season completed", type: "season-marker", clubName: currentClubName });
     if (userChamp) {
       const shieldNote = userChamp.tier === 0 ? "Won the Supporters' Shield (best regular-season record)"
         : userChamp.tier === 1 ? "Won the Players' Shield (best regular-season record)"
@@ -6344,6 +6627,8 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       clubName: currentClubName,
     });
     if (userMlsPlayoff?.result === "champion") trophyEntries.push({ season: state.seasonNumber, note: "Won the MLS Cup", type: "trophy", clubName: currentClubName });
+    if (mlsPlayoffResult?.east?.confFinal?.winner?.id === state.userClubId) trophyEntries.push({ season: state.seasonNumber, note: "Won the Eastern Conference Championship", type: "trophy", clubName: currentClubName });
+    if (mlsPlayoffResult?.west?.confFinal?.winner?.id === state.userClubId) trophyEntries.push({ season: state.seasonNumber, note: "Won the Western Conference Championship", type: "trophy", clubName: currentClubName });
     else if (userMlsPlayoff?.result === "runner-up") trophyEntries.push({ season: state.seasonNumber, note: "MLS Cup runner-up", type: "trophy", clubName: currentClubName });
     if (userUslcPlayoff?.result === "champion") trophyEntries.push({ season: state.seasonNumber, note: "Won the USL Cup", type: "trophy", clubName: currentClubName });
     else if (userUslcPlayoff?.result === "runner-up") trophyEntries.push({ season: state.seasonNumber, note: "USL Cup runner-up", type: "trophy", clubName: currentClubName });
@@ -6356,13 +6641,24 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
 
     // Track the best league finish this manager has ever recorded, across
     // every club and every tier — permanent career history, not tied to
-    // whichever club you're currently at.
+    // whichever club you're currently at. Tracked both overall and split
+    // by country, since a manager with careers in both wants to see each
+    // one's own peak, not just whichever happens to be globally better.
     const userTable = tables[state.userTierId];
     const position = userTable.findIndex((r) => r.clubId === state.userClubId) + 1;
     const isBetter = !managerHistory.bestFinish
       || position < managerHistory.bestFinish.position
       || (position === managerHistory.bestFinish.position && state.userTierId < managerHistory.bestFinish.tierIdx);
     const bestFinish = isBetter ? { position, tierIdx: state.userTierId, season: state.seasonNumber } : managerHistory.bestFinish;
+
+    const thisIsEngland = state.userTierId >= 4;
+    const priorCountryBest = thisIsEngland ? managerHistory.bestFinishEngland : managerHistory.bestFinishUsa;
+    const isBetterForCountry = !priorCountryBest
+      || position < priorCountryBest.position
+      || (position === priorCountryBest.position && state.userTierId < priorCountryBest.tierIdx);
+    const newCountryBest = isBetterForCountry ? { position, tierIdx: state.userTierId, season: state.seasonNumber } : priorCountryBest;
+    const bestFinishUsa = thisIsEngland ? managerHistory.bestFinishUsa : newCountryBest;
+    const bestFinishEngland = thisIsEngland ? newCountryBest : managerHistory.bestFinishEngland;
 
     // Board pressure — Executive mode only. Evaluate the objective the board
     // set last time, move happiness accordingly, and set the next one.
@@ -6411,7 +6707,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
         }
       }
 
-      const nextObjective = generateBoardObjective(userClubPre.reputation, nextTierIdx, newTiers[nextTierIdx].clubs);
+      const nextObjective = generateBoardObjective(userClubPre.reputation, nextTierIdx, newTiers[nextTierIdx].clubs, position);
       const idx = newTiers[nextTierIdx].clubs.findIndex((c) => c.id === state.userClubId);
       if (idx >= 0) {
         newTiers[nextTierIdx].clubs[idx] = {
@@ -6424,10 +6720,16 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       if (sacked) {
         const promotedThisSeason = userMove?.type === "promoted";
         const positionText = `${position}${position === 1 ? "st" : position === 2 ? "nd" : position === 3 ? "rd" : "th"}`;
+        const playoffResult = userMlsPlayoff || userUslcPlayoff;
+        const playoffText = playoffResult?.result === "champion" ? " — and still won the playoffs, but that wasn't enough to save your job here."
+          : playoffResult?.result === "runner-up" ? " but reached the playoff final, which still wasn't enough to save your job here."
+          : playoffResult?.result === "qualifier" ? " but made the playoffs, which still wasn't enough to save your job here."
+          : promotedThisSeason ? " — promoted, but that wasn't enough to save your job here."
+          : ".";
         sackNotice = {
           clubName: userClubPre.name,
           reason: currentObjective
-            ? `The board wanted: ${currentObjective.description}. You finished ${positionText}${promotedThisSeason ? ` — promoted, but that wasn't enough to save your job here.` : "."}`
+            ? `The board wanted: ${currentObjective.description}. You finished ${positionText}${playoffText}`
             : "The board has lost confidence in your management.",
         };
       }
@@ -6463,16 +6765,19 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     // promotions build it, relegations knock it down, cup wins add a
     // smaller bump each.
     let repDelta = 2; // a modest nod to accumulated experience — achievements below still matter far more than just surviving seasons
-    if (userChamp) repDelta += 15;
+    if (userChamp) repDelta += 18;
     if (userMove?.type === "promoted") repDelta += 10;
-    else if (userMove?.type === "relegated") repDelta -= 15;
+    else if (userMove?.type === "relegated") repDelta -= 12;
     [userMlsPlayoff, userUslcPlayoff, userUsOpenCup, userFaCup, userEflCup].forEach((r) => {
       if (r?.result === "champion") repDelta += 8;
+      else if (r?.result === "runner-up") repDelta += 3; // reaching a major final is still a real credential, even without winning it
     });
     setManagerHistory((prev) => ({
       ...prev,
       trophyLog: [...prev.trophyLog, ...trophyEntries],
       bestFinish,
+      bestFinishUsa,
+      bestFinishEngland,
       managerReputation: clamp((prev.managerReputation ?? 40) + repDelta, 5, 99),
     }));
 
@@ -6526,7 +6831,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       playersOnLoan: stillOnLoan,
     }));
     const userClubForDeposit = state.tiers[state.userTierId].clubs.find((c) => c.id === state.userClubId);
-    setRollover({ events, seasonNumber: state.seasonNumber, windowResult, userPrize, ownershipDeposit: ownershipDepositFor(state.userTierId, state.difficulty, userClubForDeposit), userRetirements, userPayroll, mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, userPromotionPlayoff, boardNotice, userDpRevenue, userParachutePayment, usOpenCup: cup, faCup: faCupSnapshot, eflCup: eflCupSnapshot, userUsOpenCup, userFaCup, userEflCup, seasonAwards });
+    setRollover({ events, seasonNumber: state.seasonNumber, windowResult, userPrize, ownershipDeposit: ownershipDepositFor(state.userTierId, state.difficulty, userClubForDeposit, state.tiers[state.userTierId].clubs), userRetirements, userPayroll, mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, userPromotionPlayoff, boardNotice, userDpRevenue, userParachutePayment, usOpenCup: cup, faCup: faCupSnapshot, eflCup: eflCupSnapshot, userUsOpenCup, userFaCup, userEflCup, seasonAwards });
     setEnglandPlayoffProgress(null);
     if (userDraftPicks && userDraftPicks.length) setDraftPicks(userDraftPicks);
     setSeasonPlayoffs(null);
@@ -6583,10 +6888,17 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
   };
 
   const handleSetCaptain = (playerId) => {
+    const club = userClub;
+    const picked = club.squad.find((p) => p.id === playerId);
+    const xi = startingXI(club, currentMatchday ?? 1);
+    const bestLeader = [...xi].sort((a, b) => b.leadership - a.leadership)[0];
+    if (picked && bestLeader && bestLeader.id !== picked.id && bestLeader.leadership - picked.leadership >= 10) {
+      setInfoNotice(`${picked.name} isn't your strongest leader — ${bestLeader.name} (leadership ${bestLeader.leadership} vs ${picked.leadership}) is currently in your XI and might wear the armband better.`);
+    }
     mutateAndSave((next) => {
       const t = next.tiers[next.userTierId];
-      const club = t.clubs.find((c) => c.id === next.userClubId);
-      club.captainId = playerId;
+      const c = t.clubs.find((cl) => cl.id === next.userClubId);
+      c.captainId = playerId;
     });
   };
 
@@ -6612,6 +6924,25 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       const club = next.tiers[next.userTierId].clubs.find((c) => c.id === next.userClubId);
       const p = club.squad.find((pl) => pl.id === playerId);
       if (p) p.restRequested = !p.restRequested;
+    });
+  };
+
+  // Unlike restRequested (cleared automatically after the next match this
+  // plays), restIndefinitely stays on until the manager explicitly turns
+  // it back off — for genuinely parking a player, not just a one-match rest.
+  const handleToggleRestIndefinitely = (playerId) => {
+    mutateAndSave((next) => {
+      const club = next.tiers[next.userTierId].clubs.find((c) => c.id === next.userClubId);
+      const p = club.squad.find((pl) => pl.id === playerId);
+      if (p) p.restIndefinitely = !p.restIndefinitely;
+    });
+  };
+
+  const handleToggleCustomXI = (playerId) => {
+    mutateAndSave((next) => {
+      const club = next.tiers[next.userTierId].clubs.find((c) => c.id === next.userClubId);
+      const current = club.tactics.customXI || [];
+      club.tactics.customXI = current.includes(playerId) ? current.filter((id) => id !== playerId) : [...current, playerId];
     });
   };
 
@@ -6676,8 +7007,11 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     }
     // Real salary cap check (MLS + Executive only, where DPs exist): a new
     // signing joins as a non-DP by default, so if their wage would push
-    // the non-DP wage bill over the cap, the move is blocked — free a DP
-    // slot for them, offload some existing wage, or pass.
+    // the non-DP wage bill over the cap, they need an open Designated
+    // Player slot to be shielded from it — automatically used here if one
+    // is actually free, rather than just blocking the purchase and making
+    // the manager go figure out how to free one up manually first.
+    let autoSignAsDp = false;
     if (state.userTierId === 0 && DIFFICULTY_MODES[state.difficulty]?.dps) {
       const sourceTier = state.tiers[sellerTierId] ?? state.tiers.find((t) => t.clubs.some((c) => c.id === sellerId));
       const seller = sourceTier?.clubs.find((c) => c.id === sellerId);
@@ -6685,8 +7019,14 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       if (p) {
         const currentNonDpWages = effectivePayroll(userClub.squad, userClub.designatedPlayerIds);
         if (currentNonDpWages + p.wage > MLS_SALARY_CAP) {
-          setInfoNotice(`Signing ${p.name} at a $${p.wage.toLocaleString()} wage would push you over the $${MLS_SALARY_CAP.toLocaleString()} salary cap. Free up a Designated Player slot for them, offload some existing wages first, or look elsewhere.`);
-          return;
+          const dpSlotOpen = (userClub.designatedPlayerIds || []).length < MAX_DESIGNATED_PLAYERS;
+          if (dpSlotOpen) {
+            autoSignAsDp = true;
+            setInfoNotice(`${p.name}'s wage would have busted the salary cap, so they've been signed as a Designated Player instead — using your open DP slot.`);
+          } else {
+            setInfoNotice(`Signing ${p.name} at a $${p.wage.toLocaleString()} wage would push you over the $${MLS_SALARY_CAP.toLocaleString()} salary cap, and all ${MAX_DESIGNATED_PLAYERS} Designated Player slots are already used. Free one up, offload some existing wages first, or look elsewhere.`);
+            return;
+          }
         }
       }
     }
@@ -6714,6 +7054,9 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
         seller.designatedPlayerIds = seller.designatedPlayerIds.filter((id) => id !== playerId);
       }
       buyer.squad.push(p);
+      if (autoSignAsDp) {
+        buyer.designatedPlayerIds = [...(buyer.designatedPlayerIds || []), p.id];
+      }
     });
   };
 
@@ -7016,8 +7359,8 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       </div>
 
       <div style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
-        {tab === "squad" && <SquadTab club={userClub} matchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)} onToggleList={handleToggleList} onRenew={handleRenew} onSetCaptain={handleSetCaptain} tierId={state.userTierId} difficulty={state.difficulty} onToggleDP={handleToggleDP} onToggleRest={handleToggleRest} onToggleHoldBack={handleToggleHoldBack} onLoanOut={handleLoanOut} playersOnLoan={state.playersOnLoan} tier={tier} />}
-        {tab === "tactics" && <TacticsTab club={userClub} matchday={currentMatchday ?? 1} onChange={handleTacticsChange} tier={tier} />}
+        {tab === "squad" && <SquadTab club={userClub} matchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)} onToggleList={handleToggleList} onRenew={handleRenew} tierId={state.userTierId} difficulty={state.difficulty} onToggleDP={handleToggleDP} onToggleRest={handleToggleRest} onToggleRestIndefinitely={handleToggleRestIndefinitely} onToggleHoldBack={handleToggleHoldBack} onToggleCustomXI={handleToggleCustomXI} onLoanOut={handleLoanOut} playersOnLoan={state.playersOnLoan} tier={tier} />}
+        {tab === "tactics" && <TacticsTab club={userClub} matchday={currentMatchday ?? 1} onChange={handleTacticsChange} tier={tier} onSetCaptain={handleSetCaptain} />}
         {tab === "table" && <TableTab tier={tier} userClubId={userClub.id} seasonPlayoffs={seasonPlayoffs} revealedRounds={revealedRounds} onSimRound={handleSimRound} onSimRest={handleSimRestOfPostseason} />}
         {tab === "fixtures" && <FixturesTab tier={tier} userClubId={userClub.id} usOpenCup={state.usOpenCup} faCup={state.faCup} eflCup={state.eflCup} />}
         {tab === "market" && <MarketTab tiers={state.tiers} userClub={userClub} userTierId={state.userTierId} onBuy={handleBuy} difficulty={state.difficulty} matchday={currentMatchday ?? 1} />}
@@ -7054,7 +7397,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
             />
           )
         )}
-        {tab === "trophies" && <TrophyTab trophyLog={managerHistory.trophyLog} bestFinish={managerHistory.bestFinish} currentClubName={userClub.name} />}
+        {tab === "trophies" && <TrophyTab trophyLog={managerHistory.trophyLog} bestFinish={managerHistory.bestFinish} bestFinishUsa={managerHistory.bestFinishUsa} bestFinishEngland={managerHistory.bestFinishEngland} currentClubName={userClub.name} />}
       </div>
 
       {recap && <MatchdayRecap results={recap} userClubName={userClub.name} tier={tier} onClose={() => setRecap(null)} />}
@@ -7140,7 +7483,7 @@ const SAVE_VERSION = 2; // bumped: pre-v2 saves could have NaN budgets (from the
 // survives being sacked or starting a new career, so it lives in its own
 // storage key rather than inside the per-club save.
 const MANAGER_KEY = "ascent_manager_history_v1";
-const DEFAULT_MANAGER_HISTORY = { trophyLog: [], bestFinish: null, hasSeenTutorial: false, seenOneTimeHints: [], managerReputation: 50 };
+const DEFAULT_MANAGER_HISTORY = { trophyLog: [], bestFinish: null, bestFinishUsa: null, bestFinishEngland: null, hasSeenTutorial: false, seenOneTimeHints: [], managerReputation: 50 };
 
 function isValidSave(parsed) {
   return (
@@ -7277,7 +7620,7 @@ export default function App() {
     if (!pendingCountry) {
       return <CountrySelectScreen onChoose={setPendingCountry} onBack={null} />;
     }
-    return <ClubSelectScreen world={state.tiers} defaultCountry={pendingCountry} saveWasReset={false} difficulty={pendingDifficulty} managerReputation={managerHistory.managerReputation} isJobSearch={isJobSearch} onBack={() => setPendingCountry(null)} onPick={(tierId, clubId) => {
+    return <ClubSelectScreen world={state.tiers} defaultCountry={pendingCountry} saveWasReset={false} difficulty={pendingDifficulty} managerReputation={managerHistory.managerReputation} isJobSearch={isJobSearch} onBack={() => setPendingCountry(null)} onResetToNewSave={handleNewGame} onPick={(tierId, clubId) => {
       handlePickNewClubWithinWorld(state, tierId, clubId, setState, setIsPickingNewClub, setIsJobSearch);
     }} />;
   }
@@ -7294,7 +7637,7 @@ export default function App() {
     }
     const previewWorld = buildFullWorld();
     previewWorld.forEach((t) => { t.fixtures = generateDoubleRoundRobin(t.clubs.map((c) => c.id)); });
-    return <ClubSelectScreen world={previewWorld} defaultCountry={pendingCountry} saveWasReset={saveWasReset} difficulty={pendingDifficulty} managerReputation={managerHistory.managerReputation} isJobSearch={isJobSearch} onBack={() => setPendingCountry(null)} onPick={(tierId, clubId) => {
+    return <ClubSelectScreen world={previewWorld} defaultCountry={pendingCountry} saveWasReset={saveWasReset} difficulty={pendingDifficulty} managerReputation={managerHistory.managerReputation} isJobSearch={isJobSearch} onBack={() => setPendingCountry(null)} onResetToNewSave={handleNewGame} onPick={(tierId, clubId) => {
       // re-derive the same picked club/tier from a freshly built world containing it
       handlePickFromPreview(previewWorld, tierId, clubId, pendingDifficulty, setState);
     }} />;
