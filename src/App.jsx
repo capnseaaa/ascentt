@@ -146,10 +146,25 @@ function retirementChance(age) {
   return table[age] ?? 1.0;
 }
 
+// A player's own tier realistically caps how far their overall can climb
+// through ordinary season-to-season growth. Indexed like FULL_TIER_META
+// (0-3 USA MLS→USL2, 4-7 England PL→League Two). Without this, a talented
+// low-tier player who never gets scouted or transferred up (the game
+// doesn't simulate AI-to-AI transfers) could organically grow all the way
+// to the same 99 ceiling as a genuine Premier League/MLS star, which reads
+// as completely unrealistic for e.g. a USL Championship squad.
+// Rebalanced after feedback that MLS/USL were dominating the very top of
+// the market's rating sort ahead of Premier League — the Premier League
+// should clearly sit above every American tier, and USL Championship's
+// ceiling in particular was still too high.
+const TIER_OVERALL_CEILING = [86, 70, 60, 52, 99, 85, 75, 65];
+
 // Called once per player at every season rollover: ages them a year and
 // moves their overall toward (or past) their potential, then declines it
 // once they're aging out. Sub-attributes drift loosely along with overall.
-function growPlayer(p) {
+// tierIdx (0-7, FULL_TIER_META order) is optional — omitting it (e.g. for
+// a one-off call with no tier context) leaves growth uncapped as before.
+function growPlayer(p, tierIdx) {
   const age = p.age + 1;
   let delta;
   if (p.overall < p.potential) {
@@ -169,7 +184,32 @@ function growPlayer(p) {
   if (age <= 24 && Math.random() < 0.03) {
     potential = Math.min(99, potential + randInt(5, 15));
   }
-  const overall = clamp(p.overall + delta, 30, 99);
+  const ceiling = tierIdx != null ? (TIER_OVERALL_CEILING[tierIdx] ?? 99) : 99;
+  // Cap potential to the tier ceiling too, so future growth deltas actually
+  // stop rather than continuing to chase an inflated number every season —
+  // but never pulled back below whatever the player has already
+  // legitimately reached (a pre-existing save could already be over it).
+  potential = Math.max(p.overall, Math.min(potential, ceiling));
+  let overall = clamp(p.overall + delta, 30, 99);
+  // The ceiling only ever blocks GROWTH past it — it must never forcibly
+  // slash a player who's already above it (e.g. an existing save from
+  // before this cap existed, or before a ceiling was lowered further) back
+  // down in one abrupt step. Only clamp when this season's change would
+  // actually be an increase past the ceiling; a decline (aging out) is
+  // left to play out normally.
+  if (delta > 0 && overall > ceiling) overall = Math.max(p.overall, ceiling);
+  // Legacy correction: a player already sitting above the ceiling — from
+  // before this cap existed, or from a ceiling that's since been lowered —
+  // would otherwise stay frozen there forever once they're past the age
+  // where natural decline kicks in. Gently nudge them back down toward the
+  // ceiling every season instead, faster the further over they are, so an
+  // existing save actually self-corrects over a handful of seasons rather
+  // than an abrupt reset OR a permanent, unrealistic plateau.
+  if (overall > ceiling) {
+    const excess = overall - ceiling;
+    overall -= Math.max(1, Math.round(excess * 0.15));
+    overall = Math.max(overall, ceiling);
+  }
   const attrDelta = Math.round(delta * 0.6);
   return {
     ...p,
@@ -189,9 +229,9 @@ function growPlayer(p) {
    ============================================================ */
 
 const DIFFICULTY_MODES = {
-  rookie: { label: "Rookie", wagesDeducted: false, eventBonuses: false, boardPressure: false, dps: false, injuryMultiplier: 0.5 },
-  pro: { label: "Pro", wagesDeducted: true, eventBonuses: true, boardPressure: false, dps: false, injuryMultiplier: 1.0 },
-  executive: { label: "Executive", wagesDeducted: true, eventBonuses: true, boardPressure: true, dps: true, injuryMultiplier: 1.0 },
+  rookie: { label: "Rookie", wagesDeducted: false, eventBonuses: false, boardPressure: false, boardMessages: false, dps: false, injuryMultiplier: 0.5 },
+  pro: { label: "Pro", wagesDeducted: true, eventBonuses: true, boardPressure: false, boardMessages: true, dps: false, injuryMultiplier: 1.0 },
+  executive: { label: "Executive", wagesDeducted: true, eventBonuses: true, boardPressure: true, boardMessages: true, dps: true, injuryMultiplier: 1.0 },
 };
 
 // Annual wage bands per tier, loosely calibrated to real USL/MLS CBA figures.
@@ -508,6 +548,7 @@ function makeClub({ name, squad, isReal, budget, academyEligible }) {
     tryoutCandidates: [],
     boardHappiness: 60,
     boardObjective: null,
+    boardMessage: null,
     designatedPlayerIds: [],
     conference: null,
     disqualified: false,
@@ -1065,7 +1106,7 @@ function rolloverEnglandSeason(tiers, parachutePayments, difficulty, prizePools,
       const club = clubsById[id];
       const isUser = id === userClubId;
       let squad = club.squad.map((p) => {
-        const grown = growPlayer(p);
+        const grown = growPlayer(p, t.id);
         // contractYearsLeft was never being decremented here at all — this
         // is England's own rollover, separate from MLS's, and this step
         // had simply never been ported over. Real players' contracts never
@@ -1123,9 +1164,17 @@ function rolloverEnglandSeason(tiers, parachutePayments, difficulty, prizePools,
         else if (finishPosition >= finishTierSize - 2) performanceNudge = -1;
       }
       const reputation = clamp(Math.round((club.reputation ?? squadReputation) * 0.75 + squadReputation * 0.25) + performanceNudge, 20, 95);
+      // Academy prospects (club.youthPlayers) were never being aged or
+      // developed here at all — same recurring gap as the contract-decrement
+      // bug: MLS's rollover already runs every prospect through
+      // growYouthProspect every season, England's own rollover simply never
+      // included the step, so an England club's prospects sat completely
+      // frozen at whatever age/stats they were generated with, forever.
+      const youthPlayers = (club.youthPlayers || []).map((p) => growYouthProspect(p, club.academyStars || 0));
       return {
         ...club,
         squad,
+        youthPlayers,
         reputation,
         budget: club.budget + prize + ownershipDepositFor(t.id, difficulty, club, t.clubs) - payroll,
       };
@@ -1496,6 +1545,13 @@ function weightedScorer(xi) {
 
 const UNHAPPY_BENCH_STREAK_THRESHOLD = 6;
 const UNHAPPY_MORALE_THRESHOLD = 15;
+// A player whose frustration (benchStreak) runs this far past the ordinary
+// transfer-request threshold has reached a genuine point of no return —
+// roughly a season and a half of being left out entirely, ignored, with
+// no intervention. Unlike an ordinary transfer request (always defusable
+// by unlisting), a player past this point leaves for good at the next
+// rollover, no exceptions.
+const FORCED_DEPARTURE_BENCH_THRESHOLD = 15;
 
 // A fit player left out of the XI match after match gets restless — real
 // squad players expect game time. But in reality, an average squad player
@@ -1704,12 +1760,15 @@ const MIN_PRIZE_POOL = [1_200_000, 600_000, 250_000, 100_000, 6_000_000, 800_000
 // Guaranteed yearly backing from ownership, paid to every club regardless of
 // standing — separate from performance bonuses, and sized so a typical squad
 // at that tier can actually afford to renew contracts even in a bad season.
-const OWNERSHIP_DEPOSIT = [5_000_000, 2_000_000, 900_000, 350_000, 20_000_000, 3_000_000, 800_000, 300_000];
+// Premier League bumped up after feedback that funds weren't keeping pace
+// with real PL-scale wage bills (a full 25-player squad can easily run
+// $100M+ in wages alone) — the other tiers are unchanged.
+const OWNERSHIP_DEPOSIT = [5_000_000, 2_000_000, 900_000, 350_000, 32_000_000, 3_000_000, 800_000, 300_000];
 // On Pro/Executive, clubs actually have to fund a real payroll out of this
 // money, so the deposit scales up accordingly — mainly matters for MLS,
 // where wages can run high; the other tiers' payrolls were already roughly
 // in range of their Rookie-level deposit.
-const OWNERSHIP_DEPOSIT_WAGED = [16_000_000, 2_400_000, 1_000_000, 350_000, 60_000_000, 2_600_000, 900_000, 350_000];
+const OWNERSHIP_DEPOSIT_WAGED = [16_000_000, 2_400_000, 1_000_000, 350_000, 110_000_000, 2_600_000, 900_000, 350_000];
 // A simple, deterministic string hash — used so a club's funding
 // "inconsistency" is stable (same club always lands on the same value)
 // rather than re-rolling randomly every time this gets called.
@@ -2440,6 +2499,160 @@ function pendingEnglandCupCheckpoint(stateLike, matchdayNum) {
 // a title contender while almost no USLC club ever does. Rank the club's
 // reputation against its own tier-mates instead, so "title expectations"
 // means "one of the best in this tier" everywhere, not "above a fixed number".
+// Picks the squad's weakest position by average overall, and a target
+// overall a real step above that average — used to generate the "nosey
+// board" transfer demand. Deliberately squad-driven rather than pointing
+// at one specific named player (whoever's actually weak, not a fixed
+// target that might get bought/sold from under the message by someone
+// else before the manager can act).
+function weakestPositionMessage(squad) {
+  const positions = ["GK", "DEF", "MID", "FWD"];
+  const avgByPos = {};
+  positions.forEach((pos) => {
+    const players = squad.filter((p) => p.position === pos);
+    avgByPos[pos] = players.length ? players.reduce((s, p) => s + p.overall, 0) / players.length : 50;
+  });
+  const weakest = positions.reduce((a, b) => (avgByPos[a] <= avgByPos[b] ? a : b));
+  const minOverall = Math.min(92, Math.round(avgByPos[weakest] + 8));
+  return { position: weakest, minOverall };
+}
+
+// The board's demands aren't just "sign this position" anymore — a real
+// board also weighs in on tactics and squad usage. Four kinds, randomly
+// chosen; each carries everything checkBoardMessageCompliance needs to
+// resolve it later without re-deriving anything.
+const BOARD_MESSAGE_FORMATIONS = ["4-4-2", "4-3-3", "3-5-2", "5-3-2", "4-2-3-1", "4-3-2-1", "3-4-3", "4-3-1-2"];
+function generateBoardMessage(club) {
+  const roll = Math.random();
+  if (roll < 0.4) {
+    const { position, minOverall } = weakestPositionMessage(club.squad);
+    return { kind: "sign_position", position, minOverall, description: `The board wants a ${position} rated ${minOverall}+ overall signed before next season.` };
+  }
+  if (roll < 0.6) {
+    const options = BOARD_MESSAGE_FORMATIONS.filter((f) => f !== club.tactics?.formation);
+    const formation = options[Math.floor(Math.random() * options.length)] ?? BOARD_MESSAGE_FORMATIONS[0];
+    return { kind: "use_formation", formation, description: `The board wants to see a ${formation} setup by the end of the season.` };
+  }
+  if (roll < 0.8) {
+    return { kind: "youth_mode", description: "The board wants to see more academy players getting first-team minutes — switch to Youth lineup mode by the end of the season." };
+  }
+  const candidates = club.squad.filter((p) => p.age <= 26);
+  const pool = candidates.length ? candidates : club.squad;
+  const target = pool[Math.floor(Math.random() * pool.length)];
+  if (!target) return null;
+  return { kind: "loan_out", playerId: target.id, playerName: target.name, description: `The board wants ${target.name} out on loan for experience before next season.` };
+}
+
+// Resolves a pending board message against what actually happened this
+// season. clubPre is the club's state going into rollover (reflects
+// whatever tactics were last set); signings/loans are read from the
+// season-scoped tracking arrays reset at every rollover.
+function checkBoardMessageCompliance(message, clubPre, signingsThisSeason, playersOnLoan) {
+  if (message.kind === "sign_position") {
+    return (signingsThisSeason || []).some((s) => s.position === message.position && s.overall >= message.minOverall);
+  }
+  if (message.kind === "use_formation") {
+    return clubPre.tactics?.formation === message.formation;
+  }
+  if (message.kind === "youth_mode") {
+    return clubPre.tactics?.lineupMode === "youth";
+  }
+  if (message.kind === "loan_out") {
+    return (playersOnLoan || []).some((entry) => entry.player.id === message.playerId);
+  }
+  return false;
+}
+
+function boardMessageNoticeText(message, compliant) {
+  if (message.kind === "sign_position") {
+    return compliant
+      ? `The board is pleased you brought in a ${message.minOverall}+ overall ${message.position} as they'd asked — happiness up.`
+      : `The board is unhappy you never signed the ${message.minOverall}+ overall ${message.position} they specifically asked for — happiness down.`;
+  }
+  if (message.kind === "use_formation") {
+    return compliant
+      ? `The board is pleased you brought in the ${message.formation} setup they wanted — happiness up.`
+      : `The board is unhappy you never switched to the ${message.formation} setup they specifically asked for — happiness down.`;
+  }
+  if (message.kind === "youth_mode") {
+    return compliant
+      ? "The board is pleased to see academy players getting real minutes — happiness up."
+      : "The board is unhappy the academy still isn't getting real first-team minutes — happiness down.";
+  }
+  if (message.kind === "loan_out") {
+    return compliant
+      ? `The board is pleased you sent ${message.playerName} out on loan as they'd asked — happiness up.`
+      : `The board is unhappy ${message.playerName} never went out on loan as they'd specifically asked — happiness down.`;
+  }
+  return "";
+}
+
+// Scout tips were pulled back out for a design brainstorm before shipping
+// — see chat history if picking this back up later.
+
+// AI-to-AI transfers: until now, players only ever moved when the USER
+// bought them — every other club's roster was frozen except for growth
+// and rare replacement spawns. That's a real gap: no club ever sells its
+// aging star, no rebuild ever happens, promotion/relegation never
+// reshapes a squad. This runs once per season, within each tier (keeping
+// it same-tier for now — cross-tier moves would need promotion-aware
+// logic this doesn't have yet), a handful of attempts at a time so the
+// world visibly moves without the whole pyramid churning every season.
+// The user's own club is never touched, either as buyer or seller — this
+// is strictly the world moving around them, not something being done TO
+// them. Every completed deal is logged for the (upcoming) Historical
+// Records / News Feed systems to read from.
+const AI_TRANSFER_ATTEMPTS_PER_TIER = 2;
+function runAiToAiTransfers(tiers, userClubId) {
+  const log = [];
+  tiers.forEach((tier) => {
+    for (let attempt = 0; attempt < AI_TRANSFER_ATTEMPTS_PER_TIER; attempt++) {
+      const buyerPool = tier.clubs.filter((c) => c.id !== userClubId && c.squad.length < MAX_SQUAD_SIZE && c.budget > 0);
+      if (!buyerPool.length) continue;
+      const buyer = buyerPool[Math.floor(Math.random() * buyerPool.length)];
+
+      const positions = ["GK", "DEF", "MID", "FWD"];
+      const avgByPos = {};
+      positions.forEach((pos) => {
+        const players = buyer.squad.filter((p) => p.position === pos);
+        avgByPos[pos] = players.length ? players.reduce((s, p) => s + p.overall, 0) / players.length : 50;
+      });
+      const weakest = positions.reduce((a, b) => (avgByPos[a] <= avgByPos[b] ? a : b));
+
+      const candidates = [];
+      tier.clubs.forEach((seller) => {
+        if (seller.id === buyer.id || seller.id === userClubId) return;
+        if (seller.squad.length <= MIN_SQUAD_SIZE + 2) return; // never gut a seller below a real squad
+        seller.squad.forEach((p) => {
+          if (p.position !== weakest) return;
+          if (p.overall < avgByPos[weakest] + 5) return; // must be a real upgrade, not a lateral move
+          candidates.push({ player: p, seller });
+        });
+      });
+      if (!candidates.length) continue;
+
+      const pick = candidates[Math.floor(Math.random() * candidates.length)];
+      const fee = Math.round(marketValue(pick.player) * (0.85 + Math.random() * 0.3));
+      if (buyer.budget < fee) continue;
+
+      buyer.budget -= fee;
+      pick.seller.budget += fee;
+      pick.seller.squad = pick.seller.squad.filter((p) => p.id !== pick.player.id);
+      buyer.squad = [...buyer.squad, pick.player];
+      log.push({
+        tierId: tier.id,
+        playerName: pick.player.name,
+        position: pick.player.position,
+        overall: pick.player.overall,
+        fee,
+        buyerName: buyer.name,
+        sellerName: pick.seller.name,
+      });
+    }
+  });
+  return log;
+}
+
 function generateBoardObjective(reputation, tierIdx, tierClubs, recentFinishPosition) {
   const tierSize = tierClubs.length;
   const sorted = [...tierClubs.map((c) => c.reputation)].sort((a, b) => a - b);
@@ -2669,7 +2882,7 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty, precomputedPl
       const baseRating = TIER_META[i].baseRating;
       const isUser = id === userClubId;
       let squad = club.squad.map((p) => {
-        const grown = growPlayer(p);
+        const grown = growPlayer(p, t.id);
         return {
           ...grown,
           contractYearsLeft: grown.contractYearsLeft - 1,
@@ -2715,7 +2928,7 @@ function rolloverSeason(tiers, userClubId, prizePools, difficulty, precomputedPl
           // real stars age out, since replacements otherwise cluster near
           // the tier's base rating.
           if (i === 0 && Math.random() < 0.06) {
-            return makePlayer(p.position, baseRating + randInt(18, 30));
+            return makePlayer(p.position, Math.min(baseRating + randInt(18, 30), TIER_OVERALL_CEILING[0]));
           }
           return makePlayer(p.position, baseRating + randInt(-8, 8));
         });
@@ -4075,7 +4288,7 @@ function MatchdayRecap({ results, userClubName, tier, onClose }) {
    DASHBOARD TABS
    ============================================================ */
 
-function SquadTab({ club, matchday, onToggleList, onRenew, tierId, difficulty, onToggleDP, onToggleRest, onToggleRestIndefinitely, onToggleHoldBack, onToggleCustomXI, onLoanOut, playersOnLoan, tier }) {
+function SquadTab({ club, matchday, onToggleList, onRenew, tierId, difficulty, onToggleDP, onToggleRest, onToggleRestIndefinitely, onToggleHoldBack, onLoanOut, playersOnLoan, tier }) {
   const [openActionMenuId, setOpenActionMenuId] = useState(null);
   const [lineupOpen, setLineupOpen] = useState(false);
   const xi = startingXI(club, matchday);
@@ -4210,21 +4423,6 @@ function SquadTab({ club, matchday, onToggleList, onRenew, tierId, difficulty, o
                         style={{ fontSize: 11, padding: "4px 8px", borderRadius: 5, border: `1px solid ${PALETTE.gold}`, background: PALETTE.gold, color: PALETTE.ink, cursor: "pointer", ...display, fontWeight: 600 }}
                       >
                         Renew
-                      </button>
-                    )}
-                    {club.tactics.lineupMode === "custom" && (
-                      <button
-                        onClick={() => onToggleCustomXI(p.id)}
-                        title="In your custom starting XI"
-                        style={{
-                          fontSize: 11, padding: "4px 8px", borderRadius: 5, cursor: "pointer", ...display,
-                          border: `1px solid ${PALETTE.gold}`,
-                          background: (club.tactics.customXI || []).includes(p.id) ? PALETTE.gold : "none",
-                          color: (club.tactics.customXI || []).includes(p.id) ? PALETTE.ink : PALETTE.gold,
-                          fontWeight: (club.tactics.customXI || []).includes(p.id) ? 700 : 400,
-                        }}
-                      >
-                        {(club.tactics.customXI || []).includes(p.id) ? "In XI ✓" : "Add to XI"}
                       </button>
                     )}
                     <button
@@ -4371,11 +4569,34 @@ function suggestTactics(club, oppRatings, tier) {
   return { formation, style, press, reason: `${formationReason[0].toUpperCase()}${formationReason.slice(1)} — ${styleReason === formationReason ? "which also points to" : "and"} ${style}, ${press} press.` };
 }
 
-function TacticsTab({ club, matchday, onChange, tier, onSetCaptain }) {
+function TacticsTab({ club, matchday, onChange, tier, onSetCaptain, onSwapCustomXI }) {
   const formations = ["4-4-2", "4-3-3", "3-5-2", "5-3-2", "4-2-3-1", "4-3-2-1", "3-4-3", "4-3-1-2"];
   const posOrder = { GK: 0, DEF: 1, MID: 2, FWD: 3 };
   const projected = [...startingXI(club, matchday)].sort((a, b) => posOrder[a.position] - posOrder[b.position]);
   const lineRatings = xiLineRatings(projected);
+
+  // Custom mode's selection surface lives here now: click a projected slot,
+  // pick a replacement from a dropdown, rather than toggling players on/off
+  // from a list in the Squad tab. Eligibility mirrors the exact same pool
+  // startingXI() itself draws from (see the `available` filter there) so a
+  // player offered in the dropdown is always someone who'd actually take
+  // the pitch if picked — never an injured/suspended/rested player who'd
+  // just silently fail to appear after being "swapped in".
+  const projectedIds = useMemo(() => new Set(projected.map((p) => p.id)), [projected]);
+  const eligiblePool = useMemo(() => {
+    const isCupMatch = matchday === 9999;
+    const restThreshold = club.tactics.restThreshold ?? 0;
+    return club.squad.filter((pl) => {
+      if (!isAvailable(pl, matchday)) return false;
+      if (isCupMatch && pl.holdBackForCup) return false;
+      if (pl.restRequested || pl.restIndefinitely) return false;
+      if (pl.fitness < restThreshold) return false;
+      return true;
+    });
+  }, [club.squad, club.tactics.restThreshold, matchday]);
+  const swapOptionsFor = (position, excludeId) => eligiblePool
+    .filter((pl) => pl.position === position && pl.id !== excludeId && !projectedIds.has(pl.id))
+    .sort((a, b) => b.overall - a.overall);
 
   const Row = ({ label, value, options, field, optionLabels }) => (
     <div style={{ marginBottom: 18 }}>
@@ -4462,7 +4683,7 @@ function TacticsTab({ club, matchday, onChange, tier, onSetCaptain }) {
           />
           {(club.tactics.lineupMode === "custom") && (
             <div style={{ ...serif, fontSize: 12, color: PALETTE.inkSoft, marginTop: -10, marginBottom: 18 }}>
-              Pick your XI below in the Squad tab — your picks start whenever they're actually available, same gap-filling as any other mode if someone's injured, suspended, or rested.
+              Use the "Swap ▾" menu next to a name in the Projected Lineup to swap that slot for another eligible player. Your picks start whenever they're actually available, same gap-filling as any other mode if someone's later injured, suspended, or rested.
             </div>
           )}
           <div style={{ marginTop: 4, marginBottom: 18 }}>
@@ -4486,6 +4707,8 @@ function TacticsTab({ club, matchday, onChange, tier, onSetCaptain }) {
           </div>
           {projected.map((p) => {
             const isCaptain = p.id === club.captainId;
+            const isCustomMode = (club.tactics.lineupMode || "best") === "custom";
+            const options = isCustomMode ? swapOptionsFor(p.position, p.id) : [];
             return (
               <div key={p.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, fontSize: 13, padding: "6px 0", borderBottom: `1px solid ${PALETTE.parchmentDim}`, ...serif }}>
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -4493,13 +4716,33 @@ function TacticsTab({ club, matchday, onChange, tier, onSetCaptain }) {
                   {p.name}
                   <span style={{ ...mono, fontWeight: 700, marginLeft: 6 }}>{p.overall}</span>
                 </span>
-                <button
-                  onClick={() => onSetCaptain(p.id)}
-                  title={isCaptain ? "Captain" : "Make captain"}
-                  style={{ fontSize: 14, width: 24, height: 24, borderRadius: 4, cursor: "pointer", padding: 0, border: "none", background: "none", color: isCaptain ? PALETTE.gold : `${PALETTE.inkSoft}66`, flexShrink: 0 }}
-                >
-                  ©
-                </button>
+                <span style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+                  {isCustomMode && (
+                    <select
+                      value=""
+                      onChange={(e) => { if (e.target.value) onSwapCustomXI(p.id, e.target.value); }}
+                      title="Swap this player out for another eligible pick"
+                      disabled={options.length === 0}
+                      style={{
+                        fontSize: 10.5, ...mono, border: `1px solid ${PALETTE.inkSoft}66`, borderRadius: 4,
+                        background: PALETTE.parchment, color: options.length === 0 ? `${PALETTE.inkSoft}88` : PALETTE.inkSoft,
+                        padding: "2px 3px", maxWidth: 96, cursor: options.length === 0 ? "default" : "pointer",
+                      }}
+                    >
+                      <option value="">{options.length === 0 ? "No swaps" : "Swap ▾"}</option>
+                      {options.map((opt) => (
+                        <option key={opt.id} value={opt.id}>{opt.name} ({opt.overall})</option>
+                      ))}
+                    </select>
+                  )}
+                  <button
+                    onClick={() => onSetCaptain(p.id)}
+                    title={isCaptain ? "Captain" : "Make captain"}
+                    style={{ fontSize: 14, width: 24, height: 24, borderRadius: 4, cursor: "pointer", padding: 0, border: "none", background: "none", color: isCaptain ? PALETTE.gold : `${PALETTE.inkSoft}66`, flexShrink: 0 }}
+                  >
+                    ©
+                  </button>
+                </span>
               </div>
             );
           })}
@@ -5267,10 +5510,18 @@ function computeRecommendationScore(player, userClub, difficulty, tierIdx) {
   // recommendation regardless of how good a fit it looks on paper.
   if (userClub.budget < player.askingPrice) return -Infinity;
 
-  // Wage affordability was previously just a soft penalty on the score,
-  // meaning a signing whose wage would actually blow the budget (or, in
-  // MLS, the hard salary cap) could still surface as "recommended" —
-  // exactly the bug reported. Both are now a hard exclusion, not a nudge.
+  // Wage affordability: genuinely blowing the MLS hard salary cap (with no
+  // open DP slot to shield it) is a real rule, so that's still a hard
+  // exclusion — you literally cannot complete that signing. But treating
+  // "would strain the wage bill" as an equally hard block turned out to be
+  // too aggressive: comparing budget against the FULL current payroll (an
+  // ongoing seasonal cost, not a one-time lockup) meant almost any club
+  // with a normal-sized wage bill could see recommendations go completely
+  // empty even in a league with no salary cap at all. Financial strain is
+  // now a steep score penalty instead — the signing still surfaces (likely
+  // ranked low), and the Market's Buy button asks for confirmation before
+  // actually completing a financially risky signing, the same two-step
+  // pattern used elsewhere (e.g. resetting a save) rather than a flat block.
   let financeScore = 10;
   if (DIFFICULTY_MODES[difficulty]?.wagesDeducted) {
     const currentPayroll = effectivePayroll(userClub.squad, userClub.designatedPlayerIds);
@@ -5278,23 +5529,46 @@ function computeRecommendationScore(player, userClub, difficulty, tierIdx) {
     const capRoom = tierIdx === 0 ? MLS_SALARY_CAP - currentPayroll : Infinity;
     if (!isDpEligible && player.wage > capRoom) return -Infinity; // would blow the MLS cap outright, and can't be shielded as a DP
     const remainingRoom = userClub.budget - currentPayroll;
-    if (player.wage > 0 && remainingRoom <= 0) return -Infinity; // wage bill already exceeds budget — no real room for anyone
-    if (player.wage > remainingRoom * 0.9) return -Infinity; // would eat almost all remaining budget room on wages alone
+    if (player.wage > 0 && remainingRoom <= 0) financeScore -= 30;
+    else if (player.wage > remainingRoom * 0.9) financeScore -= 18;
     const wageShare = player.wage / Math.max(remainingRoom, 1);
     financeScore -= clamp(wageShare * 15, 0, 20);
   }
 
-  // When the squad is genuinely below the minimum needed to field a full
-  // team, filling numbers with affordable depth matters more than one
-  // marquee name that eats the whole transfer budget and leaves nothing
-  // for the other gaps still needed — bias toward cheaper signings here
-  // instead of just the single best-scoring player regardless of price.
+  // A single signing eating a large share of the transfer budget crowds out
+  // every other move that season — even when technically affordable,
+  // recommending it as a top pick reads as bad advice ($40-50M out of an
+  // $80M budget, for instance) since it leaves nothing for anything else.
+  // Applies to every squad now, not just a short-staffed one — a big-ticket
+  // option is still reachable by manually sorting by Rating or Price, this
+  // only affects what actually gets pushed as a smart use of the budget.
+  if (userClub.budget > 0) {
+    const priceShare = player.askingPrice / userClub.budget;
+    if (priceShare > 0.35) financeScore -= clamp((priceShare - 0.35) * 90, 0, 50);
+  }
+
+  // A squad genuinely below the minimum needed to field a full team has an
+  // even sharper reason to prioritize cheap depth over one marquee name —
+  // stacks on top of the general budget-share penalty above.
   if (userClub.squad.length < MIN_SQUAD_SIZE && userClub.budget > 0) {
     const priceShare = player.askingPrice / userClub.budget;
-    if (priceShare > 0.5) financeScore -= clamp((priceShare - 0.5) * 40, 0, 30);
+    if (priceShare > 0.5) financeScore -= clamp((priceShare - 0.5) * 30, 0, 25);
   }
 
   return needScore + upgradeScore + ageScore + financeScore;
+}
+
+// Same wage-strain signal computeRecommendationScore penalizes, exposed on
+// its own so the Market tab can flag a signing as financially risky and
+// require confirmation, regardless of which sort mode is active (not just
+// when browsing "Recommended").
+function isFinanciallyRisky(player, userClub, difficulty) {
+  if (!DIFFICULTY_MODES[difficulty]?.wagesDeducted) return false;
+  const currentPayroll = effectivePayroll(userClub.squad, userClub.designatedPlayerIds);
+  const remainingRoom = userClub.budget - currentPayroll;
+  if (player.wage > 0 && remainingRoom <= 0) return true;
+  if (player.wage > remainingRoom * 0.9) return true;
+  return false;
 }
 
 function recommendationReason(player, userClub, xi) {
@@ -5330,6 +5604,10 @@ function MarketTab({ tiers, userClub, userTierId, onBuy, difficulty, matchday })
   const [sortField, setSortField] = useState("overall");
   const [sortDir, setSortDir] = useState("desc");
   const [page, setPage] = useState(0);
+  // A financially risky signing (wage would strain the budget) no longer
+  // gets buried by a hard exclusion — instead Buy asks for confirmation
+  // first, same two-step pattern as resetting a save elsewhere in the app.
+  const [confirmingBuyId, setConfirmingBuyId] = useState(null);
   const xi = startingXI(userClub, matchday ?? 1);
 
   const listed = [];
@@ -5363,6 +5641,28 @@ function MarketTab({ tiers, userClub, userTierId, onBuy, difficulty, matchday })
       if ((perPositionCount[pos] ?? 0) >= cap) continue;
       recommendedList.push(entry);
       perPositionCount[pos] = (perPositionCount[pos] ?? 0) + 1;
+    }
+    // computeRecommendationScore's quality/fit filters can legitimately
+    // zero out the whole list — a real budget crunch, or simply nothing
+    // that's a clear upgrade right now — but "nothing affordable stands
+    // out" isn't the same thing as "nothing affordable exists." If ANY
+    // player anywhere is genuinely within budget (fee + wage/cap room,
+    // roster space), that's still worth surfacing as a budget-conscious
+    // fallback rather than showing a flat dead end.
+    if (recommendedList.length === 0 && userClub.squad.length < MAX_SQUAD_SIZE) {
+      const currentPayroll = effectivePayroll(userClub.squad, userClub.designatedPlayerIds);
+      const capRoom = userTierId === 0 ? MLS_SALARY_CAP - currentPayroll : Infinity;
+      const isDpEligible = userTierId === 0 && DIFFICULTY_MODES[difficulty]?.dps && (userClub.designatedPlayerIds || []).length < MAX_DESIGNATED_PLAYERS;
+      const budgetOnly = listed.filter((e) => {
+        if (userClub.budget < e.player.askingPrice) return false;
+        if (!DIFFICULTY_MODES[difficulty]?.wagesDeducted) return true;
+        if (!isDpEligible && e.player.wage > capRoom) return false;
+        const remainingRoom = userClub.budget - currentPayroll;
+        if (e.player.wage > 0 && remainingRoom <= 0) return false;
+        return true;
+      });
+      budgetOnly.sort((a, b) => b.player.overall - a.player.overall);
+      recommendedList = budgetOnly.slice(0, 6).map((e) => ({ ...e, isFallback: true }));
     }
   } else {
     const dir = sortDir === "asc" ? 1 : -1;
@@ -5435,13 +5735,20 @@ function MarketTab({ tiers, userClub, userTierId, onBuy, difficulty, matchday })
           </div>
         );
       })()}
-      {activeList.length === 0 && (
-        <div style={{ ...serif, color: PALETTE.inkSoft, fontSize: 13, padding: "12px 0" }}>
-          {isRecommended ? "Nothing affordable stands out as a priority signing right now." : "No players listed right now — check back after the next transfer window."}
+      {isRecommended && recommendedList.length > 0 && recommendedList[0]?.isFallback && (
+        <div style={{ background: `${PALETTE.parchmentDim}`, borderRadius: 8, padding: "8px 12px", marginBottom: 12, ...serif, fontSize: 12.5, color: PALETTE.inkSoft, fontStyle: "italic" }}>
+          Nothing matched your squad's usual needs closely enough to stand out — these are simply the best-rated players you can currently afford.
         </div>
       )}
-      {pageItems.map(({ player, seller, tierId }) => {
+      {activeList.length === 0 && (
+        <div style={{ ...serif, color: PALETTE.inkSoft, fontSize: 13, padding: "12px 0" }}>
+          {isRecommended ? "Nothing on the market is currently within your budget." : "No players listed right now — check back after the next transfer window."}
+        </div>
+      )}
+      {pageItems.map(({ player, seller, tierId, isFallback }) => {
         const canAfford = userClub.budget >= player.askingPrice;
+        const risky = canAfford && isFinanciallyRisky(player, userClub, difficulty);
+        const confirming = confirmingBuyId === player.id;
         return (
           <div key={player.id} style={{
             display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 8px",
@@ -5457,22 +5764,55 @@ function MarketTab({ tiers, userClub, userTierId, onBuy, difficulty, matchday })
               </div>
               <div style={{ fontSize: 12, color: PALETTE.inkSoft }}>from {seller.name}</div>
               {isRecommended && (
-                <div style={{ fontSize: 11.5, color: PALETTE.gold, marginTop: 2 }}>★ {recommendationReason(player, userClub, xi)}</div>
+                <div style={{ fontSize: 11.5, color: PALETTE.gold, marginTop: 2 }}>
+                  ★ {isFallback ? "cheapest option that fits your current budget" : recommendationReason(player, userClub, xi)}
+                </div>
+              )}
+              {risky && !confirming && (
+                <div style={{ fontSize: 11.5, color: PALETTE.crimson, marginTop: 2 }}>
+                  ⚠ Their wage would strain your budget — you can still sign them.
+                </div>
+              )}
+              {confirming && (
+                <div style={{ fontSize: 11.5, color: PALETTE.crimson, marginTop: 2 }}>
+                  Sign {player.name} anyway despite the wage strain?
+                </div>
               )}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <span style={{ ...mono, fontWeight: 700 }}>${player.askingPrice.toLocaleString()}</span>
-              <button
-                onClick={() => canAfford && onBuy(player.id, seller.id, tierId)}
-                disabled={!canAfford}
-                style={{
-                  padding: "6px 12px", borderRadius: 6, border: "none", cursor: canAfford ? "pointer" : "not-allowed",
-                  background: canAfford ? PALETTE.pitch : PALETTE.parchmentDim, color: canAfford ? PALETTE.parchment : PALETTE.inkSoft,
-                  ...display, fontSize: 12,
-                }}
-              >
-                Buy
-              </button>
+              {confirming ? (
+                <>
+                  <button
+                    onClick={() => { onBuy(player.id, seller.id, tierId); setConfirmingBuyId(null); }}
+                    style={{ padding: "6px 12px", borderRadius: 6, border: "none", cursor: "pointer", background: PALETTE.crimson, color: PALETTE.parchment, ...display, fontSize: 12, fontWeight: 700 }}
+                  >
+                    Confirm
+                  </button>
+                  <button
+                    onClick={() => setConfirmingBuyId(null)}
+                    style={{ padding: "6px 12px", borderRadius: 6, border: `1px solid ${PALETTE.inkSoft}`, background: "none", cursor: "pointer", color: PALETTE.inkSoft, ...display, fontSize: 12 }}
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => {
+                    if (!canAfford) return;
+                    if (risky) { setConfirmingBuyId(player.id); return; }
+                    onBuy(player.id, seller.id, tierId);
+                  }}
+                  disabled={!canAfford}
+                  style={{
+                    padding: "6px 12px", borderRadius: 6, border: "none", cursor: canAfford ? "pointer" : "not-allowed",
+                    background: canAfford ? PALETTE.pitch : PALETTE.parchmentDim, color: canAfford ? PALETTE.parchment : PALETTE.inkSoft,
+                    ...display, fontSize: 12,
+                  }}
+                >
+                  Buy
+                </button>
+              )}
             </div>
           </div>
         );
@@ -5536,7 +5876,7 @@ function TrophyTab({ trophyLog, bestFinish, bestFinishUsa, bestFinishEngland, cu
       <Trophy size={22} color={PALETTE.gold} />
       <div>
         <div style={{ ...display, fontWeight: 700, fontSize: 15, color: PALETTE.ink }}>
-          {label}Highest finish: {ordinal(finish.position)} place
+          {label}Highest finish: {ordinal(finish.position)} place{finish.points != null ? ` · ${finish.points} pts` : ""}
         </div>
         <div style={{ ...serif, fontSize: 12.5, color: PALETTE.inkSoft }}>
           {FULL_TIER_META[finish.tierIdx].name} · Season {finish.season}
@@ -5834,12 +6174,19 @@ function DraftModal({ picks, onKeep, onSell }) {
   );
 }
 
-function HintButton({ club, matchday, tier, managerHistory, setManagerHistory }) {
+function HintButton({ club, matchday, tier, managerHistory, setManagerHistory, difficulty }) {
   const [open, setOpen] = useState(false);
   const seenOneTimeHints = managerHistory?.seenOneTimeHints || [];
   const recentForm = tier ? (computeTable(tier).find((r) => r.clubId === club.id)?.form.slice(-5) ?? []) : [];
   const hints = computeHints(club, matchday, seenOneTimeHints, recentForm, tier);
-  const urgentCount = hints[0]?.id === "all-clear" ? 0 : hints.length;
+  // Board messages moved in here too — one unified inbox rather than a
+  // separate banner elsewhere, per feedback that hints "might feel better"
+  // living alongside board requests instead of behind their own button.
+  // Purely informational here (no action buttons) — complying happens
+  // through the actual game action itself (signing someone, changing
+  // formation, etc.), same as before.
+  const hasBoardMessage = DIFFICULTY_MODES[difficulty]?.boardMessages && club.boardMessage;
+  const urgentCount = (hints[0]?.id === "all-clear" ? 0 : hints.length) + (hasBoardMessage ? 1 : 0);
 
   // Mark one-time hints as seen only when the panel CLOSES, not when it
   // opens — marking on open caused the very hints being shown to vanish
@@ -5863,7 +6210,7 @@ function HintButton({ club, matchday, tier, managerHistory, setManagerHistory })
   };
 
   return (
-    <div style={{ position: "fixed", bottom: 20, right: 20, zIndex: 60 }}>
+    <div style={{ position: "fixed", bottom: 20, right: 20, zIndex: 300 }}>
       {open && (
         <div style={{
           position: "absolute", bottom: 60, right: 0, width: 300, maxHeight: 360, overflowY: "auto",
@@ -5871,13 +6218,19 @@ function HintButton({ club, matchday, tier, managerHistory, setManagerHistory })
           padding: 16, border: `1px solid ${PALETTE.parchmentDim}`,
         }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-            <span style={{ ...display, fontSize: 13, textTransform: "uppercase", letterSpacing: "0.06em", color: PALETTE.inkSoft }}>Hints</span>
+            <span style={{ ...display, fontSize: 13, textTransform: "uppercase", letterSpacing: "0.06em", color: PALETTE.inkSoft }}>Inbox</span>
             <button onClick={closeAndMarkSeen} style={{ background: "none", border: "none", cursor: "pointer" }}>
               <X size={16} color={PALETTE.inkSoft} />
             </button>
           </div>
-          {hints.map((h) => (
-            <div key={h.id} style={{ fontSize: 13, ...serif, color: PALETTE.ink, padding: "8px 0", borderBottom: h.id !== hints[hints.length - 1].id ? `1px solid ${PALETTE.parchmentDim}` : "none" }}>
+          {hasBoardMessage && (
+            <div style={{ fontSize: 13, ...serif, color: PALETTE.ink, padding: "8px 0", borderBottom: `1px solid ${PALETTE.parchmentDim}` }}>
+              <span style={{ ...display, fontSize: 10.5, textTransform: "uppercase", color: PALETTE.gold, letterSpacing: "0.05em" }}>Board request</span>
+              <div style={{ marginTop: 2 }}>{club.boardMessage.description}</div>
+            </div>
+          )}
+          {hints.map((h, i) => (
+            <div key={h.id} style={{ fontSize: 13, ...serif, color: PALETTE.ink, padding: "8px 0", borderBottom: i < hints.length - 1 ? `1px solid ${PALETTE.parchmentDim}` : "none" }}>
               {h.text}
             </div>
           ))}
@@ -5890,7 +6243,7 @@ function HintButton({ club, matchday, tier, managerHistory, setManagerHistory })
           background: PALETTE.gold, color: PALETTE.ink, display: "flex", alignItems: "center", justifyContent: "center",
           boxShadow: "0 4px 12px rgba(0,0,0,0.35)", position: "relative",
         }}
-        title="Hints"
+        title="Inbox"
       >
         <Lightbulb size={22} />
         {urgentCount > 0 && (
@@ -6054,9 +6407,17 @@ function OnboardingGuide({ onFinish }) {
   );
 }
 
-function PayrollOverlay({ club, difficulty, tierIdx, onClose }) {
+function PayrollOverlay({ club, difficulty, tierIdx, tier, onClose }) {
   const payroll = effectivePayroll(club.squad, club.designatedPlayerIds);
+  // Previously this only ever showed the wage bill draining the CURRENT
+  // budget — with no visibility into what actually comes back in before
+  // the next payroll, "room left" looked far more dire than reality, since
+  // every club also receives a guaranteed ownership deposit each rollover
+  // (on top of variable prize money, which genuinely can't be known until
+  // the season's final standing, so it's noted rather than guessed at).
+  const deposit = ownershipDepositFor(tierIdx, difficulty, club, tier?.clubs);
   const projected = club.budget - payroll;
+  const projectedWithIncome = projected + deposit;
   const dpCount = (club.designatedPlayerIds || []).length;
   const capApplies = tierIdx === 0 && DIFFICULTY_MODES[difficulty]?.dps;
   const capRoom = MLS_SALARY_CAP - payroll;
@@ -6074,13 +6435,20 @@ function PayrollOverlay({ club, difficulty, tierIdx, onClose }) {
           <span style={{ color: PALETTE.inkSoft }}>Squad wage bill ({club.squad.length} players{dpCount > 0 ? `, ${dpCount} DP` : ""})</span>
           <strong>-${payroll.toLocaleString()}</strong>
         </div>
+        <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid ${PALETTE.parchmentDim}`, ...serif, fontSize: 14 }}>
+          <span style={{ color: PALETTE.inkSoft }}>Ownership deposit (guaranteed each season)</span>
+          <strong style={{ color: PALETTE.gold }}>+${deposit.toLocaleString()}</strong>
+        </div>
         <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 0 4px", ...serif, fontSize: 14 }}>
           <span style={{ color: PALETTE.inkSoft }}>Room left after next payroll</span>
-          <strong style={{ color: projected < 0 ? PALETTE.crimson : PALETTE.ink }}>${projected.toLocaleString()}</strong>
+          <strong style={{ color: projectedWithIncome < 0 ? PALETTE.crimson : PALETTE.ink }}>${projectedWithIncome.toLocaleString()}</strong>
         </div>
-        {projected < 0 && (
+        <div style={{ ...serif, fontSize: 11.5, color: PALETTE.inkSoft, marginTop: 2, fontStyle: "italic" }}>
+          Doesn't include prize money — that depends on where you finish this season, so it can't be known yet.
+        </div>
+        {projectedWithIncome < 0 && (
           <div style={{ ...serif, fontSize: 12.5, color: PALETTE.crimson, marginTop: 6 }}>
-            Your wage bill outruns your budget — you'll go into debt at the next payroll unless you free up salary or bring in revenue first.
+            Your wage bill outruns your budget plus guaranteed income — you'll go into debt at the next payroll unless you free up salary, or prize money covers the gap.
           </div>
         )}
         {capApplies && (
@@ -6729,19 +7097,27 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     // whichever club you're currently at. Tracked both overall and split
     // by country, since a manager with careers in both wants to see each
     // one's own peak, not just whichever happens to be globally better.
+    // Points are tracked alongside position — position alone can't improve
+    // once you're already 1st, so a repeat title with a stronger points
+    // record than the one on file is still a genuine career-best and
+    // should update the record, not get silently ignored as a "tie."
     const userTable = tables[state.userTierId];
+    const userRow = userTable.find((r) => r.clubId === state.userClubId);
     const position = userTable.findIndex((r) => r.clubId === state.userClubId) + 1;
+    const points = userRow?.points ?? 0;
     const isBetter = !managerHistory.bestFinish
       || position < managerHistory.bestFinish.position
-      || (position === managerHistory.bestFinish.position && state.userTierId < managerHistory.bestFinish.tierIdx);
-    const bestFinish = isBetter ? { position, tierIdx: state.userTierId, season: state.seasonNumber } : managerHistory.bestFinish;
+      || (position === managerHistory.bestFinish.position && state.userTierId < managerHistory.bestFinish.tierIdx)
+      || (position === managerHistory.bestFinish.position && state.userTierId === managerHistory.bestFinish.tierIdx && points > (managerHistory.bestFinish.points ?? -1));
+    const bestFinish = isBetter ? { position, tierIdx: state.userTierId, season: state.seasonNumber, points } : managerHistory.bestFinish;
 
     const thisIsEngland = state.userTierId >= 4;
     const priorCountryBest = thisIsEngland ? managerHistory.bestFinishEngland : managerHistory.bestFinishUsa;
     const isBetterForCountry = !priorCountryBest
       || position < priorCountryBest.position
-      || (position === priorCountryBest.position && state.userTierId < priorCountryBest.tierIdx);
-    const newCountryBest = isBetterForCountry ? { position, tierIdx: state.userTierId, season: state.seasonNumber } : priorCountryBest;
+      || (position === priorCountryBest.position && state.userTierId < priorCountryBest.tierIdx)
+      || (position === priorCountryBest.position && state.userTierId === priorCountryBest.tierIdx && points > (priorCountryBest.points ?? -1));
+    const newCountryBest = isBetterForCountry ? { position, tierIdx: state.userTierId, season: state.seasonNumber, points } : priorCountryBest;
     const bestFinishUsa = thisIsEngland ? managerHistory.bestFinishUsa : newCountryBest;
     const bestFinishEngland = thisIsEngland ? newCountryBest : managerHistory.bestFinishEngland;
 
@@ -6750,6 +7126,99 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     let sackNotice = null;
     let boardNotice = null;
     const nextTierIdx = userMove ? userMove.to : state.userTierId;
+    const userClubPreForMessages = state.tiers[state.userTierId].clubs.find((c) => c.id === state.userClubId);
+    const userClubPostForMessages = newTiers[nextTierIdx].clubs.find((c) => c.id === state.userClubId);
+
+    // The world moves on its own now too — AI clubs trade with each other,
+    // not just with the user. Runs once per rollover, every tier, before
+    // anything board-related (doesn't depend on it either way).
+    const aiTransferLog = runAiToAiTransfers(newTiers, state.userClubId);
+
+    // Board messages ("nosey board" demands) — available from Pro difficulty
+    // up, independent of the full board-happiness/objective pressure system
+    // (which stays Executive-only, below). Deliberately handled here, in
+    // the shared post-rollover block rather than either country's own
+    // rollover function — this project has hit the MLS-built-but-never-
+    // ported-to-England bug enough times that anything board-related
+    // belongs where both countries already pass through the same code.
+    // Consequences apply to budget for everyone (works identically at any
+    // difficulty); Executive additionally feeds into its happiness meter
+    // below via messageComplianceDelta.
+    let messageComplianceDelta = 0;
+    if (DIFFICULTY_MODES[state.difficulty]?.boardMessages) {
+      const pendingMessage = userClubPreForMessages.boardMessage;
+      let boardMessageNotice = null;
+      let messageBudgetDelta = 0;
+      if (pendingMessage) {
+        const compliant = checkBoardMessageCompliance(pendingMessage, userClubPreForMessages, state.userSigningsThisSeason, state.playersOnLoan);
+        messageComplianceDelta = compliant ? 10 : -12;
+        const depositScale = ownershipDepositFor(nextTierIdx, state.difficulty);
+        messageBudgetDelta = compliant ? Math.round(depositScale * 0.08) : -Math.round(depositScale * 0.05);
+        boardMessageNotice = boardMessageNoticeText(pendingMessage, compliant);
+      }
+      // 25% chance of a fresh demand for next season — never issued while
+      // one's already pending, so there's only ever one live demand at a time.
+      const newBoardMessage = !pendingMessage && Math.random() < 0.25 ? generateBoardMessage(userClubPostForMessages) : null;
+      if (boardMessageNotice) boardNotice = boardNotice ? `${boardNotice}\n\n${boardMessageNotice}` : boardMessageNotice;
+      const idxMsg = newTiers[nextTierIdx].clubs.findIndex((c) => c.id === state.userClubId);
+      if (idxMsg >= 0) {
+        newTiers[nextTierIdx].clubs[idxMsg] = {
+          ...newTiers[nextTierIdx].clubs[idxMsg],
+          boardMessage: newBoardMessage,
+          budget: newTiers[nextTierIdx].clubs[idxMsg].budget + messageBudgetDelta,
+        };
+      }
+    }
+
+    // A star player pushed to the brink (transferRequested, still unresolved
+    // going into rollover) sometimes gets a board intervention instead of
+    // just being left to fester — a real board doesn't always sit on its
+    // hands while a key player threatens to walk. Available Pro and up,
+    // same as messages. Succeeds more often when the board has real goodwill
+    // (Executive's happiness meter) or, on Pro where that doesn't exist,
+    // roughly half the time. A failed or skipped intervention leaves the
+    // player's frustration (benchStreak) to keep climbing toward the
+    // forced-departure threshold below — nothing here stops that clock.
+    let interventionNotice = null;
+    if (DIFFICULTY_MODES[state.difficulty]?.boardMessages) {
+      const idxInt = newTiers[nextTierIdx].clubs.findIndex((c) => c.id === state.userClubId);
+      if (idxInt >= 0) {
+        const club = newTiers[nextTierIdx].clubs[idxInt];
+        const happinessGoodwill = club.boardHappiness != null ? club.boardHappiness >= 50 : true;
+        const unhappyStar = club.squad.find((p) => p.transferRequested && p.overall >= 80);
+        if (unhappyStar && happinessGoodwill && Math.random() < 0.4) {
+          club.squad = club.squad.map((p) => (p.id === unhappyStar.id
+            ? { ...p, transferRequested: false, transferListed: false, askingPrice: null, morale: clamp((p.morale ?? 60) + 20, 0, 100), benchStreak: 0 }
+            : p));
+          interventionNotice = `The board stepped in to keep ${unhappyStar.name} at the club, smoothing things over before it became a real problem.`;
+        }
+      }
+    }
+    if (interventionNotice) boardNotice = boardNotice ? `${boardNotice}\n\n${interventionNotice}` : interventionNotice;
+
+    // Forced departures: a player whose frustration (benchStreak) has run
+    // all the way past the ordinary transfer-request threshold reaches a
+    // point of no return — real unhappiness a manager ignored for an
+    // entire extra season-plus, not something that can be defused by
+    // unlisting them at the last minute the way an ordinary transfer
+    // request can. They simply leave, for a modest fee, no exceptions.
+    let departureNotices = [];
+    {
+      const idxDep = newTiers[nextTierIdx].clubs.findIndex((c) => c.id === state.userClubId);
+      if (idxDep >= 0) {
+        const club = newTiers[nextTierIdx].clubs[idxDep];
+        const leaving = club.squad.filter((p) => (p.benchStreak || 0) >= FORCED_DEPARTURE_BENCH_THRESHOLD);
+        if (leaving.length) {
+          const leavingIds = new Set(leaving.map((p) => p.id));
+          const fee = leaving.reduce((s, p) => s + Math.round(marketValue(p) * 0.4), 0);
+          club.squad = club.squad.filter((p) => !leavingIds.has(p.id));
+          club.budget += fee;
+          departureNotices = leaving.map((p) => `${p.name}'s patience finally ran out — they forced through a move away from the club, no longer willing to wait it out.`);
+        }
+      }
+    }
+    if (departureNotices.length) boardNotice = boardNotice ? `${boardNotice}\n\n${departureNotices.join("\n\n")}` : departureNotices.join("\n\n");
+
     if (DIFFICULTY_MODES[state.difficulty]?.boardPressure) {
       const userClubPre = state.tiers[state.userTierId].clubs.find((c) => c.id === state.userClubId);
       const currentObjective = userClubPre.boardObjective;
@@ -6760,7 +7229,8 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       // genuine crisis — scale an extra penalty with how deep the debt
       // actually runs, and let it factor meaningfully into getting sacked.
       const debtPenalty = debt > 0 ? Math.min(20, Math.round(debt / 500_000)) : 0;
-      const delta = boardHappinessDelta(currentObjective, position, userMove?.type === "relegated", userMove?.type === "promoted", userClubPost.budget) - debtPenalty;
+
+      const delta = boardHappinessDelta(currentObjective, position, userMove?.type === "relegated", userMove?.type === "promoted", userClubPost.budget) - debtPenalty + messageComplianceDelta;
       let newHappiness = clamp((userClubPre.boardHappiness ?? 60) + delta, 0, 100);
       const sacked = newHappiness <= SACK_THRESHOLD;
 
@@ -6782,13 +7252,13 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
           // meaningful chunk of it rather than being a token gesture
           emergencyFunding = debt > 0 ? Math.max(standardFunding, Math.round(debt * 0.6)) : standardFunding;
           newHappiness = clamp(newHappiness + 5, 0, 100);
-          boardNotice = debt > 0
+          boardNotice = (boardNotice ? `${boardNotice}\n\n` : "") + (debt > 0
             ? `The board convened over the club's finances — ${userClubPre.name} is $${debt.toLocaleString()} in debt. They've agreed to inject $${emergencyFunding.toLocaleString()} to help dig out, but they expect the books back in order soon.`
-            : `The board held an emergency meeting about results at ${userClubPre.name}. They've decided to stay patient for now and back you with an extra $${emergencyFunding.toLocaleString()} for the squad — but they'll expect to see it turn around.`;
+            : `The board held an emergency meeting about results at ${userClubPre.name}. They've decided to stay patient for now and back you with an extra $${emergencyFunding.toLocaleString()} for the squad — but they'll expect to see it turn around.`);
         } else {
-          boardNotice = debt > 0
+          boardNotice = (boardNotice ? `${boardNotice}\n\n` : "") + (debt > 0
             ? `The board is alarmed by ${userClubPre.name}'s finances — $${debt.toLocaleString()} in debt — and isn't stepping in to cover it. Sort the budget out yourself, or it'll cost you your job.`
-            : `The board held an emergency meeting about results at ${userClubPre.name}. They're not pulling the plug yet, but make no mistake — this is a final warning. Turn it around, or you're out.`;
+            : `The board held an emergency meeting about results at ${userClubPre.name}. They're not pulling the plug yet, but make no mistake — this is a final warning. Turn it around, or you're out.`);
         }
       }
 
@@ -6882,7 +7352,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     (state.playersOnLoan || []).forEach((entry) => {
       if (entry.returnSeasonNumber !== nextSeasonNumber) { stillOnLoan.push(entry); return; }
       if (userClubAfterMove && userClubAfterMove.squad.length < MAX_SQUAD_SIZE) {
-        const developed = growPlayer(growPlayer(entry.player)); // an extra development pass, on top of what everyone else already gets this rollover
+        const developed = growPlayer(growPlayer(entry.player, userNewTierId), userNewTierId); // an extra development pass, on top of what everyone else already gets this rollover
         userClubAfterMove.squad.push({ ...developed, seasonGoals: 0, benchStreak: 0 });
       } else {
         stillOnLoan.push(entry); // squad's full — stay out one more season
@@ -6914,6 +7384,11 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       faCup: null,
       eflCup: null,
       playersOnLoan: stillOnLoan,
+      userSigningsThisSeason: [],
+      // Rolling log of AI-to-AI transfers, capped so a very long save
+      // doesn't grow this unbounded — kept for the Historical Records /
+      // News Feed work that's next up.
+      worldTransferLog: [...(state.worldTransferLog || []), ...aiTransferLog.map((t) => ({ ...t, season: state.seasonNumber }))].slice(-150),
     }));
     const userClubForDeposit = state.tiers[state.userTierId].clubs.find((c) => c.id === state.userClubId);
     setRollover({ events, seasonNumber: state.seasonNumber, windowResult, userPrize, ownershipDeposit: ownershipDepositFor(state.userTierId, state.difficulty, userClubForDeposit, state.tiers[state.userTierId].clubs), userRetirements, userPayroll, mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, userPromotionPlayoff, boardNotice, userDpRevenue, userParachutePayment, usOpenCup: cup, faCup: faCupSnapshot, eflCup: eflCupSnapshot, userUsOpenCup, userFaCup, userEflCup, seasonAwards });
@@ -7023,11 +7498,21 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     });
   };
 
-  const handleToggleCustomXI = (playerId) => {
+  // Custom-mode selection now lives in the Tactics tab: click a projected
+  // slot, pick a replacement from the "Swap ▾" dropdown. This is syntactic
+  // sugar over the same customXI favorites array startingXI() already
+  // reads — drop the outgoing player's favorite status (if they had one)
+  // and grant it to the incoming player, so the incoming player is now
+  // prioritized ahead of the outgoing one within their shared position
+  // bucket. The Squad tab still shows a read-only "In XI ✓" badge for
+  // visibility, but no longer drives selection itself.
+  const handleSwapCustomXI = (outgoingId, incomingId) => {
     mutateAndSave((next) => {
       const club = next.tiers[next.userTierId].clubs.find((c) => c.id === next.userClubId);
-      const current = club.tactics.customXI || [];
-      club.tactics.customXI = current.includes(playerId) ? current.filter((id) => id !== playerId) : [...current, playerId];
+      const current = new Set(club.tactics.customXI || []);
+      current.delete(outgoingId);
+      current.add(incomingId);
+      club.tactics.customXI = [...current];
     });
   };
 
@@ -7142,6 +7627,10 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       if (autoSignAsDp) {
         buyer.designatedPlayerIds = [...(buyer.designatedPlayerIds || []), p.id];
       }
+      // Tracked so a pending board message ("sign a quality DEF") can be
+      // checked against what actually happened this season at rollover —
+      // reset to [] every season, see the season-complete setState below.
+      next.userSigningsThisSeason = [...(next.userSigningsThisSeason || []), { position: p.position, overall: p.overall }];
     });
   };
 
@@ -7444,8 +7933,8 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       </div>
 
       <div style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
-        {tab === "squad" && <SquadTab club={userClub} matchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)} onToggleList={handleToggleList} onRenew={handleRenew} tierId={state.userTierId} difficulty={state.difficulty} onToggleDP={handleToggleDP} onToggleRest={handleToggleRest} onToggleRestIndefinitely={handleToggleRestIndefinitely} onToggleHoldBack={handleToggleHoldBack} onToggleCustomXI={handleToggleCustomXI} onLoanOut={handleLoanOut} playersOnLoan={state.playersOnLoan} tier={tier} />}
-        {tab === "tactics" && <TacticsTab club={userClub} matchday={currentMatchday ?? 1} onChange={handleTacticsChange} tier={tier} onSetCaptain={handleSetCaptain} />}
+        {tab === "squad" && <SquadTab club={userClub} matchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)} onToggleList={handleToggleList} onRenew={handleRenew} tierId={state.userTierId} difficulty={state.difficulty} onToggleDP={handleToggleDP} onToggleRest={handleToggleRest} onToggleRestIndefinitely={handleToggleRestIndefinitely} onToggleHoldBack={handleToggleHoldBack} onLoanOut={handleLoanOut} playersOnLoan={state.playersOnLoan} tier={tier} />}
+        {tab === "tactics" && <TacticsTab club={userClub} matchday={currentMatchday ?? 1} onChange={handleTacticsChange} tier={tier} onSetCaptain={handleSetCaptain} onSwapCustomXI={handleSwapCustomXI} />}
         {tab === "table" && <TableTab tier={tier} userClubId={userClub.id} seasonPlayoffs={seasonPlayoffs} revealedRounds={revealedRounds} onSimRound={handleSimRound} onSimRest={handleSimRestOfPostseason} />}
         {tab === "fixtures" && <FixturesTab tier={tier} userClubId={userClub.id} usOpenCup={state.usOpenCup} faCup={state.faCup} eflCup={state.eflCup} />}
         {tab === "market" && <MarketTab tiers={state.tiers} userClub={userClub} userTierId={state.userTierId} onBuy={handleBuy} difficulty={state.difficulty} matchday={currentMatchday ?? 1} />}
@@ -7491,9 +7980,9 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       {windowNotice && <WindowNotice notice={windowNotice} onClose={() => setWindowNotice(null)} />}
       {renewalNotice && <RenewalNotice notice={renewalNotice} onClose={() => setRenewalNotice(null)} />}
       {infoNotice && <InfoNotice message={infoNotice} onClose={() => setInfoNotice(null)} />}
-      <HintButton club={userClub} matchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)} tier={tier} managerHistory={managerHistory} setManagerHistory={setManagerHistory} />
+      <HintButton club={userClub} matchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)} tier={tier} managerHistory={managerHistory} setManagerHistory={setManagerHistory} difficulty={state.difficulty} />
       {sackedNotice && <SackedScreen notice={sackedNotice} onContinue={onSacked} />}
-      {showPayroll && <PayrollOverlay club={userClub} difficulty={state.difficulty} tierIdx={state.userTierId} onClose={() => setShowPayroll(false)} />}
+      {showPayroll && <PayrollOverlay club={userClub} difficulty={state.difficulty} tierIdx={state.userTierId} tier={tier} onClose={() => setShowPayroll(false)} />}
       {showLeaveConfirm && (
         <div style={{ position: "fixed", inset: 0, background: "#000000cc", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 20 }} onClick={() => setShowLeaveConfirm(false)}>
           <div style={{ background: PALETTE.parchment, borderRadius: 12, maxWidth: 380, width: "100%", padding: 24 }} onClick={(e) => e.stopPropagation()}>
@@ -7651,8 +8140,16 @@ export default function App() {
   const handleNewGame = () => {
     try {
       localStorage.removeItem(STORAGE_KEY);
+      // managerHistory (trophy log, best finish, reputation) was never being
+      // cleared here — it's stored under its own separate localStorage key
+      // so it can persist across a sacking/job change WITHIN a career, but
+      // "Reset to a new save" is meant to be a genuine fresh start, and a
+      // brand-new club showing a 35-season trophy history from a save that
+      // no longer exists is exactly the bug this caused.
+      localStorage.removeItem(MANAGER_KEY);
     } catch (e) {}
     setState(null);
+    setManagerHistory(DEFAULT_MANAGER_HISTORY);
     setPendingDifficulty(null);
     setPendingCountry(null);
     setPendingLeagueTutorialSeen(false);
@@ -7785,5 +8282,7 @@ function handlePickFromPreview(previewWorld, tierId, clubId, difficulty, setStat
     eflCupQualifiers: null,
     parachutePayments: null,
     playersOnLoan: [],
+    userSigningsThisSeason: [],
+    worldTransferLog: [],
   });
 }
