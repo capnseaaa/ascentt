@@ -126,12 +126,18 @@ export function boardHappinessDelta(objective, finishPosition, relegated, promot
 }
 
 export function jobOfferChanceFor(reputation) {
-  return clamp(0.04 + (reputation / 99) * 0.14, 0.04, 0.18);
+  // Bumped up (was 4%-18%) — with only one offer ever allowed pending at a
+  // time before, a modest-reputation manager could go many seasons without
+  // ever seeing one. Now that several can be pending at once, a higher
+  // per-rollover roll means the inbox actually reflects "a manager doing
+  // reasonably well attracts real interest," not "a rare lottery ticket."
+  return clamp(0.08 + (reputation / 99) * 0.17, 0.08, 0.25);
 }
 
-export function generateJobOffer(tiers, userClubId, userTierId, currentClubReputation) {
+export function generateJobOffer(tiers, userClubId, userTierId, currentClubReputation, excludeClubIds = []) {
+  const excluded = new Set(excludeClubIds);
   const candidates = tiers.flatMap((t) => t.clubs
-    .filter((c) => c.id !== userClubId && c.reputation >= currentClubReputation - 5)
+    .filter((c) => c.id !== userClubId && !excluded.has(c.id) && c.reputation >= currentClubReputation - 5)
     .map((c) => ({ club: c, tierId: t.id })));
   if (!candidates.length) return null;
   const pick = candidates[Math.floor(Math.random() * candidates.length)];

@@ -35,23 +35,35 @@ export function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
 export function uid() { return Math.random().toString(36).slice(2, 10); }
 
-export function computePotential(age, overall) {
+// tierFactor is a stand-in for facilities/resources until those actually
+// exist as a system — a weaker league has worse scouting and development
+// infrastructure, so both the odds of a special outcome (hidden gem,
+// wonderkid, late breakout) and plain growth speed scale down with it.
+// Never drops below 0.5 even for the weakest tier — this is meant to be a
+// noticeable lean, not a wall.
+function tierFactor(tierIdx) {
+  if (tierIdx == null) return 1;
+  return clamp(TIER_OVERALL_CEILING[tierIdx] / 99, 0.5, 1);
+}
+
+export function computePotential(age, overall, tierIdx) {
+  const tf = tierFactor(tierIdx);
   let gap;
   if (age <= 20) gap = randInt(10, 22);
   else if (age <= 23) gap = randInt(6, 14);
   else if (age <= 26) {
     gap = randInt(2, 8);
-    if (Math.random() < 0.12) gap += randInt(6, 12); // hidden-gem: still has real upside
+    if (Math.random() < 0.12 * tf) gap += randInt(6, 10); // hidden-gem: still has real upside
   } else if (age <= 29) {
     gap = randInt(0, 4);
-    if (Math.random() < 0.08) gap += randInt(5, 10); // rarer hidden gem this late
+    if (Math.random() < 0.08 * tf) gap += randInt(5, 6); // rarer hidden gem this late
   } else {
     gap = 0; // 30+ — what you see is what you get, no more real ceiling left
   }
   let potential = Math.min(99, overall + gap);
   // breakout dice roll only makes sense for players young enough to still develop
-  if (age <= 21 && Math.random() < 0.04) {
-    potential = Math.min(99, potential + randInt(10, 25));
+  if (age <= 21 && Math.random() < 0.02 * tf) {
+    potential = Math.min(99, potential + randInt(10, 20));
   }
   return Math.max(potential, overall);
 }
@@ -65,19 +77,24 @@ export function randomPlayerAge() {
 }
 
 export function retirementChance(age) {
-  if (age < 34) return 0;
-  const table = { 34: 0.05, 35: 0.10, 36: 0.18, 37: 0.30, 38: 0.45, 39: 0.65, 40: 0.85 };
+  if (age < 33) return 0;
+  const table = { 33: 0.05, 34: 0.05, 35: 0.10, 36: 0.18, 37: 0.30, 38: 0.45, 39: 0.65, 40: 0.85 };
   return table[age] ?? 1.0;
 }
 
 export function growPlayer(p, tierIdx) {
   const age = p.age + 1;
+  const tf = tierFactor(tierIdx);
   let delta;
   if (p.overall < p.potential) {
     if (age <= 21) delta = randInt(2, 5);
     else if (age <= 25) delta = randInt(1, 4);
     else if (age <= 29) delta = randInt(0, 2);
     else delta = randInt(-1, 1);
+    // Growth speed scales down for a weaker league (worse facilities, in
+    // spirit) — only applied when actually growing, never to the decline
+    // branch below, so aging out isn't slowed down by the same factor.
+    if (delta > 0) delta = Math.max(1, Math.round(delta * tf));
     delta = Math.min(delta, p.potential - p.overall);
   } else {
     if (age >= 33) delta = randInt(-4, -1);
@@ -87,7 +104,7 @@ export function growPlayer(p, tierIdx) {
   // rare late breakout: potential itself can still climb, but only for
   // players young enough that a real breakout is plausible
   let potential = p.potential;
-  if (age <= 24 && Math.random() < 0.03) {
+  if (age <= 24 && Math.random() < 0.03 * tf) {
     potential = Math.min(99, potential + randInt(5, 15));
   }
   const ceiling = tierIdx != null ? (TIER_OVERALL_CEILING[tierIdx] ?? 99) : 99;
@@ -159,7 +176,7 @@ export function squadPayroll(squad) {
   return squad.reduce((s, p) => s + (p.wage || 0), 0);
 }
 
-export function makePlayer(position, overall, usedNames) {
+export function makePlayer(position, overall, usedNames, tierIdx) {
   const rating = clamp(overall, 35, 95);
   const age = randomPlayerAge();
   return {
@@ -167,7 +184,7 @@ export function makePlayer(position, overall, usedNames) {
     name: randomName(usedNames),
     position,
     age,
-    potential: computePotential(age, rating),
+    potential: computePotential(age, rating, tierIdx),
     overall: rating,
     pace: clamp(rating + randInt(-5, 5), 20, 99),
     shooting: clamp(rating + randInt(-5, 5), 20, 99),
@@ -190,15 +207,15 @@ export function makePlayer(position, overall, usedNames) {
   };
 }
 
-export function generateFictionalSquad(baseRating, spread = 8, usedNames) {
+export function generateFictionalSquad(baseRating, spread = 8, usedNames, tierIdx) {
   const layout = [
     "GK","GK","DEF","DEF","DEF","DEF","DEF","MID","MID","MID","MID","MID","FWD","FWD","FWD",
   ];
-  return layout.map((pos) => makePlayer(pos, baseRating + randInt(-spread, spread), usedNames));
+  return layout.map((pos) => makePlayer(pos, baseRating + randInt(-spread, spread), usedNames, tierIdx));
 }
 
 export function realPlayerToRuntime(p, tierIdx) {
-  const potential = computePotential(p.age, p.overall);
+  const potential = computePotential(p.age, p.overall, tierIdx);
   return {
     id: uid(),
     name: p.name,
@@ -382,7 +399,7 @@ export function generateTryoutCandidates(tierId) {
       const oneTierUp = tierId === 4 ? 4 : Math.max(0, tierId - 1);
       rating = FULL_TIER_META[oneTierUp].baseRating + randInt(-5, 5);
     }
-    candidates.push(makePlayer(choice(["GK", "DEF", "MID", "FWD"]), rating));
+    candidates.push(makePlayer(choice(["GK", "DEF", "MID", "FWD"]), rating, undefined, tierId));
   }
   return candidates;
 }
@@ -395,7 +412,7 @@ export function generateDraftProspect(baseRating) {
   const position = choice(["GK", "DEF", "DEF", "MID", "MID", "MID", "FWD", "FWD"]);
   const age = randInt(18, 22);
   const overall = clamp(baseRating + randInt(-8, 8), 35, 80);
-  const potential = computePotential(age, overall);
+  const potential = computePotential(age, overall, 0); // draft is MLS-only
   return {
     id: uid(), name: randomName(), position, age, potential, overall,
     pace: clamp(overall + randInt(-5, 5), 20, 99),

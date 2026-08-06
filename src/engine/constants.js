@@ -71,7 +71,7 @@ export const FITNESS_DRAIN_MIN = 12;
 
 export const FITNESS_DRAIN_MAX = 22;
 
-export const MORALE_DELTA = { win: 4, loss: -5, draw: 0 };
+export const MORALE_DELTA = { win: 6, loss: -5, draw: 2 };
 
 export const FORMATION_SLOTS = {
   "4-4-2": { GK: 1, DEF: 4, MID: 4, FWD: 2 },

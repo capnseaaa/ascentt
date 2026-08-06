@@ -175,7 +175,7 @@ export function rolloverEnglandSeason(tiers, parachutePayments, difficulty, priz
         }).filter(Boolean);
       }
       while (squad.length < MIN_SQUAD_SIZE) {
-        squad.push(makePlayer(choice(["GK", "DEF", "MID", "FWD"]), ENGLAND_TIER_META[i].baseRating + randInt(-8, 8)));
+        squad.push(makePlayer(choice(["GK", "DEF", "MID", "FWD"]), ENGLAND_TIER_META[i].baseRating + randInt(-8, 8), undefined, t.id));
       }
       // Same correction MLS's rollover does: a real player still on the
       // crude overall*50 placeholder wage from realPlayerToRuntime gets
@@ -541,13 +541,13 @@ export function rolloverSeason(tiers, userClubId, prizePools, difficulty, precom
           // real stars age out, since replacements otherwise cluster near
           // the tier's base rating.
           if (i === 0 && Math.random() < 0.06) {
-            return makePlayer(p.position, Math.min(baseRating + randInt(18, 30), TIER_OVERALL_CEILING[0]));
+            return makePlayer(p.position, Math.min(baseRating + randInt(18, 30), TIER_OVERALL_CEILING[0]), undefined, t.id);
           }
-          return makePlayer(p.position, baseRating + randInt(-8, 8));
+          return makePlayer(p.position, baseRating + randInt(-8, 8), undefined, t.id);
         });
         // top back up to a full squad if retirements left an AI club short
         while (squad.length < MIN_SQUAD_SIZE) {
-          squad.push(makePlayer(choice(["GK", "DEF", "MID", "FWD"]), baseRating + randInt(-8, 8)));
+          squad.push(makePlayer(choice(["GK", "DEF", "MID", "FWD"]), baseRating + randInt(-8, 8), undefined, t.id));
         }
       }
       const prize = prizeAmountsByTier[i][id] ?? 0;

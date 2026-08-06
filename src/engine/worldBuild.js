@@ -30,7 +30,7 @@ export function buildEnglandWorld(sharedUsedNames, tierIdOffset = 0) {
   const l1Clubs = LEAGUE_ONE_CLUBS.map((name) =>
     makeClub({
       name,
-      squad: generateFictionalSquad(ENGLAND_TIER_META[2].baseRating, 8, usedNames),
+      squad: generateFictionalSquad(ENGLAND_TIER_META[2].baseRating, 8, usedNames, 6),
       isReal: false,
       budget: randInt(1_500_000, 6_000_000),
       academyEligible: true,
@@ -39,7 +39,7 @@ export function buildEnglandWorld(sharedUsedNames, tierIdOffset = 0) {
   const l2Clubs = LEAGUE_TWO_CLUBS.map((name) =>
     makeClub({
       name,
-      squad: generateFictionalSquad(ENGLAND_TIER_META[3].baseRating, 8, usedNames),
+      squad: generateFictionalSquad(ENGLAND_TIER_META[3].baseRating, 8, usedNames, 7),
       isReal: false,
       budget: randInt(300_000, 1_500_000),
       academyEligible: false,
@@ -139,7 +139,7 @@ export function buildInitialWorld(sharedUsedNames) {
     mlsClubs.push(
       makeClub({
         name: `${nextFictionalName()} (Expansion)`,
-        squad: generateFictionalSquad(TIER_META[0].baseRating, 8, usedNames),
+        squad: generateFictionalSquad(TIER_META[0].baseRating, 8, usedNames, 0),
         isReal: false,
         budget: randInt(6_000_000, 12_000_000),
         academyEligible: true,
@@ -165,7 +165,7 @@ export function buildInitialWorld(sharedUsedNames) {
   const uslcClubs = USL_CHAMPIONSHIP_TEAMS.map((name) =>
     makeClub({
       name,
-      squad: generateFictionalSquad(TIER_META[1].baseRating, 8, usedNames),
+      squad: generateFictionalSquad(TIER_META[1].baseRating, 8, usedNames, 1),
       isReal: false,
       budget: randInt(1_500_000, 4_000_000),
       academyEligible: true,
@@ -177,7 +177,7 @@ export function buildInitialWorld(sharedUsedNames) {
   const usl1Clubs = USL_LEAGUE_ONE_TEAMS.map((name) =>
     makeClub({
       name,
-      squad: generateFictionalSquad(TIER_META[2].baseRating, 8, usedNames),
+      squad: generateFictionalSquad(TIER_META[2].baseRating, 8, usedNames, 2),
       isReal: false,
       budget: randInt(600_000, 1_800_000),
     })
@@ -187,7 +187,7 @@ export function buildInitialWorld(sharedUsedNames) {
   const usl2Clubs = USL_LEAGUE_TWO_TEAMS.map((name) =>
     makeClub({
       name,
-      squad: generateFictionalSquad(TIER_META[3].baseRating, 8, usedNames),
+      squad: generateFictionalSquad(TIER_META[3].baseRating, 8, usedNames, 3),
       isReal: false,
       budget: randInt(150_000, 500_000),
     })

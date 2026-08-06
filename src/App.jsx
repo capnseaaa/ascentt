@@ -3563,7 +3563,7 @@ function DraftModal({ picks, onKeep, onSell }) {
 // before, which turned out not to read as "the inbox" the way a tab does.
 // Board messages live here too (informational only — compliance happens
 // through the actual game action, not a button here).
-function InboxTab({ club, matchday, tier, managerHistory, setManagerHistory, difficulty, jobOffer, onAcceptJobOffer, onDeclineJobOffer }) {
+function InboxTab({ club, matchday, tier, managerHistory, setManagerHistory, difficulty, jobOffers, onAcceptJobOffer, onDeclineJobOffer }) {
   const seenOneTimeHints = managerHistory?.seenOneTimeHints || [];
   const clearedOneTimeHints = managerHistory?.clearedOneTimeHints || [];
   const recentForm = tier ? (computeTable(tier).find((r) => r.clubId === club.id)?.form.slice(-5) ?? []) : [];
@@ -3609,20 +3609,20 @@ function InboxTab({ club, matchday, tier, managerHistory, setManagerHistory, dif
           </button>
         </span>
       </div>
-      {jobOffer && (
-        <div style={{ border: `1px solid ${PALETTE.gold}`, borderRadius: 8, padding: "10px 14px", marginBottom: 10, background: `${PALETTE.gold}11` }}>
+      {(jobOffers || []).map((offer) => (
+        <div key={offer.clubId} style={{ border: `1px solid ${PALETTE.gold}`, borderRadius: 8, padding: "10px 14px", marginBottom: 10, background: `${PALETTE.gold}11` }}>
           <span style={{ ...display, fontSize: 10.5, textTransform: "uppercase", color: PALETTE.gold, letterSpacing: "0.05em" }}>Job offer</span>
-          <div style={{ ...serif, fontSize: 13, color: PALETTE.ink, marginTop: 2, marginBottom: 8 }}>{jobOffer.description}</div>
+          <div style={{ ...serif, fontSize: 13, color: PALETTE.ink, marginTop: 2, marginBottom: 8 }}>{offer.description}</div>
           <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={onAcceptJobOffer} style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: PALETTE.gold, color: PALETTE.ink, ...display, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+            <button onClick={() => onAcceptJobOffer(offer.clubId)} style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: PALETTE.gold, color: PALETTE.ink, ...display, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
               Accept
             </button>
-            <button onClick={onDeclineJobOffer} style={{ padding: "6px 12px", borderRadius: 6, border: `1px solid ${PALETTE.inkSoft}`, background: "none", color: PALETTE.inkSoft, ...display, fontSize: 12, cursor: "pointer" }}>
+            <button onClick={() => onDeclineJobOffer(offer.clubId)} style={{ padding: "6px 12px", borderRadius: 6, border: `1px solid ${PALETTE.inkSoft}`, background: "none", color: PALETTE.inkSoft, ...display, fontSize: 12, cursor: "pointer" }}>
               Decline
             </button>
           </div>
         </div>
-      )}
+      ))}
       {hasBoardMessage && (
         <div style={{ fontSize: 13, ...serif, color: PALETTE.ink, padding: "10px 4px", borderBottom: `1px solid ${PALETTE.parchmentDim}` }}>
           <span style={{ ...display, fontSize: 10.5, textTransform: "uppercase", color: PALETTE.gold, letterSpacing: "0.05em" }}>Board request</span>
@@ -4427,11 +4427,14 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
 
     // Job offers: a club can proactively reach out about the manager
     // taking over there, delivered through the inbox with real Accept/
-    // Decline actions — not just something the manager has to go looking
-    // for on the club-select screen. Only ever one pending at a time.
-    let jobOffer = state.jobOffer || null;
-    if (!jobOffer && Math.random() < jobOfferChanceFor(managerHistory.managerReputation ?? 50)) {
-      jobOffer = generateJobOffer(newTiers, state.userClubId, state.userTierId, userClubPostForMessages.reputation);
+    // Decline actions. Up to 3 can be pending at once now — capped so the
+    // inbox doesn't flood, but no longer limited to exactly one, so a
+    // decent run of seasons can genuinely surface a few real options at
+    // once instead of forcing a decision on whichever arrived first.
+    let jobOffers = state.jobOffers || [];
+    if (jobOffers.length < 3 && Math.random() < jobOfferChanceFor(managerHistory.managerReputation ?? 50)) {
+      const newOffer = generateJobOffer(newTiers, state.userClubId, state.userTierId, userClubPostForMessages.reputation, jobOffers.map((o) => o.clubId));
+      if (newOffer) jobOffers = [...jobOffers, newOffer];
     }
 
     // Most league titles — the actual champion of every tier, not just the
@@ -4722,7 +4725,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       worldTransferLog: [...(state.worldTransferLog || []), ...aiTransferLog.map((t) => ({ ...t, season: state.seasonNumber }))].slice(-150),
       worldRecords: recordsScratch.worldRecords,
       newsFeed: recordsScratch.newsFeed,
-      jobOffer,
+      jobOffers,
     }));
     const userClubForDeposit = state.tiers[state.userTierId].clubs.find((c) => c.id === state.userClubId);
     setRollover({ events, seasonNumber: state.seasonNumber, windowResult, userPrize, ownershipDeposit: ownershipDepositFor(state.userTierId, state.difficulty, userClubForDeposit, state.tiers[state.userTierId].clubs), userRetirements, userPayroll, mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, userPromotionPlayoff, boardNotice, userDpRevenue, userParachutePayment, usOpenCup: cup, faCup: faCupSnapshot, eflCup: eflCupSnapshot, userUsOpenCup, userFaCup, userEflCup, seasonAwards });
@@ -5549,13 +5552,16 @@ export default function App() {
   // exists inside Dashboard's own component scope, not here in App, which
   // is exactly why these two silently failed (or crashed) before: they
   // were calling a function that plain didn't exist in this scope at all.
-  const handleAcceptJobOffer = () => {
+  const handleAcceptJobOffer = (clubId) => {
     setState((prev) => {
-      const offer = prev.jobOffer;
+      const offer = (prev.jobOffers || []).find((o) => o.clubId === clubId);
       if (!offer) return prev;
       const tierClubs = prev.tiers[offer.tierId]?.clubs;
       const pickedClub = tierClubs?.find((c) => c.id === offer.clubId);
-      if (!pickedClub) return { ...prev, jobOffer: null };
+      // Accepting any one offer settles the whole inbox — the manager
+      // took a job, every other pending offer is now moot rather than
+      // still sitting there for a club that's no longer being managed by.
+      if (!pickedClub) return { ...prev, jobOffers: (prev.jobOffers || []).filter((o) => o.clubId !== clubId) };
       let tiers = prev.tiers;
       if (DIFFICULTY_MODES[prev.difficulty]?.boardPressure) {
         const objective = generateBoardObjective(pickedClub.reputation, offer.tierId, tierClubs);
@@ -5564,11 +5570,11 @@ export default function App() {
           clubs: t.clubs.map((c) => c.id === offer.clubId ? { ...c, boardObjective: objective, boardHappiness: c.boardHappiness ?? 60 } : c),
         });
       }
-      return { ...prev, tiers, userTierId: offer.tierId, userClubId: offer.clubId, jobOffer: null };
+      return { ...prev, tiers, userTierId: offer.tierId, userClubId: offer.clubId, jobOffers: [] };
     });
   };
-  const handleDeclineJobOffer = () => {
-    setState((prev) => ({ ...prev, jobOffer: null }));
+  const handleDeclineJobOffer = (clubId) => {
+    setState((prev) => ({ ...prev, jobOffers: (prev.jobOffers || []).filter((o) => o.clubId !== clubId) }));
   };
 
   if (!loaded) {

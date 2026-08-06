@@ -1,5 +1,5 @@
 import { choice, clamp, randInt } from "./playerGen";
-import { ATTACK_MOD, BASE_GOAL_RATE, DEFAULT_WORLD_RECORDS, DEFENSE_MOD, DIFFICULTY_MODES, DP_XI_AURA_CAP, DP_XI_AURA_PER_PLAYER, FITNESS_DRAIN_MAX, FITNESS_DRAIN_MIN, FORMATION_SLOTS, FULL_TIER_META, HOME_ADVANTAGE, INJURY_BASE_RATE, MAX_SQUAD_SIZE, MORALE_DELTA, PRESS_MOD, RED_CARD_CHANCE, RIVALRY_PAIRS, RIVALRY_REPUTATION_BUMP, RIVALRY_REVENUE_BONUS, SCORER_WEIGHTS, UNHAPPY_BENCH_STREAK_THRESHOLD, UNHAPPY_MORALE_THRESHOLD, WIN_BONUS, YELLOW_CARD_BASE_RATE } from "./constants";
+import { ATTACK_MOD, BASE_GOAL_RATE, DEFAULT_WORLD_RECORDS, DEFENSE_MOD, DIFFICULTY_MODES, DP_XI_AURA_CAP, DP_XI_AURA_PER_PLAYER, FITNESS_DRAIN_MAX, FITNESS_DRAIN_MIN, FORMATION_SLOTS, FULL_TIER_META, HOME_ADVANTAGE, INJURY_BASE_RATE, MAX_SQUAD_SIZE, MORALE_DELTA, PRESS_MOD, RED_CARD_CHANCE, RIVALRY_PAIRS, RIVALRY_REPUTATION_BUMP, RIVALRY_REVENUE_BONUS, SCORER_WEIGHTS, TIER_OVERALL_CEILING, UNHAPPY_BENCH_STREAK_THRESHOLD, UNHAPPY_MORALE_THRESHOLD, WIN_BONUS, YELLOW_CARD_BASE_RATE } from "./constants";
 import { applyDisqualificationCheck, marketValue } from "./finance";
 
 export function samplePoisson(lambda) {
@@ -201,15 +201,25 @@ export function weightedScorer(xi) {
   return xi[0];
 }
 
-export function applyBenchUnhappiness(club, xi, difficulty) {
+export function applyBenchUnhappiness(club, xi, difficulty, tierIdx) {
   if (difficulty === "rookie") return;
   const xiIds = new Set(xi.map((p) => p.id));
   // A bigger-profile club's players are a little more demanding about
   // playing time — not dramatically so, just a modest lean using the
   // club's own reputation as the stand-in for "how high a flight is
-  // this." Keeps this local to the club/player data already in hand
-  // instead of needing every match-sim call site to also know its tier.
-  const tierPressure = clamp(((club.reputation ?? 60) - 50) / 45, -0.3, 0.5); // roughly -0.3 at low reputation, +0.5 at the very top
+  // this." Range softened (was -30% to +50%, now -15% to +40%) — the
+  // pull from a big club's reputation was landing too strong.
+  const tierPressure = clamp(((club.reputation ?? 60) - 50) / 45, -0.15, 0.4);
+  // "Star" and "hot prospect" both need to mean something IN CONTEXT of
+  // the league they're actually in — a flat overall>=80 or a flat +10
+  // potential gap doesn't. A 60-overall, 72-potential player reads as a
+  // real prospect in League Two (whose own baseline quality sits around
+  // 46) but is mediocre by Premier League standards (baseline ~74) even
+  // with the same numbers — their potential doesn't even reach what's
+  // ordinary for that league, so they shouldn't get star treatment there.
+  const ceiling = tierIdx != null ? (TIER_OVERALL_CEILING[tierIdx] ?? 99) : 99;
+  const baseRating = tierIdx != null ? (FULL_TIER_META[tierIdx]?.baseRating ?? 65) : 65;
+  const starThreshold = ceiling * 0.85;
   club.squad.forEach((p) => {
     if (xiIds.has(p.id)) {
       p.benchStreak = 0;
@@ -221,7 +231,8 @@ export function applyBenchUnhappiness(club, xi, difficulty) {
     if (p.injuredUntilMatchday != null || p.suspendedUntilMatchday != null) return;
     p.benchStreak = (p.benchStreak || 0) + 1;
     p.morale = clamp(p.morale - 1, 0, 100);
-    const isStarOrProspect = p.overall >= 80 || (p.age <= 21 && (p.potential - p.overall) >= 10);
+    const isProspect = p.age <= 21 && (p.potential - p.overall) >= 10 && p.potential >= baseRating;
+    const isStarOrProspect = p.overall >= starThreshold || isProspect;
     if (isStarOrProspect && !p.transferRequested && !p.transferListed && (p.benchStreak >= UNHAPPY_BENCH_STREAK_THRESHOLD || p.morale <= UNHAPPY_MORALE_THRESHOLD)) {
       if (Math.random() < 0.15 * (1 + tierPressure)) {
         p.transferRequested = true;
@@ -311,7 +322,7 @@ export function applyCardsAndInjuries(xi, clubName, matchday, events, difficulty
   });
 }
 
-export function simulateMatch(fixture, home, away, matchday, difficulty) {
+export function simulateMatch(fixture, home, away, matchday, difficulty, tierIdx) {
   const homeXI = startingXI(home, matchday);
   const awayXI = startingXI(away, matchday);
   // Debuts: caps === 0 means this is genuinely their first-ever appearance
@@ -383,8 +394,8 @@ export function simulateMatch(fixture, home, away, matchday, difficulty) {
 
   applyFitnessAndMorale(homeXI, homeResult);
   applyFitnessAndMorale(awayXI, awayResult);
-  applyBenchUnhappiness(home, homeXI, difficulty);
-  applyBenchUnhappiness(away, awayXI, difficulty);
+  applyBenchUnhappiness(home, homeXI, difficulty, tierIdx);
+  applyBenchUnhappiness(away, awayXI, difficulty, tierIdx);
 
   fixture.homeScore = homeGoals;
   fixture.awayScore = awayGoals;
@@ -457,7 +468,7 @@ export function simulateMatchdayAcrossTiers(next, currentMatchday) {
         if (t.id === next.userTierId) matches.push(result);
         return;
       }
-      const result = simulateMatch(fx, home, away, currentMatchday, next.difficulty);
+      const result = simulateMatch(fx, home, away, currentMatchday, next.difficulty, t.id);
       updateWorldRecordsFromMatch(next, result, next.seasonNumber);
       (result.scorerRefs || []).forEach(({ playerRef, clubName }) => checkCareerGoalsRecord(next, playerRef, clubName, next.seasonNumber));
       if (eventBonusesOn && WIN_BONUS[t.id] > 0) {
