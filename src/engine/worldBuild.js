@@ -1,6 +1,7 @@
 import { CHAMPIONSHIP_CLUBS, ENGLAND_ROSTERS, FICTIONAL_CLUB_NAMES, LEAGUE_ONE_CLUBS, LEAGUE_TWO_CLUBS, MLS_ROSTERS, PREMIER_LEAGUE_CLUBS, USL_CHAMPIONSHIP_TEAMS, USL_LEAGUE_ONE_TEAMS, USL_LEAGUE_TWO_TEAMS } from "../data/rosters";
 import { findEnglandRealRoster, generateAcademyProspect, generateDraftProspect, generateFictionalSquad, makeClub, randInt, realPlayerToRuntime } from "./playerGen";
 import { ACADEMY_STAR_THRESHOLDS, DRAFT_PHASES, ENGLAND_TIER_META, TARGET_TIER_SIZE, TIER_META } from "./constants";
+import { autoAssignFacilities } from "./facilities";
 import { ensureMlsConferences, generateDoubleRoundRobin, initialMlsConference } from "./leagueSim";
 
 export function buildEnglandWorld(sharedUsedNames, tierIdOffset = 0) {
@@ -98,6 +99,23 @@ export function buildEnglandWorld(sharedUsedNames, tierIdOffset = 0) {
     if (c.academyStars > 0) c.youthPlayers = Array.from({ length: randInt(1, 3) }, () => generateAcademyProspect(c.academyStars));
   });
 
+  // Facility auto-assignment — same "better-ranked clubs start with better
+  // infrastructure" idea academies already use above, extended to
+  // Training/Medical/Scouting/Stadium, using reputation (not avgOvr) as the
+  // ranking signal since that's the canonical "club standing" measure used
+  // everywhere else in the game (funding, board objectives, job offers).
+  const assignFacilitiesForTier = (clubs, tierIdx) => {
+    const sorted = [...clubs].sort((a, b) => b.reputation - a.reputation);
+    sorted.forEach((c, rank) => {
+      const percentile = sorted.length > 1 ? rank / (sorted.length - 1) : 0;
+      c.facilities = autoAssignFacilities(tierIdx, percentile, rank < 6);
+    });
+  };
+  assignFacilitiesForTier(plClubs, tierIdOffset + 0);
+  assignFacilitiesForTier(champClubs, tierIdOffset + 1);
+  assignFacilitiesForTier(l1Clubs, tierIdOffset + 2);
+  assignFacilitiesForTier(l2Clubs, tierIdOffset + 3);
+
   const tiers = [
     { id: tierIdOffset + 0, name: ENGLAND_TIER_META[0].name, clubs: plClubs, fixtures: [] },
     { id: tierIdOffset + 1, name: ENGLAND_TIER_META[1].name, clubs: champClubs, fixtures: [] },
@@ -192,6 +210,20 @@ export function buildInitialWorld(sharedUsedNames) {
       budget: randInt(150_000, 500_000),
     })
   );
+
+  // Facility auto-assignment — same pattern as England's, reputation-ranked
+  // within each tier.
+  const assignFacilitiesForTier = (clubs, tierIdx) => {
+    const sorted = [...clubs].sort((a, b) => b.reputation - a.reputation);
+    sorted.forEach((c, rank) => {
+      const percentile = sorted.length > 1 ? rank / (sorted.length - 1) : 0;
+      c.facilities = autoAssignFacilities(tierIdx, percentile, rank < 6);
+    });
+  };
+  assignFacilitiesForTier(mlsClubs, 0);
+  assignFacilitiesForTier(uslcClubs, 1);
+  assignFacilitiesForTier(usl1Clubs, 2);
+  assignFacilitiesForTier(usl2Clubs, 3);
 
   return [
     { id: 0, name: TIER_META[0].name, clubs: mlsClubs, fixtures: [] },

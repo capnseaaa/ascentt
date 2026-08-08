@@ -106,7 +106,26 @@ export function ownershipDepositFor(tierIdx, difficulty, club, tierClubs) {
     if (rank === 0) multiplier *= 1.2;
     else if (rank === 1) multiplier *= 1.1;
   }
-  return Math.round(base * Math.max(0.4, multiplier));
+  const rawDeposit = Math.round(base * Math.max(0.4, multiplier));
+  // Real clubs don't hoard cash indefinitely — ownership keeps injecting
+  // money because the club actually spends it. Without a AI clubs
+  // genuinely under-spending (a handful of transfers a season across a
+  // whole league) meant an already-rich club's budget compounded every
+  // single season with nothing pulling it back down — reported result: a
+  // 27-season career ending with a top club sitting on over $1B. Once a
+  // club's EXISTING budget already covers several years of deposits on
+  // its own, the war chest is already unrealistic for a club not actually
+  // spending it — taper the new deposit down rather than keep piling on.
+  // Never fully cuts it off (floor at 20% of the raw figure), so a truly
+  // committed spender can still always find room to keep buying.
+  if (club.budget > 0) {
+    const ratio = club.budget / (rawDeposit * 2);
+    if (ratio > 1) {
+      const taper = Math.max(0.1, 1 / (ratio * ratio));
+      return Math.round(rawDeposit * taper);
+    }
+  }
+  return rawDeposit;
 }
 
 export function effectivePayroll(squad, designatedPlayerIds) {
@@ -363,7 +382,7 @@ export function runTransferWindow(tiers, userClubId) {
         // "the world moving on its own" — the user already knows about
         // their own transfers, so those don't need a news headline.
         if (!isUserSeller) {
-          transferLog.push({ tierId: t.id, playerName: p.name, position: p.position, overall: p.overall, fee, buyerName: buyer.name, sellerName: seller.name });
+          transferLog.push({ tierId: t.id, playerName: p.name, position: p.position, overall: p.overall, age: p.age, fee, buyerName: buyer.name, sellerName: seller.name });
         }
       });
     });
@@ -377,7 +396,21 @@ export function runAiToAiTransfers(tiers, userClubId) {
     for (let attempt = 0; attempt < AI_TRANSFER_ATTEMPTS_PER_TIER; attempt++) {
       const buyerPool = tier.clubs.filter((c) => c.id !== userClubId && c.squad.length < MAX_SQUAD_SIZE && c.budget > 0);
       if (!buyerPool.length) continue;
-      const buyer = buyerPool[Math.floor(Math.random() * buyerPool.length)];
+      // Wealth-weighted buyer pick — a random-among-all-clubs pick meant a
+      // club sitting on hundreds of millions had the exact same shot at
+      // being the buyer as one with a few million, so a rich club's money
+      // never actually turned into transfer activity; it just piled up
+      // forever. sqrt-dampened so the single richest club doesn't crowd
+      // out everyone else, but real wealth now genuinely buys more
+      // activity, same as it does in reality.
+      const weights = buyerPool.map((c) => Math.sqrt(Math.max(1, c.budget)));
+      const totalWeight = weights.reduce((s, w) => s + w, 0);
+      let roll = Math.random() * totalWeight;
+      let buyer = buyerPool[buyerPool.length - 1];
+      for (let i = 0; i < buyerPool.length; i++) {
+        roll -= weights[i];
+        if (roll <= 0) { buyer = buyerPool[i]; break; }
+      }
 
       const positions = ["GK", "DEF", "MID", "FWD"];
       const avgByPos = {};
@@ -399,7 +432,17 @@ export function runAiToAiTransfers(tiers, userClubId) {
       });
       if (!candidates.length) continue;
 
-      const pick = candidates[Math.floor(Math.random() * candidates.length)];
+      // Afford-and-prefer-the-best rather than a flat random pick among
+      // everyone who clears the bar — a club with real budget headroom
+      // should chase the strongest available upgrade it can afford, not
+      // end up with a mediocre one purely by the luck of the draw. This is
+      // the direct fix for elite talent never actually reaching the
+      // clubs wealthy enough to buy it.
+      const affordable = candidates.filter((c) => marketValue(c.player) * 1.15 <= buyer.budget);
+      const pool = affordable.length ? affordable : candidates;
+      pool.sort((a, b) => b.player.overall - a.player.overall);
+      const topSlice = Math.max(1, Math.ceil(pool.length * 0.35));
+      const pick = pool[Math.floor(Math.random() * topSlice)];
       const fee = Math.round(marketValue(pick.player) * (0.85 + Math.random() * 0.3));
       if (buyer.budget < fee) continue;
 
@@ -412,6 +455,7 @@ export function runAiToAiTransfers(tiers, userClubId) {
         playerName: pick.player.name,
         position: pick.player.position,
         overall: pick.player.overall,
+        age: pick.player.age,
         fee,
         buyerName: buyer.name,
         sellerName: pick.seller.name,

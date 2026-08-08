@@ -170,7 +170,7 @@ export const ENGLAND_CUP_STAGE_NAMES = { 4: "Round 4", 3: "Quarterfinal", 2: "Se
 
 export const BOARD_MESSAGE_FORMATIONS = ["4-4-2", "4-3-3", "3-5-2", "5-3-2", "4-2-3-1", "4-3-2-1", "3-4-3", "4-3-1-2"];
 
-export const AI_TRANSFER_ATTEMPTS_PER_TIER = 2;
+export const AI_TRANSFER_ATTEMPTS_PER_TIER = 8;
 
 export const SACK_THRESHOLD = 10;
 
@@ -242,6 +242,88 @@ export const PROMO_TOTAL_ROUNDS = 2;
 export const MAX_POSTSEASON_ROUNDS = Math.max(MLS_TOTAL_ROUNDS, USLC_TOTAL_ROUNDS, PROMO_TOTAL_ROUNDS);
 
 export const MARKET_PAGE_SIZE = 20;
+
+// ===================== FACILITIES =====================
+// Five categories, levels 1 (baseline — every club already has SOME
+// version of this) through 5 (world-class). Costs are expressed as a
+// MULTIPLIER of each tier's own OWNERSHIP_DEPOSIT_WAGED base figure, so
+// they scale correctly across all 8 tiers without a separate constant
+// table per tier — a League Two club's level-5 facility costs the same
+// relative bite out of their income as a Premier League club's does.
+export const FACILITY_TYPES = ["training", "medical", "scouting", "academy", "stadium"];
+// Level 5 is the normal ceiling everywhere except the Premier League, which
+// has a 6th tier ("World Class") reachable only by building toward it —
+// nobody starts there, and it costs far more than the jump from 4 to 5.
+export const FACILITY_MAX_LEVEL = 5;
+export const FACILITY_WORLD_CLASS_LEVEL = 6;
+// The auto-assigned starting range at world generation, per tier (0-7:
+// MLS, USLC, USL1, USL2, PL, Championship, League One, League Two). Not
+// every club in a pyramid deserves the same ceiling — a struggling lower-
+// tier club can genuinely start at 0 (nothing built at all), while even
+// the worst top-flight club still has real infrastructure. Levels above a
+// club's own tier range are still reachable by climbing the pyramid, or by
+// staying grandfathered in after a relegation until downgraded.
+export const FACILITY_TIER_RANGE = [
+  [2, 4], [1, 3], [0, 2], [0, 1], // MLS, USLC, USL1, USL2
+  [3, 5], [3, 4], [1, 3], [0, 2], // PL, Championship, League One, League Two
+];
+// Cost to reach each level (index = level being reached, 1-6; index 0
+// unused). A club starting from auto-assigned level 0 pays the "reach 1"
+// cost same as anyone else building their first real facility.
+export const FACILITY_COST_MULTIPLIER = [0, 0.05, 0.2, 0.6, 1.5, 3.5, 8.0];
+// Ongoing per-season maintenance, as a fraction of what that level cost to
+// build — the more advanced a club's facilities, the more it costs every
+// single season just to keep them running, not just to build them once.
+export const FACILITY_MAINTENANCE_RATE = 0.03;
+// The very first upgrade a club ever makes (level 1->2) takes real
+// construction time, in matchdays — every upgrade after the club's very
+// first one instead completes at the start of the next season, whenever
+// during the current season it was started.
+export const FACILITY_FIRST_UPGRADE_MATCHDAYS = 10;
+// A downgrade is fast, not construction — cutting a program or trimming
+// staff takes effect essentially right away rather than needing 10
+// matchdays like actually building something new.
+export const FACILITY_DOWNGRADE_MATCHDAYS = 1;
+// How many facility upgrades a club can have IN PROGRESS at once in a
+// single season — dictated by pyramid level (top-flight clubs can run
+// more simultaneous projects than a lower-league club scraping by).
+// Indexed by tierIdx (0-7: MLS, USLC, USL1, USL2, PL, Champ, L1, L2).
+export const FACILITY_UPGRADES_PER_SEASON = [3, 2, 1, 1, 3, 2, 1, 1];
+
+// ===================== STADIUM / TICKETING =====================
+// Base capacity at facility level 1, and the capacity GAIN per level
+// above that (so level 5 = base + 4*perLevelGain). Indexed by tierIdx.
+export const STADIUM_BASE_CAPACITY = [15_000, 5_000, 3_000, 2_000, 20_000, 10_000, 5_000, 3_000];
+export const STADIUM_CAPACITY_PER_LEVEL = [7_500, 3_250, 1_500, 1_000, 13_750, 5_000, 2_500, 1_250];
+// Ticket price the user can set, min/max per tier — real-world-adjacent
+// price bands, scaled down for the lower tiers.
+export const TICKET_PRICE_RANGE = [
+  [25, 90], [15, 45], [10, 30], [8, 20], // MLS, USLC, USL1, USL2
+  [35, 150], [20, 70], [12, 35], [8, 22], // PL, Championship, League One, League Two
+];
+export const TICKET_PRICE_DEFAULT_FRACTION = 0.4; // where in the min-max range a new club starts
+
+// ===================== FAN HAPPINESS =====================
+export const FAN_HAPPINESS_DEFAULT = 60; // 0-100 scale, same convention as board happiness
+export const FAN_HAPPINESS_MATCH_DELTA = { win: 3, draw: 0.5, loss: -2 };
+export const FAN_HAPPINESS_EXPECTATION_DELTA = 0.5; // extra pull per matchday for over/under-performing reputation-implied expectation
+export const FAN_HAPPINESS_SEASON_DELTA = { trophy: 15, promoted: 20, relegated: -25 };
+export const FAN_HAPPINESS_REVERSION_RATE = 0.1; // fraction of the gap to 50 (neutral) pulled back each season if nothing dramatic happened
+// Attendance rate (% of capacity that actually shows up) as a function of
+// fan happiness — even a miserable fanbase keeps some season-ticket
+// holders showing up; even a delighted one never quite sells out 100% of
+// the time.
+export const ATTENDANCE_RATE_MIN = 0.35;
+export const ATTENDANCE_RATE_MAX = 0.98;
+
+// ===================== OTHER REVENUE (per-season, at rollover) =====================
+// Merchandise and sponsorship, both expressed as a multiplier of the
+// tier's OWNERSHIP_DEPOSIT_WAGED base figure (same anchor as facility
+// costs) — keeps them proportional across the whole pyramid without a
+// separate table. Both scale further with reputation percentile and fan
+// happiness at the point they're actually computed.
+export const MERCHANDISE_BASE_FRACTION = 0.03;
+export const SPONSORSHIP_BASE_FRACTION = 0.05;
 
 export const STORAGE_KEY = "ascent_career_v1";
 

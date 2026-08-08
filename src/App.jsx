@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Trophy, TrendingUp, TrendingDown, Users, Sliders, Calendar, ShoppingBag, Award, ChevronRight, X, ArrowUpCircle, ArrowDownCircle, RotateCcw, GraduationCap, Lightbulb, DollarSign, Star, Newspaper } from "lucide-react";
 import { academySigningCost, academyStarsForInvestment, clamp, draftProspectValue, generateAcademyProspect, generateTryoutCandidates, growPlayer, promoteYouthToFirstTeam, tryoutCost, tryoutSigningCost, youthSaleValue } from "./engine/playerGen";
-import { ACADEMY_INVEST_INCREMENT, ACADEMY_MAX_PROSPECTS, ACADEMY_PROMOTE_MIN_AGE, ACADEMY_START_COST, DEFAULT_MANAGER_HISTORY, DEFAULT_WORLD_RECORDS, DIFFICULTY_MODES, DP_REPUTATION_BUMP, EFL_CUP_ROUND_MATCHDAYS, ENGLAND_TIER_META, FA_CUP_ROUND_MATCHDAYS, FORCED_DEPARTURE_BENCH_THRESHOLD, FORMATION_NOTES, FULL_TIER_META, MANAGER_KEY, MARKET_PAGE_SIZE, MAX_DESIGNATED_PLAYERS, MAX_POSTSEASON_ROUNDS, MAX_SQUAD_SIZE, MIN_SQUAD_SIZE, MLS_SALARY_CAP, MLS_TOTAL_ROUNDS, PARACHUTE_PAYMENT_SCHEDULE, PROMO_TOTAL_ROUNDS, SACK_THRESHOLD, STORAGE_KEY, TIER_META, USLC_TOTAL_ROUNDS, US_OPEN_CUP_ROUND_MATCHDAYS, US_OPEN_CUP_TOTAL_ROUNDS } from "./engine/constants";
+import { ACADEMY_INVEST_INCREMENT, ACADEMY_MAX_PROSPECTS, ACADEMY_PROMOTE_MIN_AGE, ACADEMY_START_COST, DEFAULT_MANAGER_HISTORY, DEFAULT_WORLD_RECORDS, DIFFICULTY_MODES, DP_REPUTATION_BUMP, EFL_CUP_ROUND_MATCHDAYS, ENGLAND_TIER_META, FACILITY_FIRST_UPGRADE_MATCHDAYS, FACILITY_MAX_LEVEL, FACILITY_TYPES, FACILITY_UPGRADES_PER_SEASON, FA_CUP_ROUND_MATCHDAYS, FORCED_DEPARTURE_BENCH_THRESHOLD, FORMATION_NOTES, FULL_TIER_META, MANAGER_KEY, MARKET_PAGE_SIZE, MAX_DESIGNATED_PLAYERS, MAX_POSTSEASON_ROUNDS, MAX_SQUAD_SIZE, MIN_SQUAD_SIZE, MLS_SALARY_CAP, MLS_TOTAL_ROUNDS, PARACHUTE_PAYMENT_SCHEDULE, PROMO_TOTAL_ROUNDS, SACK_THRESHOLD, STORAGE_KEY, TICKET_PRICE_RANGE, TIER_META, USLC_TOTAL_ROUNDS, US_OPEN_CUP_ROUND_MATCHDAYS, US_OPEN_CUP_TOTAL_ROUNDS } from "./engine/constants";
+import { canStartFacilityUpgrade, defaultTicketPrice, downgradeFacility, facilityMaintenanceCost, facilityMaxUpgradeLevel, facilityUpgradeCost, scoutedPotentialRange, startFacilityUpgrade, stadiumCapacity, ticketRevenueForMatch } from "./engine/facilities";
 import { buildEnglandWorld, buildFullWorld } from "./engine/worldBuild";
 import { boardHappinessDelta, boardMessageNoticeText, checkBoardMessageCompliance, computeHints, computeInboxUrgentCount, generateBoardMessage, generateBoardObjective, generateJobOffer, jobOfferChanceFor } from "./engine/board";
 import { computeSeasonAwards, computeSeasonPlayoffs, computeUserPlayoffQualification, generateDoubleRoundRobin, getCurrentMatchday, maybeTriggerMidWindow, resolveKnockoutMatch, rolloverEnglandSeason, rolloverSeason } from "./engine/leagueSim";
@@ -3329,35 +3330,149 @@ function TrophyTab({ trophyLog, bestFinish, bestFinishUsa, bestFinishEngland, cu
   );
 }
 
-function DevelopmentTab({ club, budget, onStartAcademy, onInvestAcademy, onSignYouth, onPromoteYouth, onSellYouth, onHostTryouts, onSignTryout, onDismissTryouts }) {
+const FACILITY_LABELS = {
+  training: { name: "Training", icon: "🏃", blurb: "Faster squad development." },
+  medical: { name: "Medical", icon: "🩺", blurb: "Fewer, shorter injuries." },
+  scouting: { name: "Scouting", icon: "🔭", blurb: "Sharper reads on a prospect's true ceiling." },
+  stadium: { name: "Stadium", icon: "🏟️", blurb: "More seats, more matchday revenue." },
+};
+
+function FacilitiesPanel({ club, tierIdx, currentMatchday, onUpgradeFacility, onDowngradeFacility, onSetTicketPrice }) {
+  const cap = FACILITY_UPGRADES_PER_SEASON[tierIdx];
+  const used = club.facilityUpgradesThisSeason || 0;
+  const [lo, hi] = TICKET_PRICE_RANGE[tierIdx];
+  const price = club.ticketPrice ?? defaultTicketPrice(tierIdx);
+  const capacity = stadiumCapacity(club.facilities?.stadium?.level, tierIdx);
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+        <span style={{ ...display, fontSize: 15, fontWeight: 700, color: PALETTE.ink }}>Facilities</span>
+        <span style={{ ...serif, fontSize: 12, color: PALETTE.inkSoft }}>{used} / {cap} upgrades started this season</span>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 10 }}>
+        {FACILITY_TYPES.filter((t) => t !== "academy").map((type) => {
+          const f = club.facilities?.[type];
+          if (!f) return null;
+          const label = FACILITY_LABELS[type];
+          const ceiling = facilityMaxUpgradeLevel(tierIdx);
+          const grandfathered = f.level > ceiling;
+          const check = canStartFacilityUpgrade(club, type, tierIdx);
+          const remaining = f.upgrading?.completesAtMatchday != null ? Math.max(0, f.upgrading.completesAtMatchday - currentMatchday) : null;
+          return (
+            <div key={type} style={{ border: `1px solid ${grandfathered ? PALETTE.crimson : PALETTE.parchmentDim}`, borderRadius: 8, padding: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ ...display, fontWeight: 700, fontSize: 13, color: PALETTE.ink }}>{label.icon} {label.name}</span>
+                <span style={{ color: PALETTE.gold, fontSize: 15 }}>{f.level}{tierIdx === 4 && f.level >= 6 ? " (World Class)" : ""}★</span>
+              </div>
+              <div style={{ ...serif, fontSize: 11.5, color: PALETTE.inkSoft, margin: "4px 0 8px" }}>{label.blurb}</div>
+              {type === "stadium" && (
+                <div style={{ ...serif, fontSize: 11.5, color: PALETTE.inkSoft, marginBottom: 6 }}>Capacity: {capacity.toLocaleString()}</div>
+              )}
+              {grandfathered && (
+                <div style={{ ...serif, fontSize: 11, color: PALETTE.crimson, marginBottom: 6 }}>
+                  Above what's normal for this level of the pyramid — hold it or downgrade to cut costs, no further upgrades until you're promoted back.
+                </div>
+              )}
+              {f.upgrading ? (
+                <div style={{ ...serif, fontSize: 12, color: PALETTE.gold }}>
+                  {f.upgrading.completesAtSeasonEnd ? "Under construction — ready next season" : `Under construction — ${remaining} game${remaining === 1 ? "" : "s"} left`}
+                </div>
+              ) : (
+                <div style={{ display: "flex", gap: 6 }}>
+                  {!grandfathered && f.level < ceiling && (
+                    <button
+                      onClick={() => onUpgradeFacility(type)}
+                      disabled={!check.ok}
+                      title={check.ok ? "" : check.reason}
+                      style={{
+                        flex: 1, padding: "7px 10px", borderRadius: 6, border: "none", cursor: check.ok ? "pointer" : "not-allowed",
+                        background: check.ok ? PALETTE.pitch : PALETTE.parchmentDim, color: check.ok ? PALETTE.parchment : PALETTE.inkSoft,
+                        ...display, fontSize: 12, fontWeight: 600,
+                      }}
+                    >
+                      Upgrade to {f.level + 1} — ${check.cost ? check.cost.toLocaleString() : facilityUpgradeCost(f.level + 1, tierIdx).toLocaleString()}
+                    </button>
+                  )}
+                  {!grandfathered && f.level >= ceiling && (
+                    <div style={{ ...serif, fontSize: 12, color: PALETTE.inkSoft, flex: 1 }}>
+                      {tierIdx === 4 && ceiling === 6 ? "World Class — the max." : "Maximum for this tier."}
+                    </div>
+                  )}
+                  {f.level > 0 && (
+                    <button
+                      onClick={() => onDowngradeFacility(type)}
+                      style={{ padding: "7px 10px", borderRadius: 6, border: `1px solid ${PALETTE.inkSoft}`, background: "none", color: PALETTE.inkSoft, cursor: "pointer", ...display, fontSize: 11 }}
+                    >
+                      Downgrade
+                    </button>
+                  )}
+                </div>
+              )}
+              {!check.ok && !f.upgrading && !grandfathered && f.level < ceiling && (
+                <div style={{ ...serif, fontSize: 10.5, color: PALETTE.crimson, marginTop: 4 }}>{check.reason}</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ border: `1px solid ${PALETTE.parchmentDim}`, borderRadius: 8, padding: 12, marginTop: 10 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+          <span style={{ ...display, fontWeight: 700, fontSize: 13, color: PALETTE.ink }}>🎟️ Ticket price</span>
+          <span style={{ ...mono, fontWeight: 700, fontSize: 14, color: PALETTE.ink }}>${price}</span>
+        </div>
+        <input
+          type="range" min={lo} max={hi} value={price}
+          onChange={(e) => onSetTicketPrice(Number(e.target.value))}
+          style={{ width: "100%" }}
+        />
+        <div style={{ ...serif, fontSize: 11, color: PALETTE.inkSoft, display: "flex", justifyContent: "space-between" }}>
+          <span>${lo} (fans love it)</span>
+          <span>${hi} (fans hate it)</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DevelopmentTab({ club, budget, tierIdx, currentMatchday, onStartAcademy, onInvestAcademy, onSignYouth, onPromoteYouth, onSellYouth, onHostTryouts, onSignTryout, onDismissTryouts, onUpgradeFacility, onDowngradeFacility, onSetTicketPrice }) {
+  const facilitiesPanel = <FacilitiesPanel club={club} tierIdx={tierIdx} currentMatchday={currentMatchday} onUpgradeFacility={onUpgradeFacility} onDowngradeFacility={onDowngradeFacility} onSetTicketPrice={onSetTicketPrice} />;
   if (club.academyEligible) {
     const signCost = academySigningCost(club.academyStars);
     return (
       <div>
+        {facilitiesPanel}
         {club.academyStars === 0 ? (
           <div style={{ border: `1px solid ${PALETTE.parchmentDim}`, borderRadius: 8, padding: 16 }}>
             <div style={{ ...display, fontWeight: 700, fontSize: 16, color: PALETTE.ink, marginBottom: 6 }}>Start an Academy</div>
             <div style={{ ...serif, fontSize: 13, color: PALETTE.inkSoft, marginBottom: 12 }}>
               Once started, your academy stays with the club forever — even if you get relegated. It won't come back if you never start one, though.
             </div>
-            <button
-              onClick={onStartAcademy}
-              disabled={budget < ACADEMY_START_COST}
-              style={{
-                padding: "10px 16px", borderRadius: 6, border: "none", cursor: budget >= ACADEMY_START_COST ? "pointer" : "not-allowed",
-                background: budget >= ACADEMY_START_COST ? PALETTE.pitch : PALETTE.parchmentDim, color: budget >= ACADEMY_START_COST ? PALETTE.parchment : PALETTE.inkSoft,
-                ...display, fontSize: 13, fontWeight: 600,
-              }}
-            >
-              Start Academy — ${ACADEMY_START_COST.toLocaleString()}
-            </button>
+            {club.academyUpgrading ? (
+              <div style={{ ...serif, fontSize: 13, color: PALETTE.gold }}>
+                Under construction — {Math.max(0, club.academyUpgrading.completesAtMatchday - currentMatchday)} game(s) left.
+              </div>
+            ) : (
+              <button
+                onClick={onStartAcademy}
+                disabled={budget < ACADEMY_START_COST}
+                style={{
+                  padding: "10px 16px", borderRadius: 6, border: "none", cursor: budget >= ACADEMY_START_COST ? "pointer" : "not-allowed",
+                  background: budget >= ACADEMY_START_COST ? PALETTE.pitch : PALETTE.parchmentDim, color: budget >= ACADEMY_START_COST ? PALETTE.parchment : PALETTE.inkSoft,
+                  ...display, fontSize: 13, fontWeight: 600,
+                }}
+              >
+                Start Academy — ${ACADEMY_START_COST.toLocaleString()}
+              </button>
+            )}
           </div>
         ) : (
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
               <span style={{ ...display, fontSize: 15, fontWeight: 700, color: PALETTE.ink }}>Academy</span>
               <span style={{ color: PALETTE.gold, fontSize: 18 }}><StarRow value={club.academyStars} /></span>
-              {club.academyStars < 5 && (
+              {club.academyUpgrading ? (
+                <span style={{ ...serif, fontSize: 12, color: PALETTE.gold }}>Upgrading — ready next season</span>
+              ) : club.academyStars < 5 && (
                 <button
                   onClick={onInvestAcademy}
                   disabled={budget < ACADEMY_INVEST_INCREMENT}
@@ -3429,6 +3544,7 @@ function DevelopmentTab({ club, budget, onStartAcademy, onInvestAcademy, onSignY
   // Not academy-eligible — USL League One / Two clubs run open tryouts instead
   return (
     <div>
+      {facilitiesPanel}
       <div style={{ ...serif, fontSize: 13, color: PALETTE.inkSoft, marginBottom: 14 }}>
         Your club can't run an academy at this level — but you can host open tryouts for a shot at some free-agent talent.
         Mostly you'll get squad filler, but every so often someone shows up who could play a tier above.
@@ -3798,14 +3914,17 @@ function PayrollOverlay({ club, difficulty, tierIdx, tier, onClose }) {
   // (on top of variable prize money, which genuinely can't be known until
   // the season's final standing, so it's noted rather than guessed at).
   const deposit = ownershipDepositFor(tierIdx, difficulty, club, tier?.clubs);
+  const maintenance = facilityMaintenanceCost(club, tierIdx);
+  const { revenue: ticketRevenuePerMatch, attendance, capacity, price } = ticketRevenueForMatch(club, tierIdx);
+  const homeGamesLeft = tier ? tier.fixtures.filter((f) => !f.played && f.homeClubId === club.id).length : 0;
   const projected = club.budget - payroll;
-  const projectedWithIncome = projected + deposit;
+  const projectedWithIncome = projected + deposit - maintenance;
   const dpCount = (club.designatedPlayerIds || []).length;
   const capApplies = tierIdx === 0 && DIFFICULTY_MODES[difficulty]?.dps;
   const capRoom = MLS_SALARY_CAP - payroll;
   return (
     <div style={{ position: "fixed", inset: 0, background: "#000000cc", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 55, padding: 20 }} onClick={onClose}>
-      <div style={{ background: PALETTE.parchment, borderRadius: 12, maxWidth: 380, width: "100%", padding: 22 }} onClick={(e) => e.stopPropagation()}>
+      <div style={{ background: PALETTE.parchment, borderRadius: 12, maxWidth: 380, width: "100%", padding: 22, maxHeight: "85vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
         <div style={{ ...display, fontSize: 18, fontWeight: 700, color: PALETTE.ink, marginBottom: 14 }}>
           Payroll — {club.name}
         </div>
@@ -3821,16 +3940,22 @@ function PayrollOverlay({ club, difficulty, tierIdx, tier, onClose }) {
           <span style={{ color: PALETTE.inkSoft }}>Ownership deposit (guaranteed each season)</span>
           <strong style={{ color: PALETTE.gold }}>+${deposit.toLocaleString()}</strong>
         </div>
+        {maintenance > 0 && (
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid ${PALETTE.parchmentDim}`, ...serif, fontSize: 14 }}>
+            <span style={{ color: PALETTE.inkSoft }}>Facility upkeep (each season)</span>
+            <strong style={{ color: PALETTE.crimson }}>-${maintenance.toLocaleString()}</strong>
+          </div>
+        )}
         <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 0 4px", ...serif, fontSize: 14 }}>
           <span style={{ color: PALETTE.inkSoft }}>Room left after next payroll</span>
           <strong style={{ color: projectedWithIncome < 0 ? PALETTE.crimson : PALETTE.ink }}>${projectedWithIncome.toLocaleString()}</strong>
         </div>
         <div style={{ ...serif, fontSize: 11.5, color: PALETTE.inkSoft, marginTop: 2, fontStyle: "italic" }}>
-          Doesn't include prize money — that depends on where you finish this season, so it can't be known yet.
+          Doesn't include prize money, merchandise, sponsorship, or matchday ticket revenue — those depend on results and can't be known until they actually happen.
         </div>
         {projectedWithIncome < 0 && (
           <div style={{ ...serif, fontSize: 12.5, color: PALETTE.crimson, marginTop: 6 }}>
-            Your wage bill outruns your budget plus guaranteed income — you'll go into debt at the next payroll unless you free up salary, or prize money covers the gap.
+            Your wage bill outruns your budget plus guaranteed income — you'll go into debt at the next payroll unless you free up salary, or other income covers the gap.
           </div>
         )}
         {capApplies && (
@@ -3839,6 +3964,17 @@ function PayrollOverlay({ club, difficulty, tierIdx, tier, onClose }) {
             <strong style={{ color: capRoom < 0 ? PALETTE.crimson : PALETTE.ink }}>${capRoom.toLocaleString()}</strong>
           </div>
         )}
+        <div style={{ ...display, fontSize: 13, fontWeight: 700, color: PALETTE.ink, marginTop: 14, marginBottom: 6 }}>Matchday income (per home game)</div>
+        <div style={{ ...serif, fontSize: 13, color: PALETTE.inkSoft, marginBottom: 4 }}>
+          {attendance.toLocaleString()} / {capacity.toLocaleString()} seats filled at ${price}/ticket
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", ...serif, fontSize: 14 }}>
+          <span style={{ color: PALETTE.inkSoft }}>Ticket revenue (this game)</span>
+          <strong style={{ color: PALETTE.gold }}>+${ticketRevenuePerMatch.toLocaleString()}</strong>
+        </div>
+        <div style={{ ...serif, fontSize: 11.5, color: PALETTE.inkSoft }}>
+          {homeGamesLeft} home game{homeGamesLeft === 1 ? "" : "s"} left this season · Fan happiness: {Math.round(club.fanHappiness ?? 60)}/100
+        </div>
         <button onClick={onClose} style={{ width: "100%", marginTop: 16, background: PALETTE.pitch, color: PALETTE.parchment, border: "none", borderRadius: 8, padding: "10px 0", fontSize: 14, fontWeight: 600, cursor: "pointer", ...display }}>
           Close
         </button>
@@ -3957,7 +4093,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
   const applyCareerStatsDelta = (delta) => {
     if (!delta || delta.games === 0) return;
     setManagerHistory((prev) => {
-      const stats = prev.careerStats || DEFAULT_MANAGER_HISTORY.careerStats;
+      const stats = { ...DEFAULT_MANAGER_HISTORY.careerStats, ...(prev.careerStats || {}) };
       const clubHistory = stats.clubHistory.length && stats.clubHistory[stats.clubHistory.length - 1] === userClub.name
         ? stats.clubHistory
         : [...stats.clubHistory, userClub.name];
@@ -4421,7 +4557,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     // setState at the end, unlike mutateAndSave-style handlers elsewhere).
     const recordsScratch = { worldRecords: state.worldRecords ? { ...state.worldRecords } : { ...DEFAULT_WORLD_RECORDS }, newsFeed: state.newsFeed || [] };
     aiTransferLog.forEach((t) => {
-      recordsScratch.newsFeed = [{ season: state.seasonNumber, headline: `🔁 ${t.buyerName} sign ${t.playerName} (${t.position}, ${t.overall} OVR) from ${t.sellerName} for $${t.fee.toLocaleString()}.`, category: "transfer" }, ...recordsScratch.newsFeed].slice(0, 40);
+      recordsScratch.newsFeed = [{ season: state.seasonNumber, headline: `🔁 ${t.buyerName} sign ${t.age}-year-old ${t.playerName} (${t.position}, ${t.overall} OVR) from ${t.sellerName} for $${t.fee.toLocaleString()}.`, category: "transfer" }, ...recordsScratch.newsFeed].slice(0, 40);
       checkTransferRecord(recordsScratch, t.playerName, t.fee, t.sellerName, t.buyerName, state.seasonNumber);
     });
 
@@ -4450,6 +4586,64 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       if (!current || champion.leagueTitles > current.titles) {
         recordsScratch.worldRecords.mostLeagueTitles = { clubName: champion.name, tierId: tierIdx, titles: champion.leagueTitles };
       }
+    });
+
+    // Manager sackings — flavor only (AI clubs don't have a tracked
+    // manager the way the user does, so there's no real state to change
+    // here), but a club finishing well below where its reputation says it
+    // should have is exactly the situation that ends in a real sacking, and
+    // leaving it unremarked made the AI half of the world feel inert. Finds
+    // the single worst reputation-vs-finish mismatch across the world each
+    // season, and only fires part of the time so it doesn't feel scripted.
+    {
+      let worst = null;
+      tables.forEach((table, tierIdx) => {
+        const tierClubs = newTiers[tierIdx]?.clubs;
+        if (!tierClubs || table.length < 6) return;
+        table.forEach((row, finishRank) => {
+          const club = tierClubs.find((c) => c.id === row.clubId);
+          if (!club || club.id === state.userClubId) return;
+          const repRank = [...tierClubs].sort((a, b) => b.reputation - a.reputation).findIndex((c) => c.id === club.id);
+          const gap = finishRank - repRank; // positive = finished much worse than their reputation implied
+          if (gap >= table.length * 0.5 && (!worst || gap > worst.gap)) {
+            worst = { club, gap, tierIdx };
+          }
+        });
+      });
+      if (worst && Math.random() < 0.5) {
+        if (!recordsScratch.newsFeed) recordsScratch.newsFeed = [];
+        recordsScratch.newsFeed = [{ season: state.seasonNumber, headline: `🚪 ${worst.club.name} sack their manager after a disappointing season in the ${FULL_TIER_META[worst.tierIdx].name}.`, category: "managerial" }, ...recordsScratch.newsFeed].slice(0, 40);
+      }
+    }
+
+    // Pyramid journeys — "climbed from League Two to the Premier League"
+    // type stories. Tracked via deepestTierReached, a running record on
+    // each club of the worst division they've ever occupied (persists
+    // across the whole career, only reset for a genuinely new club
+    // identity via world generation). Every promotion checks how far
+    // below their peak they once were; only genuinely notable climbs
+    // (skipping 2+ divisions from their lowest point) get a headline —
+    // a routine single-tier promotion is common enough not to need one
+    // (it's already covered by the promoted/relegated list in the season
+    // summary modal).
+    events.filter((e) => e.type === "promoted").forEach((e) => {
+      const club = newTiers.flatMap((t) => t.clubs).find((c) => c.id === e.clubId);
+      if (!club) return;
+      const deepest = club.deepestTierReached ?? e.from;
+      if (deepest - e.to >= 2) {
+        if (!recordsScratch.newsFeed) recordsScratch.newsFeed = [];
+        recordsScratch.newsFeed = [{ season: state.seasonNumber, headline: `🚀 ${club.name} have climbed from ${FULL_TIER_META[deepest].name} to the ${FULL_TIER_META[e.to].name}.`, category: "pyramid" }, ...recordsScratch.newsFeed].slice(0, 40);
+        club.deepestTierReached = e.to;
+      }
+    });
+    // Every club's deepestTierReached keeps tracking the worst division
+    // they've been in, regardless of whether a headline fired this time —
+    // relegations push it down, and it only ever gets reset (not raised)
+    // by a genuinely notable climb above, so a club's next big promotion
+    // still measures from their true low point.
+    events.filter((e) => e.type === "relegated").forEach((e) => {
+      const club = newTiers.flatMap((t) => t.clubs).find((c) => c.id === e.clubId);
+      if (club) club.deepestTierReached = Math.max(club.deepestTierReached ?? e.from, e.to);
     });
 
     // Financial distress — the world's own clubs can run into real trouble
@@ -4686,7 +4880,8 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     (state.playersOnLoan || []).forEach((entry) => {
       if (entry.returnSeasonNumber !== nextSeasonNumber) { stillOnLoan.push(entry); return; }
       if (userClubAfterMove && userClubAfterMove.squad.length < MAX_SQUAD_SIZE) {
-        const developed = growPlayer(growPlayer(entry.player, userNewTierId), userNewTierId); // an extra development pass, on top of what everyone else already gets this rollover
+        const trainingLevel = userClubAfterMove.facilities?.training?.level;
+        const developed = growPlayer(growPlayer(entry.player, userNewTierId, trainingLevel), userNewTierId, trainingLevel); // an extra development pass, on top of what everyone else already gets this rollover
         userClubAfterMove.squad.push({ ...developed, seasonGoals: 0, benchStreak: 0 });
       } else {
         stillOnLoan.push(entry); // squad's full — stay out one more season
@@ -4967,7 +5162,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       }
       checkTransferRecord(next, p.name, fee, seller.name, buyer.name, next.seasonNumber);
       setManagerHistory((prev) => {
-        const stats = prev.careerStats || DEFAULT_MANAGER_HISTORY.careerStats;
+        const stats = { ...DEFAULT_MANAGER_HISTORY.careerStats, ...(prev.careerStats || {}) };
         if (stats.biggestSigning && stats.biggestSigning.fee >= fee) return prev;
         return { ...prev, careerStats: { ...stats, biggestSigning: { playerName: p.name, fee, clubName: buyer.name } } };
       });
@@ -4977,7 +5172,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       // world news, which read as their team not being a real part of the
       // story the way every AI club was. Included now, same as any move.
       if (!next.newsFeed) next.newsFeed = [];
-      next.newsFeed = [{ season: next.seasonNumber, headline: `🔁 ${buyer.name} sign ${p.name} (${p.position}, ${p.overall} OVR) from ${seller.name} for $${fee.toLocaleString()}.`, category: "transfer" }, ...next.newsFeed].slice(0, 40);
+      next.newsFeed = [{ season: next.seasonNumber, headline: `🔁 ${buyer.name} sign ${p.age}-year-old ${p.name} (${p.position}, ${p.overall} OVR) from ${seller.name} for $${fee.toLocaleString()}.`, category: "transfer" }, ...next.newsFeed].slice(0, 40);
       // Tracked so a pending board message ("sign a quality DEF") can be
       // checked against what actually happened this season at rollover —
       // reset to [] every season, see the season-complete setState below.
@@ -4985,14 +5180,45 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     });
   };
 
+  const handleUpgradeFacility = (facilityType) => {
+    mutateAndSave((next) => {
+      const t = next.tiers[next.userTierId];
+      const club = t.clubs.find((c) => c.id === next.userClubId);
+      startFacilityUpgrade(club, facilityType, next.userTierId, currentMatchday ?? 1);
+    });
+  };
+
+  const handleDowngradeFacility = (facilityType) => {
+    mutateAndSave((next) => {
+      const t = next.tiers[next.userTierId];
+      const club = t.clubs.find((c) => c.id === next.userClubId);
+      downgradeFacility(club, facilityType);
+    });
+  };
+
+  const handleSetTicketPrice = (price) => {
+    mutateAndSave((next) => {
+      const t = next.tiers[next.userTierId];
+      const club = t.clubs.find((c) => c.id === next.userClubId);
+      const [lo, hi] = TICKET_PRICE_RANGE[next.userTierId];
+      club.ticketPrice = clamp(price, lo, hi);
+    });
+  };
+
   const handleStartAcademy = () => {
     mutateAndSave((next) => {
       const t = next.tiers[next.userTierId];
       const club = t.clubs.find((c) => c.id === next.userClubId);
-      if (!club.academyEligible || club.academyStars > 0 || club.budget < ACADEMY_START_COST) return;
+      if (!club.academyEligible || club.academyStars > 0 || club.academyUpgrading || club.budget < ACADEMY_START_COST) return;
+      const used = club.facilityUpgradesThisSeason || 0;
+      if (used >= FACILITY_UPGRADES_PER_SEASON[next.userTierId]) return;
       club.budget -= ACADEMY_START_COST;
       club.academyInvested = ACADEMY_START_COST;
-      club.academyStars = 1;
+      // The very first academy investment is real construction, same as
+      // any other facility's first upgrade — it doesn't open its doors
+      // the instant the check clears.
+      club.academyUpgrading = { targetStars: 1, completesAtMatchday: (currentMatchday ?? 1) + FACILITY_FIRST_UPGRADE_MATCHDAYS };
+      club.facilityUpgradesThisSeason = used + 1;
     });
   };
 
@@ -5000,10 +5226,17 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     mutateAndSave((next) => {
       const t = next.tiers[next.userTierId];
       const club = t.clubs.find((c) => c.id === next.userClubId);
-      if (club.academyStars <= 0 || club.academyStars >= 5 || club.budget < ACADEMY_INVEST_INCREMENT) return;
+      if (club.academyStars <= 0 || club.academyStars >= 5 || club.academyUpgrading || club.budget < ACADEMY_INVEST_INCREMENT) return;
+      const used = club.facilityUpgradesThisSeason || 0;
+      if (used >= FACILITY_UPGRADES_PER_SEASON[next.userTierId]) return;
       club.budget -= ACADEMY_INVEST_INCREMENT;
-      club.academyInvested += ACADEMY_INVEST_INCREMENT;
-      club.academyStars = academyStarsForInvestment(club.academyInvested);
+      const nextInvested = club.academyInvested + ACADEMY_INVEST_INCREMENT;
+      // Later academy investments complete at season end, same as any
+      // other facility's non-first upgrade — academyInvested (and the
+      // star level it implies) only actually takes effect once that
+      // completes, not the instant you pay for it.
+      club.academyUpgrading = { targetStars: academyStarsForInvestment(nextInvested), completesAtSeasonEnd: true, pendingInvested: nextInvested };
+      club.facilityUpgradesThisSeason = used + 1;
     });
   };
 
@@ -5266,7 +5499,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
           const Icon = t.icon;
           const active = tab === t.id;
           const label = t.id === "opencup" && state.userTierId >= 4 ? "Competitions" : t.label;
-          const inboxCount = t.id === "inbox" ? computeInboxUrgentCount(userClub, currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1), tier, managerHistory?.seenOneTimeHints || [], state.difficulty, managerHistory?.clearedOneTimeHints || [], !!state.jobOffer) : 0;
+          const inboxCount = t.id === "inbox" ? computeInboxUrgentCount(userClub, currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1), tier, managerHistory?.seenOneTimeHints || [], state.difficulty, managerHistory?.clearedOneTimeHints || [], (state.jobOffers || []).length) : 0;
           return (
             <button
               key={t.id}
@@ -5303,6 +5536,8 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
           <DevelopmentTab
             club={userClub}
             budget={userClub.budget}
+            tierIdx={state.userTierId}
+            currentMatchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)}
             onStartAcademy={handleStartAcademy}
             onInvestAcademy={handleInvestAcademy}
             onSignYouth={handleSignYouth}
@@ -5311,6 +5546,9 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
             onHostTryouts={handleHostTryouts}
             onSignTryout={handleSignTryoutCandidate}
             onDismissTryouts={handleDismissTryouts}
+            onUpgradeFacility={handleUpgradeFacility}
+            onDowngradeFacility={handleDowngradeFacility}
+            onSetTicketPrice={handleSetTicketPrice}
           />
         )}
         {tab === "opencup" && (
@@ -5333,8 +5571,8 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
           )
         )}
         {tab === "news" && <NewsTab newsFeed={state.newsFeed} />}
-        {tab === "inbox" && <InboxTab club={userClub} matchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)} tier={tier} managerHistory={managerHistory} setManagerHistory={setManagerHistory} difficulty={state.difficulty} jobOffer={state.jobOffer} onAcceptJobOffer={onAcceptJobOffer} onDeclineJobOffer={onDeclineJobOffer} />}
-        {tab === "trophies" && <TrophyTab trophyLog={managerHistory.trophyLog} bestFinish={managerHistory.bestFinish} bestFinishUsa={managerHistory.bestFinishUsa} bestFinishEngland={managerHistory.bestFinishEngland} currentClubName={userClub.name} worldRecords={state.worldRecords} />}
+        {tab === "inbox" && <InboxTab club={userClub} matchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)} tier={tier} managerHistory={managerHistory} setManagerHistory={setManagerHistory} difficulty={state.difficulty} jobOffers={state.jobOffers} onAcceptJobOffer={onAcceptJobOffer} onDeclineJobOffer={onDeclineJobOffer} />}
+        {tab === "trophies" && <TrophyTab trophyLog={managerHistory.trophyLog} bestFinish={managerHistory.bestFinish} bestFinishUsa={managerHistory.bestFinishUsa} bestFinishEngland={managerHistory.bestFinishEngland} currentClubName={userClub.name} worldRecords={state.worldRecords} careerStats={managerHistory.careerStats} />}
       </div>
 
       {recap && <MatchdayRecap results={recap} userClubName={userClub.name} tier={tier} onClose={() => setRecap(null)} />}
@@ -5636,13 +5874,13 @@ function handlePickNewClubWithinWorld(existingState, tierId, clubId, setState, s
       });
     }
   }
-  // jobOffer is explicitly cleared here — whatever was pending belonged to
+  // jobOffers is explicitly cleared here — whatever was pending belonged to
   // the OLD club context and is stale the moment the user's club changes
-  // by any means. Left unset, a leftover offer object silently blocked
-  // every future job offer from ever generating again (generation only
-  // fires when jobOffer is null), which is exactly why offers could
-  // appear to just stop happening after a sacking or a voluntary move.
-  setState({ ...existingState, tiers, userTierId: tierId, userClubId: clubId, jobOffer: null });
+  // by any means. Left unset, a leftover offer would silently block that
+  // one specific club from ever offering again (generation skips clubs
+  // already in the pending list) — stale entries should never persist
+  // across a club change of any kind.
+  setState({ ...existingState, tiers, userTierId: tierId, userClubId: clubId, jobOffers: [] });
   setIsPickingNewClub(false);
   setIsJobSearch(false);
 }
@@ -5681,7 +5919,7 @@ function handlePickFromPreview(previewWorld, tierId, clubId, difficulty, setStat
     userSigningsThisSeason: [],
     worldTransferLog: [],
     worldRecords: { ...DEFAULT_WORLD_RECORDS },
-    jobOffer: null,
+    jobOffers: [],
     newsFeed: [],
   });
 }

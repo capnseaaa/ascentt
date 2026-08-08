@@ -1,5 +1,6 @@
 import { ENGLAND_ROSTERS, NATIONALITY_POOLS } from "../data/rosters";
-import { ACADEMY_STAR_THRESHOLDS, FULL_TIER_META, TIER_META, TIER_OVERALL_CEILING, WAGE_BANDS } from "./constants";
+import { ACADEMY_STAR_THRESHOLDS, FAN_HAPPINESS_DEFAULT, FULL_TIER_META, TIER_META, TIER_OVERALL_CEILING, WAGE_BANDS } from "./constants";
+import { defaultFacilities, trainingGrowthMultiplier } from "./facilities";
 import { marketValue } from "./finance";
 
 export function randomName(usedNames) {
@@ -82,9 +83,16 @@ export function retirementChance(age) {
   return table[age] ?? 1.0;
 }
 
-export function growPlayer(p, tierIdx) {
+export function growPlayer(p, tierIdx, trainingLevel) {
   const age = p.age + 1;
   const tf = tierFactor(tierIdx);
+  // Training facility level blends in ON TOP of the league-wide baseline —
+  // normalized so a club still at the baseline level (1, meaning it's
+  // never actually upgraded) produces EXACTLY the old tierFactor-only
+  // behavior, with real investment paying off only once it's actually
+  // been made.
+  const trainingBoost = trainingLevel != null ? (trainingGrowthMultiplier(trainingLevel) / trainingGrowthMultiplier(1)) : 1;
+  const effectiveFactor = tf * trainingBoost;
   let delta;
   if (p.overall < p.potential) {
     if (age <= 21) delta = randInt(2, 5);
@@ -94,7 +102,7 @@ export function growPlayer(p, tierIdx) {
     // Growth speed scales down for a weaker league (worse facilities, in
     // spirit) — only applied when actually growing, never to the decline
     // branch below, so aging out isn't slowed down by the same factor.
-    if (delta > 0) delta = Math.max(1, Math.round(delta * tf));
+    if (delta > 0) delta = Math.max(1, Math.round(delta * effectiveFactor));
     delta = Math.min(delta, p.potential - p.overall);
   } else {
     if (age >= 33) delta = randInt(-4, -1);
@@ -104,7 +112,7 @@ export function growPlayer(p, tierIdx) {
   // rare late breakout: potential itself can still climb, but only for
   // players young enough that a real breakout is plausible
   let potential = p.potential;
-  if (age <= 24 && Math.random() < 0.03 * tf) {
+  if (age <= 24 && Math.random() < 0.03 * effectiveFactor) {
     potential = Math.min(99, potential + randInt(5, 15));
   }
   const ceiling = tierIdx != null ? (TIER_OVERALL_CEILING[tierIdx] ?? 99) : 99;
@@ -283,6 +291,7 @@ export function makeClub({ name, squad, isReal, budget, academyEligible }) {
     academyEligible: !!academyEligible,
     academyStars: 0,
     academyInvested: 0,
+    academyUpgrading: null,
     youthPlayers: [],
     tryoutCandidates: [],
     boardHappiness: 60,
@@ -292,6 +301,10 @@ export function makeClub({ name, squad, isReal, budget, academyEligible }) {
     designatedPlayerIds: [],
     conference: null,
     disqualified: false,
+    facilities: defaultFacilities(),
+    facilityUpgradesThisSeason: 0,
+    fanHappiness: FAN_HAPPINESS_DEFAULT,
+    ticketPrice: null, // null = use the tier's default until the user (or an AI club's owner) sets one explicitly
   };
 }
 

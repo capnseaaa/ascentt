@@ -1,5 +1,6 @@
 import { choice, clamp, computeRealisticWage, computeReputation, growPlayer, growYouthProspect, makePlayer, randInt, retirementChance, uid } from "./playerGen";
 import { DEFAULT_WORLD_RECORDS, DIFFICULTY_MODES, ENGLAND_AUTO_PROMOTE_BY_TIER, ENGLAND_TIER_META, MID_SEASON_WINDOW_MATCHDAY, MIN_PRIZE_POOL, MIN_SQUAD_SIZE, PARACHUTE_PAYMENT_SCHEDULE, PROMOTE_RELEGATE_COUNT, TIER_META, TIER_OVERALL_CEILING } from "./constants";
+import { applySeasonFanHappiness, completeSeasonEndFacilityUpgrades, facilityMaintenanceCost, seasonMerchandiseRevenue, seasonSponsorshipRevenue } from "./facilities";
 import { runDraft } from "./worldBuild";
 import { computeTable, simulateMatch, squadStrength } from "./matchSim";
 import { applyDisqualificationCheck, checkTransferRecord, computeEventBonuses, decayPrizePools, distributePrizeMoney, dpRevenueForClub, effectivePayroll, ownershipDepositFor, runTransferWindow, trimSquad } from "./finance";
@@ -86,6 +87,10 @@ export function rolloverEnglandSeason(tiers, parachutePayments, difficulty, priz
   const tables = tiers.map(computeTable);
   const clubsById = {};
   tiers.forEach((t) => t.clubs.forEach((c) => (clubsById[c.id] = c)));
+  // "Top of the table for the first time this season" needs to reset each
+  // season, or it would only ever fire once per club across the whole
+  // career instead of once per genuine title race.
+  Object.values(clubsById).forEach((c) => { c.hasToppedTableThisSeason = false; });
   const newTierClubIds = tiers.map((t) => t.clubs.map((c) => c.id));
   const events = [];
 
@@ -135,12 +140,19 @@ export function rolloverEnglandSeason(tiers, parachutePayments, difficulty, priz
   tables.forEach((table, i) => table.forEach((row) => { tierSizeById[row.clubId] = tiers[i].clubs.length; }));
   let userPayroll = 0;
 
+  // Lookup sets for the season-end fan happiness update — trophy/
+  // promotion/relegation all move the needle in a way a single result
+  // never does.
+  const championIds = new Set(events.filter((e) => e.type === "champion").map((e) => e.clubId));
+  const promotedIds = new Set(events.filter((e) => e.type === "promoted").map((e) => e.clubId));
+  const relegatedIds = new Set(events.filter((e) => e.type === "relegated").map((e) => e.clubId));
+
   const newTiers = tiers.map((t, i) => {
     const clubs = newTierClubIds[i].map((id) => {
       const club = clubsById[id];
       const isUser = id === userClubId;
       let squad = club.squad.map((p) => {
-        const grown = growPlayer(p, t.id);
+        const grown = growPlayer(p, t.id, club.facilities?.training?.level);
         // contractYearsLeft was never being decremented here at all — this
         // is England's own rollover, separate from MLS's, and this step
         // had simply never been ported over. Real players' contracts never
@@ -205,12 +217,17 @@ export function rolloverEnglandSeason(tiers, parachutePayments, difficulty, priz
       // included the step, so an England club's prospects sat completely
       // frozen at whatever age/stats they were generated with, forever.
       const youthPlayers = (club.youthPlayers || []).map((p) => growYouthProspect(p, club.academyStars || 0));
+      completeSeasonEndFacilityUpgrades(club);
+      applySeasonFanHappiness(club, { wonTrophy: championIds.has(id), promoted: promotedIds.has(id), relegated: relegatedIds.has(id) });
+      const merch = seasonMerchandiseRevenue(t.id, club);
+      const sponsorship = seasonSponsorshipRevenue(t.id, club, finishPosition, finishTierSize);
+      const maintenance = facilityMaintenanceCost(club, t.id);
       return {
         ...club,
         squad,
         youthPlayers,
         reputation,
-        budget: club.budget + prize + ownershipDepositFor(t.id, difficulty, club, t.clubs) - payroll,
+        budget: club.budget + prize + ownershipDepositFor(t.id, difficulty, club, t.clubs) + merch + sponsorship - maintenance - payroll,
       };
     });
     return { id: t.id, name: t.name, clubs, fixtures: generateDoubleRoundRobin(clubs.map((c) => c.id)) };
@@ -380,9 +397,15 @@ export function computeSeasonPlayoffs(tiers, userClubId, difficulty) {
     const relegated = upperTable.slice(-PROMOTE_RELEGATE_COUNT).map((r) => r.clubId);
     let promoted;
     if (i === 0) {
-      // MLS <-> USL Championship: no real-world promotion into MLS, so this
-      // boundary stays simple table-based movement, same as always.
-      promoted = lowerTable.slice(0, PROMOTE_RELEGATE_COUNT).map((r) => r.clubId);
+      // MLS <-> USL Championship: real-world MLS has no promotion, but
+      // running a full "USL Cup" playoff bracket that carries zero
+      // promotion stakes reads as a bug, not realism — winning the whole
+      // thing and being told "no promotion this time" right after is a
+      // real anticlimax. Deliberate deviation: same top-2-auto-promote +
+      // playoff-winner-promotes structure as every other boundary.
+      const playoff = runPromotionPlayoff(lowerTable, tiers[i + 1].clubs, playoffMatchday);
+      promoted = [...playoff.autoPromoted, playoff.playoffPromoted];
+      promotionPlayoffs.push({ tierIdx: i + 1, ...playoff });
     } else {
       // Top 2 promote automatically; the last spot is decided by a 4-team
       // playoff among 3rd-6th place, like most real pro/rel leagues do it.
@@ -431,6 +454,10 @@ export function rolloverSeason(tiers, userClubId, prizePools, difficulty, precom
   const newTierClubIds = tiers.map((t) => t.clubs.map((c) => c.id));
   const clubsById = {};
   tiers.forEach((t) => t.clubs.forEach((c) => (clubsById[c.id] = c)));
+  // "Top of the table for the first time this season" needs to reset each
+  // season, or it would only ever fire once per club across the whole
+  // career instead of once per genuine title race.
+  Object.values(clubsById).forEach((c) => { c.hasToppedTableThisSeason = false; });
 
   const events = []; // {clubName, from, to, type: 'promoted'|'relegated'|'champion'}
 
@@ -446,6 +473,13 @@ export function rolloverSeason(tiers, userClubId, prizePools, difficulty, precom
     relegated.forEach((id) => events.push({ clubId: id, clubName: clubsById[id].name, from: i, to: i + 1, type: "relegated" }));
     promoted.forEach((id) => events.push({ clubId: id, clubName: clubsById[id].name, from: i + 1, to: i, type: "promoted" }));
   });
+
+  // Lookup sets for the season-end fan happiness update — trophy/
+  // promotion/relegation all move the needle in a way a single result
+  // never does. (Same as England's rollover — kept identical on purpose.)
+  const championIds = new Set(events.filter((e) => e.type === "champion").map((e) => e.clubId));
+  const promotedIds = new Set(events.filter((e) => e.type === "promoted").map((e) => e.clubId));
+  const relegatedIds = new Set(events.filter((e) => e.type === "relegated").map((e) => e.clubId));
 
   // A player's wage should only ever move when their contract actually
   // renews (an explicit action, whether the user's own renewal or the
@@ -495,7 +529,7 @@ export function rolloverSeason(tiers, userClubId, prizePools, difficulty, precom
       const baseRating = TIER_META[i].baseRating;
       const isUser = id === userClubId;
       let squad = club.squad.map((p) => {
-        const grown = growPlayer(p, t.id);
+        const grown = growPlayer(p, t.id, club.facilities?.training?.level);
         return {
           ...grown,
           contractYearsLeft: grown.contractYearsLeft - 1,
@@ -584,12 +618,17 @@ export function rolloverSeason(tiers, userClubId, prizePools, difficulty, precom
       // rest of the wage/prize economics.
       const dpRevenue = DIFFICULTY_MODES[difficulty]?.wagesDeducted ? dpRevenueForClub(club) : 0;
       if (id === userClubId) userDpRevenue = dpRevenue;
+      completeSeasonEndFacilityUpgrades(club);
+      applySeasonFanHappiness(club, { wonTrophy: championIds.has(id), promoted: promotedIds.has(id), relegated: relegatedIds.has(id) });
+      const merch = seasonMerchandiseRevenue(i, club);
+      const sponsorship = seasonSponsorshipRevenue(i, club, finishPosition, finishTierSize);
+      const maintenance = facilityMaintenanceCost(club, i);
 
       const rolledClub = {
         ...club,
         squad,
         reputation,
-        budget: club.budget + prize + ownershipDepositFor(i, difficulty, club, t.clubs) + dpRevenue - payroll,
+        budget: club.budget + prize + ownershipDepositFor(i, difficulty, club, t.clubs) + dpRevenue + merch + sponsorship - maintenance - payroll,
         academyEligible: !!club.academyEligible || i <= 1,
         youthPlayers,
         tryoutCandidates: [], // last window's tryout candidates don't carry over — sign or lose them
@@ -688,7 +727,7 @@ export function maybeTriggerMidWindow(next, justPlayedMatchday) {
     if (!next.worldRecords) next.worldRecords = { ...DEFAULT_WORLD_RECORDS };
     if (!next.newsFeed) next.newsFeed = [];
     result.transferLog.forEach((t) => {
-      next.newsFeed = [{ season: next.seasonNumber, headline: `🔁 ${t.buyerName} sign ${t.playerName} (${t.position}, ${t.overall} OVR) from ${t.sellerName} for $${t.fee.toLocaleString()}.`, category: "transfer" }, ...next.newsFeed].slice(0, 40);
+      next.newsFeed = [{ season: next.seasonNumber, headline: `🔁 ${t.buyerName} sign ${t.age}-year-old ${t.playerName} (${t.position}, ${t.overall} OVR) from ${t.sellerName} for $${t.fee.toLocaleString()}.`, category: "transfer" }, ...next.newsFeed].slice(0, 40);
       checkTransferRecord(next, t.playerName, t.fee, t.sellerName, t.buyerName, next.seasonNumber);
     });
     next.worldTransferLog = [...(next.worldTransferLog || []), ...result.transferLog.map((t) => ({ ...t, season: next.seasonNumber }))].slice(-150);

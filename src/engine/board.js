@@ -126,12 +126,12 @@ export function boardHappinessDelta(objective, finishPosition, relegated, promot
 }
 
 export function jobOfferChanceFor(reputation) {
-  // Bumped up (was 4%-18%) — with only one offer ever allowed pending at a
-  // time before, a modest-reputation manager could go many seasons without
-  // ever seeing one. Now that several can be pending at once, a higher
-  // per-rollover roll means the inbox actually reflects "a manager doing
-  // reasonably well attracts real interest," not "a rare lottery ticket."
-  return clamp(0.08 + (reputation / 99) * 0.17, 0.08, 0.25);
+  // Bumped again (was 8%-25%) after repeated feedback that offers still
+  // felt far too rare over a long career (one report: 2 total offers
+  // across 27 seasons). With up to 3 pending at once and each one needing
+  // an explicit Accept/Decline, there's no risk of these feeling spammy —
+  // the inbox naturally self-limits.
+  return clamp(0.15 + (reputation / 99) * 0.2, 0.15, 0.35);
 }
 
 export function generateJobOffer(tiers, userClubId, userTierId, currentClubReputation, excludeClubIds = []) {
@@ -246,10 +246,10 @@ export function computeHints(club, matchday, seenOneTimeHints, recentForm, tier,
   return hints;
 }
 
-export function computeInboxUrgentCount(club, matchday, tier, seenOneTimeHints, difficulty, clearedOneTimeHints, hasJobOffer) {
+export function computeInboxUrgentCount(club, matchday, tier, seenOneTimeHints, difficulty, clearedOneTimeHints, jobOfferCount) {
   const recentForm = tier ? (computeTable(tier).find((r) => r.clubId === club.id)?.form.slice(-5) ?? []) : [];
   const hints = computeHints(club, matchday, seenOneTimeHints, recentForm, tier, clearedOneTimeHints);
   const hasBoardMessage = DIFFICULTY_MODES[difficulty]?.boardMessages && club.boardMessage;
   const unreadHints = hints.filter((h) => !h.read).length;
-  return unreadHints + (hasBoardMessage ? 1 : 0) + (hasJobOffer ? 1 : 0);
+  return unreadHints + (hasBoardMessage ? 1 : 0) + (jobOfferCount || 0);
 }

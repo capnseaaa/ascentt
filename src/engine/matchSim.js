@@ -1,5 +1,6 @@
 import { choice, clamp, randInt } from "./playerGen";
 import { ATTACK_MOD, BASE_GOAL_RATE, DEFAULT_WORLD_RECORDS, DEFENSE_MOD, DIFFICULTY_MODES, DP_XI_AURA_CAP, DP_XI_AURA_PER_PLAYER, FITNESS_DRAIN_MAX, FITNESS_DRAIN_MIN, FORMATION_SLOTS, FULL_TIER_META, HOME_ADVANTAGE, INJURY_BASE_RATE, MAX_SQUAD_SIZE, MORALE_DELTA, PRESS_MOD, RED_CARD_CHANCE, RIVALRY_PAIRS, RIVALRY_REPUTATION_BUMP, RIVALRY_REVENUE_BONUS, SCORER_WEIGHTS, TIER_OVERALL_CEILING, UNHAPPY_BENCH_STREAK_THRESHOLD, UNHAPPY_MORALE_THRESHOLD, WIN_BONUS, YELLOW_CARD_BASE_RATE } from "./constants";
+import { applyMatchFanHappiness, medicalInjuryDurationMultiplier, medicalInjuryFrequencyMultiplier, progressFacilityConstruction, ticketRevenueForMatch } from "./facilities";
 import { applyDisqualificationCheck, marketValue } from "./finance";
 
 export function samplePoisson(lambda) {
@@ -258,7 +259,7 @@ export function recordAppearances(xi, matchday) {
   });
 }
 
-export function applyCardsAndInjuries(xi, clubName, matchday, events, difficulty) {
+export function applyCardsAndInjuries(xi, clubName, matchday, events, difficulty, medicalLevel) {
   const sentOff = new Set();
   const carded = new Set();
   const eligible = () => xi.filter((p) => !sentOff.has(p.id));
@@ -309,13 +310,14 @@ export function applyCardsAndInjuries(xi, clubName, matchday, events, difficulty
   // mode dials the overall rate down since it's meant to be the gentler,
   // learn-the-game difficulty — the feature exists everywhere, but its
   // bite depends on which mode you're in.
-  const injuryMultiplier = DIFFICULTY_MODES[difficulty]?.injuryMultiplier ?? 1.0;
+  const injuryMultiplier = (DIFFICULTY_MODES[difficulty]?.injuryMultiplier ?? 1.0) * medicalInjuryFrequencyMultiplier(medicalLevel);
+  const durationMultiplier = medicalInjuryDurationMultiplier(medicalLevel);
   xi.forEach((p) => {
     if (sentOff.has(p.id)) return; // already off — no fresh injury on top of a red card
     const fitnessRisk = p.fitness < 50 ? ((50 - p.fitness) / 50) * 0.05 : 0;
     const chance = (INJURY_BASE_RATE / xi.length + fitnessRisk) * injuryMultiplier;
     if (Math.random() < chance) {
-      const duration = choice([1, 1, 2, 2, 3, 5]);
+      const duration = Math.max(1, Math.round(choice([1, 1, 2, 2, 3, 5]) * durationMultiplier));
       p.injuredUntilMatchday = matchday + duration;
       events.push({ type: "injury", club: clubName, player: p.name, outFor: duration });
     }
@@ -384,8 +386,8 @@ export function simulateMatch(fixture, home, away, matchday, difficulty, tierIdx
   }
   events.sort((a, b) => (a.type === "goal" ? a.minute : 999) - (b.type === "goal" ? b.minute : 999));
 
-  applyCardsAndInjuries(homeXI, home.name, matchday, events, difficulty);
-  applyCardsAndInjuries(awayXI, away.name, matchday, events, difficulty);
+  applyCardsAndInjuries(homeXI, home.name, matchday, events, difficulty, home.facilities?.medical?.level);
+  applyCardsAndInjuries(awayXI, away.name, matchday, events, difficulty, away.facilities?.medical?.level);
 
   let homeResult, awayResult;
   if (homeGoals > awayGoals) { homeResult = "win"; awayResult = "loss"; }
@@ -491,6 +493,55 @@ export function simulateMatchdayAcrossTiers(next, currentMatchday) {
         }
       }
       if (t.id === next.userTierId) matches.push(result);
+
+      // Streaks — tracked persistently on the club object (not just the
+      // last-4 `form` array used elsewhere) so a genuine long unbeaten or
+      // winless run can be recognized and headlined, same as real football
+      // media does with "unbeaten in 12" type stories. Only fires at
+      // specific milestone lengths, not every match once a streak is
+      // active, so this doesn't spam the feed once a run gets going.
+      const streakMilestones = [6, 8, 10, 12, 15, 20, 25, 30];
+      const updateStreak = (club, outcome) => {
+        const s = club.streaks || { win: 0, unbeaten: 0, winless: 0, loss: 0 };
+        if (outcome === "win") { s.win++; s.unbeaten++; s.winless = 0; s.loss = 0; }
+        else if (outcome === "draw") { s.win = 0; s.unbeaten++; s.winless++; s.loss = 0; }
+        else { s.win = 0; s.unbeaten = 0; s.winless++; s.loss++; }
+        club.streaks = s;
+        if (!next.newsFeed) next.newsFeed = [];
+        if (streakMilestones.includes(s.win)) {
+          next.newsFeed = [{ season: next.seasonNumber, headline: `🔥 ${club.name} have won ${s.win} in a row.`, category: "streak" }, ...next.newsFeed].slice(0, 40);
+        } else if (streakMilestones.includes(s.loss)) {
+          next.newsFeed = [{ season: next.seasonNumber, headline: `📉 ${club.name} have lost ${s.loss} in a row.`, category: "streak" }, ...next.newsFeed].slice(0, 40);
+        } else if (streakMilestones.includes(s.unbeaten) && s.win < s.unbeaten) {
+          next.newsFeed = [{ season: next.seasonNumber, headline: `🛡️ ${club.name} are unbeaten in ${s.unbeaten}.`, category: "streak" }, ...next.newsFeed].slice(0, 40);
+        } else if (streakMilestones.includes(s.winless) && s.loss < s.winless) {
+          next.newsFeed = [{ season: next.seasonNumber, headline: `⚠️ ${club.name} are winless in ${s.winless}.`, category: "streak" }, ...next.newsFeed].slice(0, 40);
+        }
+      };
+      if (!result.disqualifiedMatch) {
+        updateStreak(home, fx.homeScore > fx.awayScore ? "win" : fx.homeScore < fx.awayScore ? "loss" : "draw");
+        updateStreak(away, fx.awayScore > fx.homeScore ? "win" : fx.awayScore < fx.homeScore ? "loss" : "draw");
+
+        // Fan happiness — real per-match movement (win/draw/loss), plus a
+        // small pull based on whether the club is over- or
+        // under-performing where its reputation says it should sit in
+        // the table. Ticket revenue is home-games-only, straightforward
+        // capacity × attendance-rate × price, credited the moment the
+        // match is played rather than batched at rollover — this is the
+        // one piece of the financial system that's genuinely per-match,
+        // not seasonal.
+        const table = computeTable(t);
+        const repRanked = [...t.clubs].sort((a, b) => b.reputation - a.reputation);
+        const checkOverperform = (club) => {
+          const tableRank = table.findIndex((r) => r.clubId === club.id);
+          const repRank = repRanked.findIndex((c) => c.id === club.id);
+          return tableRank !== -1 && repRank !== -1 && tableRank <= repRank;
+        };
+        applyMatchFanHappiness(home, fx.homeScore > fx.awayScore ? "win" : fx.homeScore < fx.awayScore ? "loss" : "draw", checkOverperform(home));
+        applyMatchFanHappiness(away, fx.awayScore > fx.homeScore ? "win" : fx.awayScore < fx.homeScore ? "loss" : "draw", checkOverperform(away));
+        const { revenue } = ticketRevenueForMatch(home, t.id);
+        home.budget += revenue;
+      }
     });
     // light responsiveness pass: an already-listed player might get snapped up between windows.
     // The previous bump (8% → 14/22%) fixed slow user sales but had an
@@ -541,6 +592,7 @@ export function simulateMatchdayAcrossTiers(next, currentMatchday) {
       const { club: updated, notice } = applyDisqualificationCheck(club, t.id);
       if (updated !== club) t.clubs[idx] = updated;
       if (notice && club.id === next.userClubId) disqualificationNotice = notice;
+      progressFacilityConstruction(club, currentMatchday);
     });
 
     // Relegation drama — England's three relegation-battle tiers only (PL,
@@ -569,6 +621,37 @@ export function simulateMatchdayAcrossTiers(next, currentMatchday) {
             const clubName = t.clubs.find((c) => c.id === safe.clubId)?.name;
             if (clubName) next.newsFeed = [{ season: next.seasonNumber, headline: `✅ ${clubName} have mathematically secured their ${FULL_TIER_META[t.id].name} status for next season.`, category: "relegation" }, ...next.newsFeed].slice(0, 40);
           }
+        }
+      }
+
+      // Title-race drama — same "5 games left" checkpoint, mirrored at the
+      // top of the table instead of the bottom: has the leader already
+      // clinched, mathematically, with games still to spare?
+      {
+        const table = computeTable(t);
+        if (remainingMatchdays === 5 && table.length > 1) {
+          const leader = table[0], second = table[1];
+          if (leader.points > second.points + remainingMatchdays * 3) {
+            const clubName = t.clubs.find((c) => c.id === leader.clubId)?.name;
+            if (!next.newsFeed) next.newsFeed = [];
+            if (clubName) next.newsFeed = [{ season: next.seasonNumber, headline: `🏆 ${clubName} have mathematically won the ${FULL_TIER_META[t.id].name} title with 5 games still to play.`, category: "title" }, ...next.newsFeed].slice(0, 40);
+          }
+        }
+      }
+    }
+
+    // "Top of the table for the first time this season" — a real moment in
+    // a real title race, tracked with a simple per-season flag on the club
+    // object (reset by rolloverSeason/rolloverEnglandSeason at kickoff).
+    {
+      const table = computeTable(t);
+      const leader = table[0];
+      if (leader) {
+        const leaderClub = t.clubs.find((c) => c.id === leader.clubId);
+        if (leaderClub && !leaderClub.hasToppedTableThisSeason) {
+          leaderClub.hasToppedTableThisSeason = true;
+          if (!next.newsFeed) next.newsFeed = [];
+          next.newsFeed = [{ season: next.seasonNumber, headline: `📈 ${leaderClub.name} go top of the ${FULL_TIER_META[t.id].name} for the first time this season.`, category: "table" }, ...next.newsFeed].slice(0, 40);
         }
       }
     }
