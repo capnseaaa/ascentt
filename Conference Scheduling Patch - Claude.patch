@@ -1,0 +1,798 @@
+From 8b92181a61a06f1467dfd2385d984d620acf1c6b Mon Sep 17 00:00:00 2001
+From: "Engineering Agent (Chat 2)" <agent@ascentt.dev>
+Date: Fri, 4 Sep 2026 13:43:11 +0000
+Subject: [PATCH] Conference scheduling, global season completion, background
+ cups (for review, not merged)
+
+Implements three engine changes, staged for independent review by Chat 1
+(lead review) and Chat 3 (Git/QA review). NOT merged into main.
+
+1. Global season completion: getCurrentMatchday now scans all 8 league
+   tiers instead of only the user's own tier, fixing silent fixture
+   truncation. isWorldSeasonComplete added, requiring all 3 domestic cups
+   done as well before a season can roll over.
+
+2. MLS / USL Championship conference-based scheduling, replacing the
+   generic round-robin previously used for all 4 USA tiers:
+   - MLS: 34 games per club, exactly 17 home / 17 away (provably exact
+     via a circulant construction, not an approximation), 28 intra-
+     conference + 6 cross-conference games, 15 East / 15 West.
+   - USLC: 30 games per club, real-world-matching 7-clubs-at-6 /
+     6-clubs-at-5 cross-conference split for the 13-club East side, all
+     12 West clubs at 6 cross games via 2 extra intra-conference games
+     each.
+   - USL1 restored to double round-robin (was incorrectly downgraded to
+     single-leg every season after season 1). USL2 left unchanged as an
+     intentional simplification.
+   - Persistent geoConference field (permanent geographic identity,
+     assigned once, survives promotion/relegation through the whole USA
+     pyramid) kept separate from seasonal `conference` (this season's
+     actual placement).
+   - Tier-scoped border-market lists (MLS, USLC, USL1, USL2 -- each
+     independent) used only as a last-resort, deterministic tie-break
+     when conference-size constraints force a temporary crossover.
+
+3. Background cups: US Open Cup, FA Cup, and EFL Cup now all run every
+   season regardless of which pyramid the user is playing in (previously
+   the non-user side's cup never progressed at all). UI recap popups
+   remain scoped to the user's own side.
+
+Files changed: src/App.jsx, src/data/rosters.js, src/engine/constants.js,
+src/engine/cups.js, src/engine/leagueSim.js, src/engine/worldBuild.js,
+src/engine/scheduling.js (new).
+
+Tested via a headless Node harness driving the real engine modules
+directly: season/cup lifecycle across all 8 starting tiers, a 15-season
+pure-AI regression, exact schedule-shape verification, 8 geographic-
+identity scenarios, and cross-tier border-list isolation. This has NOT
+been manually/UI tested and is not being represented as production-ready.
+---
+ src/App.jsx              |  29 +++-
+ src/data/rosters.js      |  29 ++++
+ src/engine/constants.js  |  22 +++
+ src/engine/cups.js       |   9 +-
+ src/engine/leagueSim.js  | 123 +++++++++++++-
+ src/engine/scheduling.js | 349 +++++++++++++++++++++++++++++++++++++++
+ src/engine/worldBuild.js |  20 ++-
+ 7 files changed, 564 insertions(+), 17 deletions(-)
+ create mode 100644 src/engine/scheduling.js
+
+diff --git a/src/App.jsx b/src/App.jsx
+index d8d9aed..fee1235 100644
+--- a/src/App.jsx
++++ b/src/App.jsx
+@@ -5,7 +5,7 @@ import { ACADEMY_INVEST_INCREMENT, ACADEMY_MAX_PROSPECTS, ACADEMY_PROMOTE_MIN_AG
+ import { canStartFacilityUpgrade, defaultTicketPrice, downgradeFacility, facilityMaintenanceCost, facilityMaxUpgradeLevel, facilityUpgradeCost, scoutedPotentialRange, startFacilityUpgrade, stadiumCapacity, ticketRevenueForMatch } from "./engine/facilities";
+ import { buildEnglandWorld, buildFullWorld } from "./engine/worldBuild";
+ import { boardHappinessDelta, boardMessageNoticeText, checkBoardMessageCompliance, computeHints, computeInboxUrgentCount, generateBoardMessage, generateBoardObjective, generateJobOffer, jobOfferChanceFor } from "./engine/board";
+-import { computeSeasonAwards, computeSeasonPlayoffs, computeUserPlayoffQualification, generateDoubleRoundRobin, getCurrentMatchday, maybeTriggerMidWindow, resolveKnockoutMatch, rolloverEnglandSeason, rolloverSeason } from "./engine/leagueSim";
++import { computeSeasonAwards, computeSeasonPlayoffs, computeUserPlayoffQualification, generateDoubleRoundRobin, generateMlsSeasonSchedule, generateUslcSeasonSchedule, getCurrentMatchday, isWorldSeasonComplete, maybeTriggerMidWindow, resolveKnockoutMatch, rolloverEnglandSeason, rolloverSeason } from "./engine/leagueSim";
+ import { clubLineRatings, computeMatchOutcome, computeTable, isAvailable, isRivalryMatch, simulateMatch, simulateMatchdayAcrossTiers, startingXI, xiLineRatings } from "./engine/matchSim";
+ import { checkTransferRecord, computeRecommendationScore, effectivePayroll, isFinanciallyRisky, marketValue, ownershipDepositFor, recommendationReason, renewalOutcome, runAiToAiTransfers } from "./engine/finance";
+ import { cupRoundLabel, drawNextEnglandCupRound, drawNextUsOpenCupRound, isCupCheckpointPending, pendingEnglandCupCheckpoint, previewStageLabel, resolveCupRoundInPlace, resolveEnglandCupRoundInPlace } from "./engine/cups";
+@@ -4082,8 +4082,18 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
+ 
+   const tier = state.tiers[state.userTierId];
+   const userClub = tier.clubs.find((c) => c.id === state.userClubId);
+-  const nextMatchdayFixtures = tier.fixtures.filter((f) => !f.played);
+-  const currentMatchday = nextMatchdayFixtures.length > 0 ? nextMatchdayFixtures[0].matchday : null;
++  // currentMatchday drives simulation progress everywhere (injury/suspension
++  // timers, facility construction, transfer windows, match simulation
++  // itself) and must reflect the WORLD's remaining matchdays across all 8
++  // tiers, not just the user's own tier — otherwise fixtures in other tiers
++  // get silently truncated the moment the user's own tier finishes first.
++  // See getCurrentMatchday in engine/leagueSim.js.
++  const currentMatchday = getCurrentMatchday(state);
++  // Purely cosmetic: matchday progress within the user's own tier only,
++  // used for the "Matchday N" label so it stays meaningful to the user even
++  // while the world clock may still be running for other tiers/cups.
++  const userTierNextFixtures = tier.fixtures.filter((f) => !f.played);
++  const userTierDisplayMatchday = userTierNextFixtures.length > 0 ? userTierNextFixtures[0].matchday : null;
+ 
+   // Career-long match record (games/wins/draws/losses) and which clubs the
+   // manager has actually managed — feeds the end-of-career stats summary.
+@@ -4115,7 +4125,10 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
+     return { games: 1, wins: outcome === "win" ? 1 : 0, draws: outcome === "draw" ? 1 : 0, losses: outcome === "loss" ? 1 : 0 };
+   };
+   const mergeDelta = (a, b) => ({ games: a.games + b.games, wins: a.wins + b.wins, draws: a.draws + b.draws, losses: a.losses + b.losses });
+-  const seasonComplete = currentMatchday === null;
++  // The world can only move to the next season once every league tier AND
++  // every domestic cup has genuinely finished — not just whichever
++  // competition the user happens to be following. See isWorldSeasonComplete.
++  const seasonComplete = isWorldSeasonComplete(state);
+ 
+   // Board expectations were previously only visible buried in the Squad tab
+   // — surface them explicitly the moment a new job starts under board
+@@ -5357,7 +5370,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
+         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+           <div style={{ textAlign: "right", fontSize: 12, opacity: 0.85 }}>
+             Season {state.seasonNumber}<br />
+-            {seasonComplete ? "Season complete" : `Matchday ${currentMatchday}`}
++            {seasonComplete ? "Season complete" : userTierDisplayMatchday !== null ? `Matchday ${userTierDisplayMatchday}` : "Finishing other competitions…"}
+           </div>
+           {seasonComplete ? (() => {
+             const isEnglandUser = state.userTierId >= 4;
+@@ -5846,7 +5859,11 @@ export default function App() {
+       return <LeagueTutorialScreen country={pendingCountry} difficulty={pendingDifficulty} onContinue={() => setPendingLeagueTutorialSeen(true)} onBack={() => setPendingCountry(null)} />;
+     }
+     const previewWorld = buildFullWorld();
+-    previewWorld.forEach((t) => { t.fixtures = generateDoubleRoundRobin(t.clubs.map((c) => c.id)); });
++    previewWorld.forEach((t) => {
++      if (t.id === 0) t.fixtures = generateMlsSeasonSchedule(t.clubs);
++      else if (t.id === 1) t.fixtures = generateUslcSeasonSchedule(t.clubs);
++      else t.fixtures = generateDoubleRoundRobin(t.clubs.map((c) => c.id));
++    });
+     return <ClubSelectScreen world={previewWorld} defaultCountry={pendingCountry} saveWasReset={saveWasReset} difficulty={pendingDifficulty} managerReputation={managerHistory.managerReputation} managerHistory={managerHistory} isJobSearch={isJobSearch} onBack={() => setPendingCountry(null)} onResetToNewSave={handleNewGame} onPick={(tierId, clubId) => {
+       // re-derive the same picked club/tier from a freshly built world containing it
+       handlePickFromPreview(previewWorld, tierId, clubId, pendingDifficulty, setState);
+diff --git a/src/data/rosters.js b/src/data/rosters.js
+index d079115..21f465a 100644
+--- a/src/data/rosters.js
++++ b/src/data/rosters.js
+@@ -102,3 +102,32 @@ export const MLS_EAST_CLUBS = new Set([
+   "D.C. United", "FC Cincinnati", "Inter Miami CF", "Nashville SC", "New England Revolution",
+   "New York City FC", "New York Red Bulls", "Orlando City SC", "Philadelphia Union", "Toronto FC",
+ ]);
++
++// The remaining 15 real 2026 MLS clubs (Western Conference) — encoded
++// explicitly, not derived as "anything not in MLS_EAST_CLUBS", because that
++// would incorrectly also claim every fictional/foreign club as "real West"
++// once conference-preservation logic needs to distinguish "known real club
++// with a fixed identity" from "no known real identity, treat as flexible".
++export const MLS_WEST_CLUBS = new Set([
++  "Austin FC", "Colorado Rapids", "FC Dallas", "Houston Dynamo FC", "LA Galaxy",
++  "Los Angeles FC", "Minnesota United FC", "Portland Timbers", "Real Salt Lake", "San Diego FC",
++  "San Jose Earthquakes", "Seattle Sounders FC", "Sporting Kansas City", "St. Louis City SC", "Vancouver Whitecaps FC",
++]);
++
++// Real 2026 USL Championship Eastern Conference alignment (13 clubs) —
++// matches USL_CHAMPIONSHIP_TEAMS' own array order above (first 13 entries).
++export const USLC_EAST_CLUBS = new Set([
++  "Birmingham Legion FC", "Brooklyn FC", "Charleston Battery", "Detroit City FC",
++  "Hartford Athletic", "Indy Eleven", "Loudoun United FC", "Louisville City FC",
++  "Miami FC", "Pittsburgh Riverhounds SC", "Rhode Island FC", "Sporting Club Jacksonville",
++  "Tampa Bay Rowdies",
++]);
++
++// Real 2026 USL Championship Western Conference alignment (12 clubs) —
++// matches USL_CHAMPIONSHIP_TEAMS' own array order above (last 12 entries).
++// Encoded explicitly for the same reason as MLS_WEST_CLUBS above.
++export const USLC_WEST_CLUBS = new Set([
++  "Colorado Springs Switchbacks FC", "El Paso Locomotive FC", "Las Vegas Lights FC", "Lexington SC",
++  "Monterey Bay FC", "New Mexico United", "Oakland Roots SC", "Orange County SC",
++  "Phoenix Rising FC", "Sacramento Republic FC", "San Antonio FC", "FC Tulsa",
++]);
+diff --git a/src/engine/constants.js b/src/engine/constants.js
+index 62be289..d049e03 100644
+--- a/src/engine/constants.js
++++ b/src/engine/constants.js
+@@ -51,6 +51,28 @@ export const DRAFT_PHASES = [
+ 
+ export const PROMOTE_RELEGATE_COUNT = 3;
+ 
++// ===================== CONFERENCE-BASED SCHEDULING (MLS / USLC) =====================
++// Sourced from official 2026 competition-format announcements (MLSSoccer.com,
++// USL Championship). The exact real-world rule for WHICH specific clubs face
++// which cross-conference opponents is not publicly documented in either
++// league — only the resulting totals are. See scheduling.js for the engine's
++// deterministic approximation of that undocumented selection.
++//
++// MLS_TOTAL_GAMES is deliberately a standalone, named constant (not derived
++// or hardcoded inline anywhere) specifically so a future calendar-data update
++// (e.g. the 2027-28 season, whose exact game count has conflicting public
++// reports as of this writing) can override it without any engine change.
++export const MLS_CONFERENCE_SIZE_TARGET = 15; // 15 East / 15 West, 30 clubs total
++export const MLS_TOTAL_GAMES = 34;
++export const MLS_CROSS_CONFERENCE_CAP = 6;
++
++// USLC's East/West split is deliberately uneven in the real league (13/12
++// for 2026) rather than a fixed target — resolveConferenceMembership treats
++// USLC_EAST_SIZE_TARGET as the size to balance toward, not a hard rule.
++export const USLC_EAST_SIZE_TARGET = 13;
++export const USLC_TOTAL_GAMES = 30;
++export const USLC_CROSS_CONFERENCE_CAP = 6;
++
+ export const TARGET_TIER_SIZE = 20;
+ 
+ export const ENGLAND_AUTO_PROMOTE_BY_TIER = { 5: 2, 6: 2, 7: 3 };
+diff --git a/src/engine/cups.js b/src/engine/cups.js
+index f97d257..ea46d5f 100644
+--- a/src/engine/cups.js
++++ b/src/engine/cups.js
+@@ -126,7 +126,11 @@ export function playNextEnglandCupRound(cupKey, progress, englandTiers, preDrawn
+ }
+ 
+ export function isCupCheckpointPending(stateLike, matchdayNum) {
+-  if (stateLike.userTierId >= 4) return false; // US Open Cup only exists for the USA pyramid
++  // Both countries' domestic cups now run as persistent world competitions
++  // every season, regardless of which pyramid the user is actively playing
++  // in (product decision — the non-user side's cup used to never progress
++  // at all, confirmed as a bug). The UI recap popup, not this function,
++  // is what stays scoped to the user's own side — see App.jsx.
+   const idx = US_OPEN_CUP_ROUND_MATCHDAYS.indexOf(matchdayNum);
+   if (idx === -1) return false;
+   if (stateLike.usOpenCup?.done) return false;
+@@ -302,7 +306,8 @@ export function resolveEnglandCupRoundInPlace(next, cupKey) {
+ }
+ 
+ export function pendingEnglandCupCheckpoint(stateLike, matchdayNum) {
+-  if (stateLike.userTierId < 4) return null;
++  // See isCupCheckpointPending above — same product decision applies
++  // symmetrically to the FA Cup / EFL Cup.
+   const faIdx = FA_CUP_ROUND_MATCHDAYS.indexOf(matchdayNum);
+   if (faIdx !== -1 && !stateLike.faCup?.done && (stateLike.faCup?.rounds?.length ?? 0) === faIdx) return "fa";
+   const eflIdx = EFL_CUP_ROUND_MATCHDAYS.indexOf(matchdayNum);
+diff --git a/src/engine/leagueSim.js b/src/engine/leagueSim.js
+index b5e3a08..9d15f0c 100644
+--- a/src/engine/leagueSim.js
++++ b/src/engine/leagueSim.js
+@@ -1,10 +1,11 @@
+ import { choice, clamp, computeRealisticWage, computeReputation, growPlayer, growYouthProspect, makePlayer, randInt, retirementChance, uid } from "./playerGen";
+-import { DEFAULT_WORLD_RECORDS, DIFFICULTY_MODES, ENGLAND_AUTO_PROMOTE_BY_TIER, ENGLAND_TIER_META, MID_SEASON_WINDOW_MATCHDAY, MIN_PRIZE_POOL, MIN_SQUAD_SIZE, PARACHUTE_PAYMENT_SCHEDULE, PROMOTE_RELEGATE_COUNT, TIER_META, TIER_OVERALL_CEILING } from "./constants";
++import { DEFAULT_WORLD_RECORDS, DIFFICULTY_MODES, ENGLAND_AUTO_PROMOTE_BY_TIER, ENGLAND_TIER_META, MID_SEASON_WINDOW_MATCHDAY, MIN_PRIZE_POOL, MIN_SQUAD_SIZE, MLS_CONFERENCE_SIZE_TARGET, MLS_CROSS_CONFERENCE_CAP, MLS_TOTAL_GAMES, PARACHUTE_PAYMENT_SCHEDULE, PROMOTE_RELEGATE_COUNT, TIER_META, TIER_OVERALL_CEILING, USLC_CROSS_CONFERENCE_CAP, USLC_EAST_SIZE_TARGET, USLC_TOTAL_GAMES } from "./constants";
+ import { applySeasonFanHappiness, completeSeasonEndFacilityUpgrades, facilityMaintenanceCost, seasonMerchandiseRevenue, seasonSponsorshipRevenue } from "./facilities";
+ import { runDraft } from "./worldBuild";
+ import { computeTable, simulateMatch, squadStrength } from "./matchSim";
+ import { applyDisqualificationCheck, checkTransferRecord, computeEventBonuses, decayPrizePools, distributePrizeMoney, dpRevenueForClub, effectivePayroll, ownershipDepositFor, runTransferWindow, trimSquad } from "./finance";
+-import { MLS_EAST_CLUBS } from "../data/rosters";
++import { MLS_EAST_CLUBS, MLS_WEST_CLUBS, USLC_EAST_CLUBS, USLC_WEST_CLUBS } from "../data/rosters";
++import { generateConferenceSeasonSchedule, MLS_BORDER_MARKET_CLUBS, resolveConferenceMembership, USLC_BORDER_MARKET_CLUBS } from "./scheduling";
+ 
+ export function generateDoubleRoundRobin(clubIds) {
+   const firstLeg = generateRoundRobin(clubIds);
+@@ -274,6 +275,62 @@ export function initialMlsConference(clubName) {
+   return MLS_EAST_CLUBS.has(clubName) ? "East" : null; // null = not an original club, needs balancing
+ }
+ 
++// Conference reassignment for MLS and USL Championship, run every season
++// (initial world build AND every subsequent rollover) — MUST run after
++// promotion/relegation has settled tier membership and BEFORE that tier's
++// new fixtures are generated. See scheduling.js for the full model: every
++// club carries a PERMANENT `geoConference` (persists through every tier of
++// the pyramid, including USL1/USL2) separate from its SEASONAL `conference`
++// (this season's actual placement) — a club only ever leaves its
++// geoConference when conference-size constraints force it to, and
++// automatically returns home the moment room opens, with no separate
++// "recently arrived" bookkeeping needed.
++export function resolveMlsConferences(mlsClubs) {
++  return resolveConferenceMembership(mlsClubs, {
++    targetSizeA: MLS_CONFERENCE_SIZE_TARGET, nameA: "East", nameB: "West",
++    realConferenceLookup: (name) => (MLS_EAST_CLUBS.has(name) ? "East" : MLS_WEST_CLUBS.has(name) ? "West" : null),
++    borderMarketNames: MLS_BORDER_MARKET_CLUBS,
++    seed: "mls-geoconf",
++  });
++}
++
++export function resolveUslcConferences(uslcClubs) {
++  return resolveConferenceMembership(uslcClubs, {
++    targetSizeA: USLC_EAST_SIZE_TARGET, nameA: "East", nameB: "West",
++    realConferenceLookup: (name) => (USLC_EAST_CLUBS.has(name) ? "East" : USLC_WEST_CLUBS.has(name) ? "West" : null),
++    borderMarketNames: USLC_BORDER_MARKET_CLUBS,
++    seed: "uslc-geoconf",
++  });
++}
++
++// Conference-based fixture generation for MLS and USL Championship —
++// replaces the flat round-robin generator for these two tiers specifically.
++// See scheduling.js for the full explanation of the approximation involved.
++// Seed is derived from the sorted club-id membership itself, rather than a
++// separately-threaded season counter — same club membership always
++// produces the same schedule, and membership already changes naturally
++// every season via promotion/relegation, so this stays deterministic
++// without widening rolloverSeason's/buildInitialWorld's call signatures.
++export function generateMlsSeasonSchedule(mlsClubs) {
++  const east = mlsClubs.filter((c) => c.conference === "East").map((c) => c.id);
++  const west = mlsClubs.filter((c) => c.conference === "West").map((c) => c.id);
++  return generateConferenceSeasonSchedule({
++    conferences: { East: east, West: west },
++    targetTotalGames: MLS_TOTAL_GAMES, crossConferenceCap: MLS_CROSS_CONFERENCE_CAP,
++    seed: `mls-${[...east].sort().join(",")}-${[...west].sort().join(",")}`, uid,
++  });
++}
++
++export function generateUslcSeasonSchedule(uslcClubs) {
++  const east = uslcClubs.filter((c) => c.conference === "East").map((c) => c.id);
++  const west = uslcClubs.filter((c) => c.conference === "West").map((c) => c.id);
++  return generateConferenceSeasonSchedule({
++    conferences: { East: east, West: west },
++    targetTotalGames: USLC_TOTAL_GAMES, crossConferenceCap: USLC_CROSS_CONFERENCE_CAP,
++    seed: `uslc-${[...east].sort().join(",")}-${[...west].sort().join(",")}`, uid,
++  });
++}
++
+ export function resolveKnockoutMatch(home, away, matchday) {
+   const fixture = { homeScore: null, awayScore: null, played: false };
+   const result = simulateMatch(fixture, home, away, matchday);
+@@ -637,7 +694,31 @@ export function rolloverSeason(tiers, userClubId, prizePools, difficulty, precom
+       if (notice && id === userClubId) userDisqualificationNotice = notice;
+       return checkedClub;
+     });
+-    return { id: t.id, name: t.name, clubs, fixtures: generateRoundRobin(clubs.map((c) => c.id)) };
++    return { id: t.id, name: t.name, clubs }; // fixtures assigned below, after conference placement is settled
++  });
++
++  // Order of operations, per project decision: season is finished, promotion/
++  // relegation is resolved (newTierClubIds above), clubs are already moved
++  // between tiers (newTiers above) — conference membership must be settled
++  // NEXT, and fixture generation must not happen until that's done, since a
++  // club's conference determines who its schedule opponents even are.
++  // Conference resolution itself always starts from each club's permanent
++  // geoConference (see scheduling.js) — no per-season "who just arrived"
++  // bookkeeping is needed here anymore.
++  if (newTiers[0]) resolveMlsConferences(newTiers[0].clubs);
++  if (newTiers[1]) resolveUslcConferences(newTiers[1].clubs);
++  newTiers.forEach((t, i) => {
++    if (i === 0) t.fixtures = generateMlsSeasonSchedule(t.clubs);
++    else if (i === 1) t.fixtures = generateUslcSeasonSchedule(t.clubs);
++    // USL League One (i===2) is a genuine real-world double round-robin
++    // (verified: 17 clubs, 32 games) — was previously incorrectly downgraded
++    // to a single-leg schedule every season after season 1; USL League Two
++    // (i===3) keeps its existing flat double round-robin as an intentional,
++    // explicitly-flagged simplification of the real 158-club/20-division
++    // structure (out of scope for this pass) — both now consistently use
++    // the same double round-robin generator every season, matching season 1
++    // and matching how England's tiers already behaved.
++    else t.fixtures = generateDoubleRoundRobin(t.clubs.map((c) => c.id));
+   });
+ 
+   const windowResult = runTransferWindow(newTiers, userClubId);
+@@ -707,10 +788,40 @@ export function rolloverSeason(tiers, userClubId, prizePools, difficulty, precom
+   };
+ }
+ 
++// Season completion is a WORLD-level fact, not something any single tier
++// (e.g. the user's own) gets to decide on behalf of every other tier. This
++// returns the smallest matchday number, across ALL 8 tiers, that still has
++// an unplayed fixture — i.e. "what matchday should be simulated next so
++// that no tier's fixtures get silently skipped." Returns null only once
++// every tier has zero unplayed fixtures left.
++//
++// This is deliberately written as a simplified, single-shared-integer
++// stand-in for the future calendar system's "every competition reports its
++// own completion state, the world only advances once all of them agree"
++// rule — the completion CONDITION here (every tier has nothing left) is the
++// same one the calendar system will use later; only the representation
++// (a matchday integer vs. a real week/date) changes when that work happens.
+ export function getCurrentMatchday(next) {
+-  const tier = next.tiers[next.userTierId];
+-  const remaining = tier.fixtures.filter((f) => !f.played);
+-  return remaining.length ? remaining[0].matchday : null;
++  let min = null;
++  next.tiers.forEach((t) => {
++    t.fixtures.forEach((f) => {
++      if (!f.played && (min === null || f.matchday < min)) min = f.matchday;
++    });
++  });
++  return min;
++}
++
++// Companion check for cup competitions, which are not tracked in any tier's
++// `fixtures` array and so aren't visible to getCurrentMatchday's scan. A
++// season is only truly complete once every league tier AND every cup
++// competition reports itself done — this is the "no possible permanently-
++// pending competition" guarantee: it is a pure read of already-existing
++// state (never derives new work), so calling it repeatedly is always safe
++// and can never itself get stuck.
++export function isWorldSeasonComplete(next) {
++  const allFixturesPlayed = getCurrentMatchday(next) === null;
++  const allCupsDone = !!next.usOpenCup?.done && !!next.faCup?.done && !!next.eflCup?.done;
++  return allFixturesPlayed && allCupsDone;
+ }
+ 
+ export function maybeTriggerMidWindow(next, justPlayedMatchday) {
+diff --git a/src/engine/scheduling.js b/src/engine/scheduling.js
+new file mode 100644
+index 0000000..60d6fd8
+--- /dev/null
++++ b/src/engine/scheduling.js
+@@ -0,0 +1,349 @@
++// ===================== SEEDED SCHEDULING =====================
++// This module is scoped deliberately narrowly: seeded determinism here
++// applies ONLY to fixture generation and conference placement for
++// conference-based leagues (MLS, USL Championship). It does not extend to
++// match simulation, player generation, or any other random system in the
++// engine — those remain unseeded by design (expanding determinism further
++// is a separate, larger project).
++
++// Deterministic string -> 32-bit int hash (xfnv1a), then mulberry32 PRNG.
++// Same seed string always produces the same sequence of values.
++function hashSeed(str) {
++  let h = 0x811c9dc5;
++  for (let i = 0; i < str.length; i++) {
++    h ^= str.charCodeAt(i);
++    h = Math.imul(h, 0x01000193);
++  }
++  return h >>> 0;
++}
++
++export function makeSeededRng(seedString) {
++  let a = hashSeed(seedString) || 1;
++  return function seededRandom() {
++    a |= 0; a = (a + 0x6d2b79f5) | 0;
++    let t = Math.imul(a ^ (a >>> 15), 1 | a);
++    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
++    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
++  };
++}
++
++function seededShuffle(arr, rng) {
++  const copy = [...arr];
++  for (let i = copy.length - 1; i > 0; i--) {
++    const j = Math.floor(rng() * (i + 1));
++    [copy[i], copy[j]] = [copy[j], copy[i]];
++  }
++  return copy;
++}
++
++function seededChoice(arr, rng) {
++  return arr[Math.floor(rng() * arr.length)];
++}
++
++// ===================== PERSISTENT GEOGRAPHIC IDENTITY =====================
++// Every USA-pyramid club (MLS, USLC, USL1, USL2 alike) carries a permanent
++// `geoConference` ("East"/"West") assigned once, the first time the club is
++// ever seen, and never overwritten afterward by any balancing logic. This is
++// deliberately a SEPARATE field from `conference` (this SEASON's actual
++// placement) — see resolveConferenceMembership below for how the two
++// interact. Real MLS/USLC clubs get their real-world conference; every
++// other club (fictional filler, or a real club with no known MLS/USLC
++// membership, e.g. a USL1/USL2-only club) gets a deterministic, seeded,
++// roughly-balanced fallback assignment — there is no real geographic data
++// available for these clubs in the engine's data model, so this is
++// explicitly an engine approximation, not a claim about real geography.
++export function assignGeoConference(clubs, seed, realConferenceLookup) {
++  const rng = makeSeededRng(seed);
++  clubs.forEach((c) => {
++    if (c.geoConference === "East" || c.geoConference === "West") return; // already permanently tagged, never touched again
++    const real = realConferenceLookup ? realConferenceLookup(c.name) : null;
++    if (real === "East" || real === "West") c.geoConference = real;
++  });
++  const needsFallback = clubs.filter((c) => c.geoConference !== "East" && c.geoConference !== "West");
++  const sorted = [...needsFallback].sort((a, b) => (a.name < b.name ? -1 : 1));
++  sorted.forEach((c) => {
++    const eastCount = clubs.filter((x) => x.geoConference === "East").length;
++    const westCount = clubs.filter((x) => x.geoConference === "West").length;
++    if (eastCount === westCount) c.geoConference = rng() < 0.5 ? "East" : "West";
++    else c.geoConference = eastCount < westCount ? "East" : "West";
++  });
++  return clubs;
++}
++
++// ===================== CONFERENCE INTRA-CONFERENCE BASE SCHEDULE =====================
++function conferenceDoubleRoundRobin(clubIds, startMatchday, uid) {
++  const clubs = [...clubIds];
++  if (clubs.length % 2 === 1) clubs.push("BYE");
++  const n = clubs.length;
++  const fixed = clubs[0];
++  let rest = clubs.slice(1);
++  const rounds = [];
++  for (let r = 0; r < n - 1; r++) {
++    const half = n / 2 - 1;
++    const left = [fixed, ...rest.slice(0, half)];
++    const right = [...rest.slice(half)].reverse();
++    rounds.push(left.map((h, i) => [h, right[i]]));
++    rest = [rest[rest.length - 1], ...rest.slice(0, rest.length - 1)];
++  }
++  const fixtures = [];
++  const nextFree = {};
++  clubIds.forEach((id) => { nextFree[id] = startMatchday; });
++  const emit = (pairsPerRound, mdOffset) => {
++    pairsPerRound.forEach((pairs, idx) => {
++      const matchday = startMatchday + mdOffset + idx;
++      pairs.forEach(([home, away]) => {
++        if (home === "BYE" || away === "BYE") return;
++        fixtures.push({ id: uid(), matchday, homeClubId: home, awayClubId: away, homeScore: null, awayScore: null, played: false });
++        nextFree[home] = Math.max(nextFree[home], matchday + 1);
++        nextFree[away] = Math.max(nextFree[away], matchday + 1);
++      });
++    });
++  };
++  emit(rounds, 0);
++  const secondLegMdOffset = n - 1;
++  emit(rounds.map((pairs) => pairs.map(([h, a]) => [a, h])), secondLegMdOffset);
++  const nextMatchday = startMatchday + 2 * (n - 1);
++  return { fixtures, nextMatchday, nextFree };
++}
++
++// ===================== EXACT-BALANCE CROSS-CONFERENCE CONSTRUCTION =====================
++// Provably exact, not an approximation, when both conferences are the same
++// size `n` and the cross-conference cap is even (MLS: 15/15, cap 6).
++// East position i plays West positions (i+offset)..(i+offset+cap-1) mod n;
++// offset and the West ordering are seeded (variety season to season) but
++// the balance guarantee holds for ANY offset/ordering — see proof in the
++// accompanying implementation report.
++function buildExactCrossSchedule(eastIds, westIds, cap, rng, uid, nextFree) {
++  const n = eastIds.length;
++  if (westIds.length !== n || cap % 2 !== 0 || cap > n || cap <= 0) return null;
++  const westOrder = seededShuffle(westIds, rng);
++  const offset = Math.floor(rng() * n);
++  const fixtures = [];
++  for (let i = 0; i < n; i++) {
++    const east = eastIds[i];
++    for (let k = 0; k < cap; k++) {
++      const westIdx = (i + offset + k) % n;
++      const west = westOrder[westIdx];
++      const homeIsEast = k < cap / 2;
++      const home = homeIsEast ? east : west;
++      const away = homeIsEast ? west : east;
++      const md = Math.max(nextFree[home], nextFree[away]);
++      fixtures.push({ id: uid(), matchday: md, homeClubId: home, awayClubId: away, homeScore: null, awayScore: null, played: false });
++      nextFree[home] = md + 1; nextFree[away] = md + 1;
++    }
++  }
++  return fixtures;
++}
++
++// ===================== CROSS-CONFERENCE + EXTRA-INTRA DISTRIBUTION (fallback) =====================
++// Used when the exact construction doesn't apply (uneven conference sizes,
++// e.g. USLC's 13/12, or an odd cap). ENGINE APPROXIMATION of an
++// undocumented real selection rule — see the accompanying report for the
++// documented totals this reproduces exactly (only the pairings are
++// approximated). Home/away converges to within +/-1 of even per club.
++function buildApproximateCrossAndExtraSchedule(clubsA, clubsB, targetTotalGames, crossConferenceCap, baseIntraCount, rng, uid, nextFree) {
++  const fixtures = [];
++  const smaller = clubsA.length <= clubsB.length ? clubsA : clubsB;
++  const larger = smaller === clubsA ? clubsB : clubsA;
++  const totalCrossEndpoints = smaller.length * crossConferenceCap;
++  const largerBase = Math.floor(totalCrossEndpoints / larger.length);
++  const largerRemainder = totalCrossEndpoints - largerBase * larger.length;
++  const largerShuffled = seededShuffle(larger, rng);
++  const crossCountFor = {};
++  smaller.forEach((id) => { crossCountFor[id] = crossConferenceCap; });
++  largerShuffled.forEach((id, idx) => { crossCountFor[id] = largerBase + (idx < largerRemainder ? 1 : 0); });
++
++  const remaining = {};
++  clubsA.concat(clubsB).forEach((id) => { remaining[id] = crossCountFor[id]; });
++  const crossPairs = [];
++  let guard = 0;
++  while (clubsA.some((id) => remaining[id] > 0) && guard < 5000) {
++    guard++;
++    const aPool = seededShuffle(clubsA.filter((id) => remaining[id] > 0), rng);
++    const bPool = seededShuffle(clubsB.filter((id) => remaining[id] > 0), rng);
++    if (!aPool.length || !bPool.length) break;
++    for (const a of aPool) {
++      if (remaining[a] <= 0) continue;
++      const candidates = bPool.filter((b) => remaining[b] > 0 && !crossPairs.some((p) => p[0] === a && p[1] === b));
++      if (!candidates.length) continue;
++      const b = seededChoice(candidates, rng);
++      crossPairs.push([a, b]);
++      remaining[a]--; remaining[b]--;
++    }
++  }
++
++  const crossHomeTarget = {};
++  clubsA.concat(clubsB).forEach((id) => { crossHomeTarget[id] = Math.round((crossCountFor[id] ?? 0) / 2); });
++  const homeCountCross = {};
++  clubsA.concat(clubsB).forEach((id) => { homeCountCross[id] = 0; });
++  const shuffledCrossPairs = seededShuffle(crossPairs, rng);
++  shuffledCrossPairs.forEach(([a, b]) => {
++    const aShortfall = crossHomeTarget[a] - homeCountCross[a];
++    const bShortfall = crossHomeTarget[b] - homeCountCross[b];
++    const home = aShortfall !== bShortfall ? (aShortfall > bShortfall ? a : b) : (rng() < 0.5 ? a : b);
++    const away = home === a ? b : a;
++    const md = Math.max(nextFree[home], nextFree[away]);
++    fixtures.push({ id: uid(), matchday: md, homeClubId: home, awayClubId: away, homeScore: null, awayScore: null, played: false });
++    nextFree[home] = md + 1; nextFree[away] = md + 1;
++    homeCountCross[home]++;
++  });
++
++  const currentTotal = {};
++  clubsA.concat(clubsB).forEach((id) => { currentTotal[id] = baseIntraCount[id]; });
++  fixtures.forEach((f) => { currentTotal[f.homeClubId]++; currentTotal[f.awayClubId]++; });
++  const currentHome = {};
++  clubsA.concat(clubsB).forEach((id) => { currentHome[id] = 0; });
++  fixtures.forEach((f) => { currentHome[f.homeClubId]++; });
++
++  const finalizeConference = (ids) => {
++    const usedExtraAgainst = {};
++    ids.forEach((id) => { usedExtraAgainst[id] = new Set(); });
++    let guard2 = 0;
++    while (ids.some((id) => currentTotal[id] < targetTotalGames) && guard2 < ids.length * 6) {
++      guard2++;
++      for (const id of ids) {
++        if (currentTotal[id] >= targetTotalGames) continue;
++        // Prefer another club that's also still under target (keeps both
++        // totals converging toward the target together); if none remain
++        // (e.g. an odd number of deficit clubs left, so exactly one can't
++        // be paired with another deficit club), fall back to any
++        // not-yet-doubled same-conference opponent even if it's already
++        // at/over target — a small overage on one club is preferable to
++        // a permanent shortfall on another.
++        const preferredCandidates = ids.filter((other) => other !== id && currentTotal[other] < targetTotalGames && !usedExtraAgainst[id].has(other));
++        const fallbackCandidates = ids.filter((other) => other !== id && !usedExtraAgainst[id].has(other));
++        const candidates = preferredCandidates.length ? preferredCandidates : fallbackCandidates;
++        if (!candidates.length) continue;
++        const opp = seededChoice(seededShuffle(candidates, rng), rng);
++        usedExtraAgainst[id].add(opp);
++        usedExtraAgainst[opp].add(id);
++        const home = currentHome[id] <= currentHome[opp] ? id : opp;
++        const away = home === id ? opp : id;
++        const md = Math.max(nextFree[home], nextFree[away]);
++        fixtures.push({ id: uid(), matchday: md, homeClubId: home, awayClubId: away, homeScore: null, awayScore: null, played: false });
++        nextFree[home] = md + 1; nextFree[away] = md + 1;
++        currentTotal[id]++; currentTotal[opp]++;
++        currentHome[home]++;
++      }
++    }
++  };
++  finalizeConference(clubsA);
++  finalizeConference(clubsB);
++  return fixtures;
++}
++
++export function generateConferenceSeasonSchedule({ conferences, targetTotalGames, crossConferenceCap, seed, uid }) {
++  const confNames = Object.keys(conferences);
++  if (confNames.length !== 2) throw new Error("generateConferenceSeasonSchedule expects exactly two conferences");
++  const [nameA, nameB] = confNames;
++  const clubsA = conferences[nameA];
++  const clubsB = conferences[nameB];
++  const rng = makeSeededRng(seed);
++
++  const baseA = conferenceDoubleRoundRobin(clubsA, 1, uid);
++  const baseB = conferenceDoubleRoundRobin(clubsB, 1, uid);
++  const fixtures = [...baseA.fixtures, ...baseB.fixtures];
++  const nextFree = { ...baseA.nextFree, ...baseB.nextFree };
++  const baseIntraCount = {};
++  clubsA.forEach((id) => { baseIntraCount[id] = 2 * (clubsA.length - 1); });
++  clubsB.forEach((id) => { baseIntraCount[id] = 2 * (clubsB.length - 1); });
++
++  const exactCross = buildExactCrossSchedule(clubsA, clubsB, crossConferenceCap, rng, uid, nextFree);
++  if (exactCross) {
++    return [...fixtures, ...exactCross];
++  }
++  return [...fixtures, ...buildApproximateCrossAndExtraSchedule(clubsA, clubsB, targetTotalGames, crossConferenceCap, baseIntraCount, rng, uid, nextFree)];
++}
++
++// ===================== CONFERENCE PLACEMENT (promotion/relegation) =====================
++// GAME-SPECIFIC RULE, NOT A REAL MLS/USLC POLICY — no real precedent exists.
++//
++// Every club has a PERMANENT `geoConference` (assignGeoConference) — where
++// it naturally belongs, entirely independent of border-market status — and
++// a SEASONAL `conference` (this season's actual placement). Every
++// resolution pass starts by placing every club back in its own
++// geoConference, which is what gives step 4 below (restore toward the
++// natural conference whenever sizes allow) for free: there's no separate
++// "is this club currently displaced" bookkeeping, because each pass starts
++// fresh from "everyone home" and only displaces what's still required.
++//
++// Resolution order, exactly as specified:
++//   1. Determine the club's current tier (implicit in which of
++//      resolveMlsConferences/resolveUslcConferences the caller invokes).
++//   2. Determine whether that tier uses a conference system at all (today:
++//      MLS and USLC do; USL1 and USL2 don't, so neither is ever routed
++//      through this function).
++//   3. Use ONLY that tier's own geoConference data and TIER-SCOPED
++//      BORDER-MARKET DATA — see note below. Never another tier's list.
++//   4. Restore every club toward its persistent geographic conference
++//      first (the "everyone home" reset above) — this happens before any
++//      displacement is even considered.
++//   5. If conference sizes still don't match after that, and temporary
++//      displacement is genuinely required, prefer an eligible club from
++//      THIS TIER's own border-market list.
++//   6. If no border-market candidate exists in this tier's list, fall back
++//      to the deterministic tie-break (lowest club id).
++//   7. A border-market designation from any OTHER tier is never consulted
++//      and never a reason to move a club — see TIER-SCOPED BORDER-MARKET
++//      DATA below for why this holds structurally, not just by convention.
++//
++// TIER-SCOPED BORDER-MARKET DATA — each tier's border-market list is
++// judgment-based curation (clubs whose real metro area is broadly closer
++// to the middle of the country, and therefore a more plausible temporary
++// fit for either conference than most of their conference's other
++// members). It is NOT derived from measured distances or coordinates (the
++// engine has no such data) and is NOT a global property of a club — it is
++// scoped strictly to one specific tier's conference system. A club's
++// membership on one tier's list has no bearing on any other tier: this
++// isn't a policy the caller has to remember to enforce, it's a structural
++// consequence of resolveConferenceMembership only ever receiving ONE
++// border list per call, for the one specific tier being resolved. If
++// Louisville City FC (on USLC's list) is promoted into MLS, the MLS
++// resolution call passes MLS_BORDER_MARKET_CLUBS — a set that doesn't
++// contain Louisville — so Louisville gets no border-market preference in
++// MLS; it is evaluated purely on its geoConference and, if displacement
++// is needed, against MLS's own list, exactly like any other MLS club with
++// no border-market status at all. This is used strictly as a
++// conflict-resolution tie-break — never a reason to move a club that
++// doesn't need to move, and never something that makes a club "regularly"
++// cross conferences.
++//
++// USL1_BORDER_MARKET_CLUBS and USL2_BORDER_MARKET_CLUBS are empty today,
++// because neither tier is currently routed through a conference resolver
++// at all (real USL1 is a single flat group; real USL2's 158-club/20-
++// division structure is out of scope, see project notes) — not because
++// those clubs are considered geographically inflexible. They exist as
++// explicit, tier-scoped placeholders: the day either tier gains a real
++// conference structure, populating its own list is a data change, not new
++// resolver code, and it would carry exactly the same tier-scoping
++// guarantee MLS and USLC already have.
++export const MLS_BORDER_MARKET_CLUBS = new Set([
++  "Minnesota United FC", "Sporting Kansas City", "St. Louis City SC",
++  "Nashville SC", "Atlanta United FC",
++]);
++export const USLC_BORDER_MARKET_CLUBS = new Set([
++  "FC Tulsa", "San Antonio FC",
++  "Louisville City FC", "Indy Eleven",
++]);
++export const USL1_BORDER_MARKET_CLUBS = new Set([]);
++export const USL2_BORDER_MARKET_CLUBS = new Set([]);
++
++export function resolveConferenceMembership(clubs, { targetSizeA, nameA, nameB, realConferenceLookup, borderMarketNames, seed }) {
++  assignGeoConference(clubs, seed || `geoconf-${nameA}-${nameB}`, realConferenceLookup);
++  clubs.forEach((c) => { c.conference = c.geoConference; });
++
++  const border = new Set(borderMarketNames || []);
++  let guard = 0;
++  while (guard < clubs.length + 5) {
++    guard++;
++    const countA = clubs.filter((x) => x.conference === nameA).length;
++    if (countA === targetSizeA) break;
++    const oversizedName = countA > targetSizeA ? nameA : nameB;
++    const inOversized = clubs.filter((c) => c.conference === oversizedName);
++    const borderCandidates = inOversized.filter((c) => border.has(c.name)).sort((a, b) => (a.id < b.id ? -1 : 1));
++    const candidates = borderCandidates.length ? borderCandidates : inOversized.sort((a, b) => (a.id < b.id ? -1 : 1));
++    if (!candidates.length) break;
++    candidates[0].conference = oversizedName === nameA ? nameB : nameA;
++  }
++  return clubs;
++}
+diff --git a/src/engine/worldBuild.js b/src/engine/worldBuild.js
+index ab96508..857addc 100644
+--- a/src/engine/worldBuild.js
++++ b/src/engine/worldBuild.js
+@@ -2,7 +2,8 @@ import { CHAMPIONSHIP_CLUBS, ENGLAND_ROSTERS, FICTIONAL_CLUB_NAMES, LEAGUE_ONE_C
+ import { findEnglandRealRoster, generateAcademyProspect, generateDraftProspect, generateFictionalSquad, makeClub, randInt, realPlayerToRuntime } from "./playerGen";
+ import { ACADEMY_STAR_THRESHOLDS, DRAFT_PHASES, ENGLAND_TIER_META, TARGET_TIER_SIZE, TIER_META } from "./constants";
+ import { autoAssignFacilities } from "./facilities";
+-import { ensureMlsConferences, generateDoubleRoundRobin, initialMlsConference } from "./leagueSim";
++import { assignGeoConference } from "./scheduling";
++import { generateDoubleRoundRobin, generateMlsSeasonSchedule, generateUslcSeasonSchedule, resolveMlsConferences, resolveUslcConferences } from "./leagueSim";
+ 
+ export function buildEnglandWorld(sharedUsedNames, tierIdOffset = 0) {
+   const usedNames = sharedUsedNames || new Set();
+@@ -170,14 +171,15 @@ export function buildInitialWorld(sharedUsedNames) {
+   mlsClubs.forEach((c) => {
+     c.academyStars = randInt(2, 3);
+     c.academyInvested = ACADEMY_STAR_THRESHOLDS[c.academyStars];
+-    c.conference = initialMlsConference(c.name);
+     // An already-established academy comes with an already-established
+     // crop of prospects, not an empty pipeline you have to build from
+     // scratch on day one.
+     const startingCount = randInt(3, 5);
+     c.youthPlayers = Array.from({ length: startingCount }, () => generateAcademyProspect(c.academyStars));
+   });
+-  ensureMlsConferences(mlsClubs); // balances any expansion filler clubs that aren't real East/West members
++  // Conference placement (geographic identity + this season's actual
++  // placement) — see resolveMlsConferences / scheduling.js.
++  resolveMlsConferences(mlsClubs);
+ 
+   // Tier 1: USL Championship — real clubs, generated rosters
+   const uslcClubs = USL_CHAMPIONSHIP_TEAMS.map((name) =>
+@@ -189,6 +191,7 @@ export function buildInitialWorld(sharedUsedNames) {
+       academyEligible: true,
+     })
+   );
++  resolveUslcConferences(uslcClubs);
+ 
+   // Tier 2: USL League One — real clubs, generated rosters (no academies —
+   // these clubs run open tryouts instead)
+@@ -211,6 +214,17 @@ export function buildInitialWorld(sharedUsedNames) {
+     })
+   );
+ 
++  // Lower-tier clubs (USL1, USL2) get the same permanent geographic tag as
++  // MLS/USLC clubs, from the moment they're created — not only once they
++  // reach MLS/USLC — so the identity survives however many seasons it takes
++  // a club to work its way up the pyramid. Neither tier has documented real
++  // MLS/USLC conference membership (they aren't real MLS/USLC clubs), so
++  // this is the same deterministic, seeded fallback assignment used for any
++  // club with no known real identity — clearly an engine approximation, not
++  // real geographic data.
++  assignGeoConference(usl1Clubs, "usl1-geoconf", null);
++  assignGeoConference(usl2Clubs, "usl2-geoconf", null);
++
+   // Facility auto-assignment — same pattern as England's, reputation-ranked
+   // within each tier.
+   const assignFacilitiesForTier = (clubs, tierIdx) => {
+-- 
+2.43.0
+
