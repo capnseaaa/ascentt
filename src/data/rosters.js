@@ -102,3 +102,32 @@ export const MLS_EAST_CLUBS = new Set([
   "D.C. United", "FC Cincinnati", "Inter Miami CF", "Nashville SC", "New England Revolution",
   "New York City FC", "New York Red Bulls", "Orlando City SC", "Philadelphia Union", "Toronto FC",
 ]);
+
+// The remaining 15 real 2026 MLS clubs (Western Conference) — encoded
+// explicitly, not derived as "anything not in MLS_EAST_CLUBS", because that
+// would incorrectly also claim every fictional/foreign club as "real West"
+// once conference-preservation logic needs to distinguish "known real club
+// with a fixed identity" from "no known real identity, treat as flexible".
+export const MLS_WEST_CLUBS = new Set([
+  "Austin FC", "Colorado Rapids", "FC Dallas", "Houston Dynamo FC", "LA Galaxy",
+  "Los Angeles FC", "Minnesota United FC", "Portland Timbers", "Real Salt Lake", "San Diego FC",
+  "San Jose Earthquakes", "Seattle Sounders FC", "Sporting Kansas City", "St. Louis City SC", "Vancouver Whitecaps FC",
+]);
+
+// Real 2026 USL Championship Eastern Conference alignment (13 clubs) —
+// matches USL_CHAMPIONSHIP_TEAMS' own array order above (first 13 entries).
+export const USLC_EAST_CLUBS = new Set([
+  "Birmingham Legion FC", "Brooklyn FC", "Charleston Battery", "Detroit City FC",
+  "Hartford Athletic", "Indy Eleven", "Loudoun United FC", "Louisville City FC",
+  "Miami FC", "Pittsburgh Riverhounds SC", "Rhode Island FC", "Sporting Club Jacksonville",
+  "Tampa Bay Rowdies",
+]);
+
+// Real 2026 USL Championship Western Conference alignment (12 clubs) —
+// matches USL_CHAMPIONSHIP_TEAMS' own array order above (last 12 entries).
+// Encoded explicitly for the same reason as MLS_WEST_CLUBS above.
+export const USLC_WEST_CLUBS = new Set([
+  "Colorado Springs Switchbacks FC", "El Paso Locomotive FC", "Las Vegas Lights FC", "Lexington SC",
+  "Monterey Bay FC", "New Mexico United", "Oakland Roots SC", "Orange County SC",
+  "Phoenix Rising FC", "Sacramento Republic FC", "San Antonio FC", "FC Tulsa",
+]);

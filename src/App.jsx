@@ -5,7 +5,7 @@ import { ACADEMY_INVEST_INCREMENT, ACADEMY_MAX_PROSPECTS, ACADEMY_PROMOTE_MIN_AG
 import { canStartFacilityUpgrade, defaultTicketPrice, downgradeFacility, facilityMaintenanceCost, facilityMaxUpgradeLevel, facilityUpgradeCost, scoutedPotentialRange, startFacilityUpgrade, stadiumCapacity, ticketRevenueForMatch } from "./engine/facilities";
 import { buildEnglandWorld, buildFullWorld } from "./engine/worldBuild";
 import { boardHappinessDelta, boardMessageNoticeText, checkBoardMessageCompliance, computeHints, computeInboxUrgentCount, generateBoardMessage, generateBoardObjective, generateJobOffer, jobOfferChanceFor } from "./engine/board";
-import { computeSeasonAwards, computeSeasonPlayoffs, computeUserPlayoffQualification, generateDoubleRoundRobin, getCurrentMatchday, maybeTriggerMidWindow, resolveKnockoutMatch, rolloverEnglandSeason, rolloverSeason } from "./engine/leagueSim";
+import { computeSeasonAwards, computeSeasonPlayoffs, computeUserPlayoffQualification, generateDoubleRoundRobin, generateMlsSeasonSchedule, generateUslcSeasonSchedule, getCurrentMatchday, isWorldSeasonComplete, maybeTriggerMidWindow, resolveKnockoutMatch, rolloverEnglandSeason, rolloverSeason } from "./engine/leagueSim";
 import { clubLineRatings, computeMatchOutcome, computeTable, isAvailable, isRivalryMatch, simulateMatch, simulateMatchdayAcrossTiers, startingXI, xiLineRatings } from "./engine/matchSim";
 import { checkTransferRecord, computeRecommendationScore, effectivePayroll, isFinanciallyRisky, marketValue, ownershipDepositFor, recommendationReason, renewalOutcome, runAiToAiTransfers } from "./engine/finance";
 import { cupRoundLabel, drawNextEnglandCupRound, drawNextUsOpenCupRound, isCupCheckpointPending, pendingEnglandCupCheckpoint, previewStageLabel, resolveCupRoundInPlace, resolveEnglandCupRoundInPlace } from "./engine/cups";
@@ -4082,8 +4082,18 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
 
   const tier = state.tiers[state.userTierId];
   const userClub = tier.clubs.find((c) => c.id === state.userClubId);
-  const nextMatchdayFixtures = tier.fixtures.filter((f) => !f.played);
-  const currentMatchday = nextMatchdayFixtures.length > 0 ? nextMatchdayFixtures[0].matchday : null;
+  // currentMatchday drives simulation progress everywhere (injury/suspension
+  // timers, facility construction, transfer windows, match simulation
+  // itself) and must reflect the WORLD's remaining matchdays across all 8
+  // tiers, not just the user's own tier — otherwise fixtures in other tiers
+  // get silently truncated the moment the user's own tier finishes first.
+  // See getCurrentMatchday in engine/leagueSim.js.
+  const currentMatchday = getCurrentMatchday(state);
+  // Purely cosmetic: matchday progress within the user's own tier only,
+  // used for the "Matchday N" label so it stays meaningful to the user even
+  // while the world clock may still be running for other tiers/cups.
+  const userTierNextFixtures = tier.fixtures.filter((f) => !f.played);
+  const userTierDisplayMatchday = userTierNextFixtures.length > 0 ? userTierNextFixtures[0].matchday : null;
 
   // Career-long match record (games/wins/draws/losses) and which clubs the
   // manager has actually managed — feeds the end-of-career stats summary.
@@ -4115,7 +4125,10 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     return { games: 1, wins: outcome === "win" ? 1 : 0, draws: outcome === "draw" ? 1 : 0, losses: outcome === "loss" ? 1 : 0 };
   };
   const mergeDelta = (a, b) => ({ games: a.games + b.games, wins: a.wins + b.wins, draws: a.draws + b.draws, losses: a.losses + b.losses });
-  const seasonComplete = currentMatchday === null;
+  // The world can only move to the next season once every league tier AND
+  // every domestic cup has genuinely finished — not just whichever
+  // competition the user happens to be following. See isWorldSeasonComplete.
+  const seasonComplete = isWorldSeasonComplete(state);
 
   // Board expectations were previously only visible buried in the Squad tab
   // — surface them explicitly the moment a new job starts under board
@@ -5357,7 +5370,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <div style={{ textAlign: "right", fontSize: 12, opacity: 0.85 }}>
             Season {state.seasonNumber}<br />
-            {seasonComplete ? "Season complete" : `Matchday ${currentMatchday}`}
+            {seasonComplete ? "Season complete" : userTierDisplayMatchday !== null ? `Matchday ${userTierDisplayMatchday}` : "Finishing other competitions…"}
           </div>
           {seasonComplete ? (() => {
             const isEnglandUser = state.userTierId >= 4;
@@ -5846,7 +5859,11 @@ export default function App() {
       return <LeagueTutorialScreen country={pendingCountry} difficulty={pendingDifficulty} onContinue={() => setPendingLeagueTutorialSeen(true)} onBack={() => setPendingCountry(null)} />;
     }
     const previewWorld = buildFullWorld();
-    previewWorld.forEach((t) => { t.fixtures = generateDoubleRoundRobin(t.clubs.map((c) => c.id)); });
+    previewWorld.forEach((t) => {
+      if (t.id === 0) t.fixtures = generateMlsSeasonSchedule(t.clubs);
+      else if (t.id === 1) t.fixtures = generateUslcSeasonSchedule(t.clubs);
+      else t.fixtures = generateDoubleRoundRobin(t.clubs.map((c) => c.id));
+    });
     return <ClubSelectScreen world={previewWorld} defaultCountry={pendingCountry} saveWasReset={saveWasReset} difficulty={pendingDifficulty} managerReputation={managerHistory.managerReputation} managerHistory={managerHistory} isJobSearch={isJobSearch} onBack={() => setPendingCountry(null)} onResetToNewSave={handleNewGame} onPick={(tierId, clubId) => {
       // re-derive the same picked club/tier from a freshly built world containing it
       handlePickFromPreview(previewWorld, tierId, clubId, pendingDifficulty, setState);

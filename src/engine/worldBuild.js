@@ -2,7 +2,8 @@ import { CHAMPIONSHIP_CLUBS, ENGLAND_ROSTERS, FICTIONAL_CLUB_NAMES, LEAGUE_ONE_C
 import { findEnglandRealRoster, generateAcademyProspect, generateDraftProspect, generateFictionalSquad, makeClub, randInt, realPlayerToRuntime } from "./playerGen";
 import { ACADEMY_STAR_THRESHOLDS, DRAFT_PHASES, ENGLAND_TIER_META, TARGET_TIER_SIZE, TIER_META } from "./constants";
 import { autoAssignFacilities } from "./facilities";
-import { ensureMlsConferences, generateDoubleRoundRobin, initialMlsConference } from "./leagueSim";
+import { assignGeoConference } from "./scheduling";
+import { generateDoubleRoundRobin, generateMlsSeasonSchedule, generateUslcSeasonSchedule, resolveMlsConferences, resolveUslcConferences } from "./leagueSim";
 
 export function buildEnglandWorld(sharedUsedNames, tierIdOffset = 0) {
   const usedNames = sharedUsedNames || new Set();
@@ -170,14 +171,15 @@ export function buildInitialWorld(sharedUsedNames) {
   mlsClubs.forEach((c) => {
     c.academyStars = randInt(2, 3);
     c.academyInvested = ACADEMY_STAR_THRESHOLDS[c.academyStars];
-    c.conference = initialMlsConference(c.name);
     // An already-established academy comes with an already-established
     // crop of prospects, not an empty pipeline you have to build from
     // scratch on day one.
     const startingCount = randInt(3, 5);
     c.youthPlayers = Array.from({ length: startingCount }, () => generateAcademyProspect(c.academyStars));
   });
-  ensureMlsConferences(mlsClubs); // balances any expansion filler clubs that aren't real East/West members
+  // Conference placement (geographic identity + this season's actual
+  // placement) — see resolveMlsConferences / scheduling.js.
+  resolveMlsConferences(mlsClubs);
 
   // Tier 1: USL Championship — real clubs, generated rosters
   const uslcClubs = USL_CHAMPIONSHIP_TEAMS.map((name) =>
@@ -189,6 +191,7 @@ export function buildInitialWorld(sharedUsedNames) {
       academyEligible: true,
     })
   );
+  resolveUslcConferences(uslcClubs);
 
   // Tier 2: USL League One — real clubs, generated rosters (no academies —
   // these clubs run open tryouts instead)
@@ -210,6 +213,17 @@ export function buildInitialWorld(sharedUsedNames) {
       budget: randInt(150_000, 500_000),
     })
   );
+
+  // Lower-tier clubs (USL1, USL2) get the same permanent geographic tag as
+  // MLS/USLC clubs, from the moment they're created — not only once they
+  // reach MLS/USLC — so the identity survives however many seasons it takes
+  // a club to work its way up the pyramid. Neither tier has documented real
+  // MLS/USLC conference membership (they aren't real MLS/USLC clubs), so
+  // this is the same deterministic, seeded fallback assignment used for any
+  // club with no known real identity — clearly an engine approximation, not
+  // real geographic data.
+  assignGeoConference(usl1Clubs, "usl1-geoconf", null);
+  assignGeoConference(usl2Clubs, "usl2-geoconf", null);
 
   // Facility auto-assignment — same pattern as England's, reputation-ranked
   // within each tier.

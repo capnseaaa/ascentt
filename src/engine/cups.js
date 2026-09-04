@@ -126,7 +126,11 @@ export function playNextEnglandCupRound(cupKey, progress, englandTiers, preDrawn
 }
 
 export function isCupCheckpointPending(stateLike, matchdayNum) {
-  if (stateLike.userTierId >= 4) return false; // US Open Cup only exists for the USA pyramid
+  // Both countries' domestic cups now run as persistent world competitions
+  // every season, regardless of which pyramid the user is actively playing
+  // in (product decision — the non-user side's cup used to never progress
+  // at all, confirmed as a bug). The UI recap popup, not this function,
+  // is what stays scoped to the user's own side — see App.jsx.
   const idx = US_OPEN_CUP_ROUND_MATCHDAYS.indexOf(matchdayNum);
   if (idx === -1) return false;
   if (stateLike.usOpenCup?.done) return false;
@@ -302,7 +306,8 @@ export function resolveEnglandCupRoundInPlace(next, cupKey) {
 }
 
 export function pendingEnglandCupCheckpoint(stateLike, matchdayNum) {
-  if (stateLike.userTierId < 4) return null;
+  // See isCupCheckpointPending above — same product decision applies
+  // symmetrically to the FA Cup / EFL Cup.
   const faIdx = FA_CUP_ROUND_MATCHDAYS.indexOf(matchdayNum);
   if (faIdx !== -1 && !stateLike.faCup?.done && (stateLike.faCup?.rounds?.length ?? 0) === faIdx) return "fa";
   const eflIdx = EFL_CUP_ROUND_MATCHDAYS.indexOf(matchdayNum);

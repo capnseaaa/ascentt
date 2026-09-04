@@ -51,6 +51,28 @@ export const DRAFT_PHASES = [
 
 export const PROMOTE_RELEGATE_COUNT = 3;
 
+// ===================== CONFERENCE-BASED SCHEDULING (MLS / USLC) =====================
+// Sourced from official 2026 competition-format announcements (MLSSoccer.com,
+// USL Championship). The exact real-world rule for WHICH specific clubs face
+// which cross-conference opponents is not publicly documented in either
+// league — only the resulting totals are. See scheduling.js for the engine's
+// deterministic approximation of that undocumented selection.
+//
+// MLS_TOTAL_GAMES is deliberately a standalone, named constant (not derived
+// or hardcoded inline anywhere) specifically so a future calendar-data update
+// (e.g. the 2027-28 season, whose exact game count has conflicting public
+// reports as of this writing) can override it without any engine change.
+export const MLS_CONFERENCE_SIZE_TARGET = 15; // 15 East / 15 West, 30 clubs total
+export const MLS_TOTAL_GAMES = 34;
+export const MLS_CROSS_CONFERENCE_CAP = 6;
+
+// USLC's East/West split is deliberately uneven in the real league (13/12
+// for 2026) rather than a fixed target — resolveConferenceMembership treats
+// USLC_EAST_SIZE_TARGET as the size to balance toward, not a hard rule.
+export const USLC_EAST_SIZE_TARGET = 13;
+export const USLC_TOTAL_GAMES = 30;
+export const USLC_CROSS_CONFERENCE_CAP = 6;
+
 export const TARGET_TIER_SIZE = 20;
 
 export const ENGLAND_AUTO_PROMOTE_BY_TIER = { 5: 2, 6: 2, 7: 3 };
