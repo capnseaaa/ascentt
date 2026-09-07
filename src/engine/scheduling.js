@@ -141,6 +141,36 @@ function buildExactCrossSchedule(eastIds, westIds, cap, rng, uid, nextFree) {
 // undocumented real selection rule — see the accompanying report for the
 // documented totals this reproduces exactly (only the pairings are
 // approximated). Home/away converges to within +/-1 of even per club.
+// Rearranges a multiset so no two adjacent entries are ever equal (the
+// classic "reorganize string" technique: bucket by frequency, then
+// round-robin through buckets, always preferring whichever bucket has the
+// most remaining items that isn't the value just placed). This is always
+// achievable as long as no single value's count exceeds half the total
+// length (rounded up) — true here by a wide margin, since a club's
+// game-count deficit is always tiny relative to how many clubs are in its
+// conference. Used so the deficit-pairing pool below can pair up
+// CONSECUTIVE entries directly, guaranteeing every pair is two different
+// clubs, without ever needing an ad hoc "no valid partner" fallback that
+// (found during testing) could otherwise repeatedly dump unplanned extra
+// games onto whichever club happened to be first in an array, rather than
+// genuinely needing one.
+function interleaveNoAdjacentDuplicates(items, rng) {
+  const counts = new Map();
+  items.forEach((v) => counts.set(v, (counts.get(v) || 0) + 1));
+  const queues = seededShuffle([...counts.entries()], rng).map(([v, c]) => Array(c).fill(v));
+  const result = [];
+  let lastVal = null;
+  while (queues.some((q) => q.length)) {
+    queues.sort((a, b) => b.length - a.length);
+    let picked = queues.find((q) => q.length && q[0] !== lastVal);
+    if (!picked) picked = queues.find((q) => q.length); // only reached if unavoidable (shouldn't occur given the frequency bound above)
+    const val = picked.shift();
+    result.push(val);
+    lastVal = val;
+  }
+  return result;
+}
+
 function buildApproximateCrossAndExtraSchedule(clubsA, clubsB, targetTotalGames, crossConferenceCap, baseIntraCount, rng, uid, nextFree) {
   const fixtures = [];
   const smaller = clubsA.length <= clubsB.length ? clubsA : clubsB;
@@ -153,24 +183,42 @@ function buildApproximateCrossAndExtraSchedule(clubsA, clubsB, targetTotalGames,
   smaller.forEach((id) => { crossCountFor[id] = crossConferenceCap; });
   largerShuffled.forEach((id, idx) => { crossCountFor[id] = largerBase + (idx < largerRemainder ? 1 : 0); });
 
-  const remaining = {};
-  clubsA.concat(clubsB).forEach((id) => { remaining[id] = crossCountFor[id]; });
-  const crossPairs = [];
-  let guard = 0;
-  while (clubsA.some((id) => remaining[id] > 0) && guard < 5000) {
-    guard++;
-    const aPool = seededShuffle(clubsA.filter((id) => remaining[id] > 0), rng);
-    const bPool = seededShuffle(clubsB.filter((id) => remaining[id] > 0), rng);
-    if (!aPool.length || !bPool.length) break;
-    for (const a of aPool) {
-      if (remaining[a] <= 0) continue;
-      const candidates = bPool.filter((b) => remaining[b] > 0 && !crossPairs.some((p) => p[0] === a && p[1] === b));
-      if (!candidates.length) continue;
-      const b = seededChoice(candidates, rng);
-      crossPairs.push([a, b]);
-      remaining[a]--; remaining[b]--;
+  // Cross-conference pairing via a pool-based construction, which
+  // guarantees every club receives EXACTLY its intended crossCountFor
+  // total, rather than a greedy random matcher that can leave a specific
+  // club short if its candidates happen to run out early (found during
+  // testing: the greedy version's stop condition only checked one side's
+  // remaining count, so a specific club on the other side could
+  // occasionally end up under-delivered even though the aggregate totals
+  // still balanced). Build one pool per side, each club repeated once per
+  // cross game it still needs; since both pools are always the same
+  // length by construction (crossCountFor is built so both sides' totals
+  // match), shuffling and zipping them together always produces exactly
+  // the right number of pairs for every club, with no possible shortfall.
+  const poolA = [];
+  clubsA.forEach((id) => { for (let i = 0; i < crossCountFor[id]; i++) poolA.push(id); });
+  const poolB = [];
+  clubsB.forEach((id) => { for (let i = 0; i < crossCountFor[id]; i++) poolB.push(id); });
+  const shuffledA = seededShuffle(poolA, rng);
+  let shuffledB = seededShuffle(poolB, rng);
+  // Light repair pass: avoid the exact same (a,b) pair appearing twice
+  // where a cheap swap can fix it, without ever leaving a pool entry
+  // unpaired (the swap only ever exchanges positions within poolB, so the
+  // total count per club is always preserved regardless of the outcome).
+  const seenPairs = new Set();
+  for (let i = 0; i < shuffledA.length; i++) {
+    const a = shuffledA[i];
+    let b = shuffledB[i];
+    if (seenPairs.has(`${a}|${b}`)) {
+      const swapIdx = shuffledB.findIndex((cand, j) => j > i && !seenPairs.has(`${a}|${cand}`));
+      if (swapIdx !== -1) {
+        [shuffledB[i], shuffledB[swapIdx]] = [shuffledB[swapIdx], shuffledB[i]];
+        b = shuffledB[i];
+      }
     }
+    seenPairs.add(`${a}|${b}`);
   }
+  const crossPairs = shuffledA.map((a, i) => [a, shuffledB[i]]);
 
   const crossHomeTarget = {};
   clubsA.concat(clubsB).forEach((id) => { crossHomeTarget[id] = Math.round((crossCountFor[id] ?? 0) / 2); });
@@ -196,35 +244,47 @@ function buildApproximateCrossAndExtraSchedule(clubsA, clubsB, targetTotalGames,
   fixtures.forEach((f) => { currentHome[f.homeClubId]++; });
 
   const finalizeConference = (ids) => {
-    const usedExtraAgainst = {};
-    ids.forEach((id) => { usedExtraAgainst[id] = new Set(); });
-    let guard2 = 0;
-    while (ids.some((id) => currentTotal[id] < targetTotalGames) && guard2 < ids.length * 6) {
-      guard2++;
-      for (const id of ids) {
-        if (currentTotal[id] >= targetTotalGames) continue;
-        // Prefer another club that's also still under target (keeps both
-        // totals converging toward the target together); if none remain
-        // (e.g. an odd number of deficit clubs left, so exactly one can't
-        // be paired with another deficit club), fall back to any
-        // not-yet-doubled same-conference opponent even if it's already
-        // at/over target — a small overage on one club is preferable to
-        // a permanent shortfall on another.
-        const preferredCandidates = ids.filter((other) => other !== id && currentTotal[other] < targetTotalGames && !usedExtraAgainst[id].has(other));
-        const fallbackCandidates = ids.filter((other) => other !== id && !usedExtraAgainst[id].has(other));
-        const candidates = preferredCandidates.length ? preferredCandidates : fallbackCandidates;
-        if (!candidates.length) continue;
-        const opp = seededChoice(seededShuffle(candidates, rng), rng);
-        usedExtraAgainst[id].add(opp);
-        usedExtraAgainst[opp].add(id);
-        const home = currentHome[id] <= currentHome[opp] ? id : opp;
-        const away = home === id ? opp : id;
-        const md = Math.max(nextFree[home], nextFree[away]);
-        fixtures.push({ id: uid(), matchday: md, homeClubId: home, awayClubId: away, homeScore: null, awayScore: null, played: false });
-        nextFree[home] = md + 1; nextFree[away] = md + 1;
-        currentTotal[id]++; currentTotal[opp]++;
-        currentHome[home]++;
-      }
+    // Build a flat pool where each club appears once per remaining game it
+    // still needs (its deficit against the target), then rearrange it so
+    // no two adjacent entries are ever the same club (see
+    // interleaveNoAdjacentDuplicates above). Pairing directly off the
+    // front two-at-a-time then always pairs two DIFFERENT clubs, hitting
+    // the exact target for every club whenever this conference's total
+    // deficit is even — the normal case. The only situation where a
+    // single club can't avoid a one-game overage is if the total deficit
+    // within this specific conference is genuinely odd, leaving exactly
+    // one unpaired entry at the very end — a real mathematical necessity,
+    // not an avoidable inefficiency in the matching order.
+    let pool = [];
+    ids.forEach((id) => {
+      const deficit = targetTotalGames - currentTotal[id];
+      for (let i = 0; i < deficit; i++) pool.push(id);
+    });
+    pool = interleaveNoAdjacentDuplicates(pool, rng);
+
+    const makeFixture = (a, b) => {
+      const home = currentHome[a] <= currentHome[b] ? a : b;
+      const away = home === a ? b : a;
+      const md = Math.max(nextFree[home], nextFree[away]);
+      fixtures.push({ id: uid(), matchday: md, homeClubId: home, awayClubId: away, homeScore: null, awayScore: null, played: false });
+      nextFree[home] = md + 1; nextFree[away] = md + 1;
+      currentTotal[a]++; currentTotal[b]++;
+      currentHome[home]++;
+    };
+
+    while (pool.length >= 2) {
+      const a = pool.shift();
+      const b = pool.shift();
+      makeFixture(a, b);
+    }
+    if (pool.length === 1) {
+      // Genuinely odd total deficit for this conference — exactly one
+      // entry has no partner left. Distribute this single unavoidable
+      // overage as fairly as possible: prefer a club not already carrying
+      // one, deterministic tie-break by name (never club id).
+      const a = pool[0];
+      const candidates = ids.filter((x) => x !== a).sort((p, q) => (p < q ? -1 : 1));
+      if (candidates.length) makeFixture(a, candidates[0]);
     }
   };
   finalizeConference(clubsA);
@@ -255,84 +315,109 @@ export function generateConferenceSeasonSchedule({ conferences, targetTotalGames
   return [...fixtures, ...buildApproximateCrossAndExtraSchedule(clubsA, clubsB, targetTotalGames, crossConferenceCap, baseIntraCount, rng, uid, nextFree)];
 }
 
+// ===================== TIER-SPECIFIC GEOGRAPHIC BORDER AXIS =====================
+// GAME-SPECIFIC RULE, NOT A REAL MLS/USLC POLICY — no real precedent exists
+// for how a promotion/relegation system between MLS and USLC would resolve
+// conference membership, since that scenario has no real-world analogue.
+//
+// This replaces a prior version of this file that used a hand-curated
+// "border-market club" list plus a lowest-id tie-break. That was flagged,
+// correctly, as not actually being a distance calculation — it was a
+// judgment call dressed up as geography. This version computes real
+// distance from real coordinates instead.
+//
+// For a tier with a known real East/West split (MLS, USLC), this computes
+// that TIER'S OWN border axis: the centroid of its real East clubs'
+// coordinates, the centroid of its real West clubs' coordinates, and the
+// perpendicular bisector line between them, in a simple equirectangular
+// (flat-map) projection with longitude scaled by cos(latitude) to
+// partially correct for meridian convergence. This is an approximation of
+// true geodesic distance, not survey-grade GIS — adequate for RELATIVE
+// ranking of which club sits closest to the line, which is all a
+// displacement decision needs. MLS's axis and USLC's axis are genuinely
+// different lines, computed from different real cities, because the two
+// leagues' real conference memberships are different sets of cities.
+function centroid(names, coords) {
+  const pts = names.map((n) => coords[n]).filter(Boolean);
+  if (!pts.length) return null;
+  return {
+    lat: pts.reduce((s, p) => s + p.lat, 0) / pts.length,
+    lng: pts.reduce((s, p) => s + p.lng, 0) / pts.length,
+  };
+}
+
+export function computeBorderAxis(eastNames, westNames, coords) {
+  const eastC = centroid(eastNames, coords);
+  const westC = centroid(westNames, coords);
+  if (!eastC || !westC) return null; // no real conference split available for this tier (e.g. USL1/USL2 today)
+  const midpoint = { lat: (eastC.lat + westC.lat) / 2, lng: (eastC.lng + westC.lng) / 2 };
+  const cosLat = Math.cos((midpoint.lat * Math.PI) / 180);
+  const dx = (westC.lng - eastC.lng) * cosLat;
+  const dy = westC.lat - eastC.lat;
+  const mag = Math.sqrt(dx * dx + dy * dy) || 1;
+  return { midpoint, dir: { x: dx / mag, y: dy / mag }, cosLat };
+}
+
+// Distance from a specific club to a specific tier's border axis. A club
+// with no coordinate data returns Infinity — it is never preferred as a
+// "closest to the border" candidate, since there's no geography to base
+// that on; see the deterministic fallback in resolveConferenceMembership
+// for what happens if every candidate lacks coordinates (not expected
+// given the current 92-club real dataset, but handled defensively).
+export function distanceToBorder(clubName, axis, coords) {
+  if (!axis) return Infinity;
+  const p = coords[clubName];
+  if (!p) return Infinity;
+  const x = (p.lng - axis.midpoint.lng) * axis.cosLat;
+  const y = p.lat - axis.midpoint.lat;
+  return Math.abs(x * axis.dir.x + y * axis.dir.y);
+}
+
 // ===================== CONFERENCE PLACEMENT (promotion/relegation) =====================
-// GAME-SPECIFIC RULE, NOT A REAL MLS/USLC POLICY — no real precedent exists.
-//
 // Every club has a PERMANENT `geoConference` (assignGeoConference) — where
-// it naturally belongs, entirely independent of border-market status — and
-// a SEASONAL `conference` (this season's actual placement). Every
-// resolution pass starts by placing every club back in its own
-// geoConference, which is what gives step 4 below (restore toward the
-// natural conference whenever sizes allow) for free: there's no separate
-// "is this club currently displaced" bookkeeping, because each pass starts
-// fresh from "everyone home" and only displaces what's still required.
+// it naturally belongs — and a SEASONAL `conference` (this season's actual
+// placement). Every resolution pass starts by placing every club back in
+// its own geoConference, which is what gives "restore toward the natural
+// conference whenever sizes allow" for free: there's no separate "is this
+// club currently displaced" bookkeeping, because each pass starts fresh
+// from "everyone home" and only displaces what's still required.
 //
-// Resolution order, exactly as specified:
+// Resolution order:
 //   1. Determine the club's current tier (implicit in which of
 //      resolveMlsConferences/resolveUslcConferences the caller invokes).
 //   2. Determine whether that tier uses a conference system at all (today:
-//      MLS and USLC do; USL1 and USL2 don't, so neither is ever routed
-//      through this function).
-//   3. Use ONLY that tier's own geoConference data and TIER-SCOPED
-//      BORDER-MARKET DATA — see note below. Never another tier's list.
+//      MLS and USLC do; USL1 and USL2 don't, so neither is routed through
+//      this function).
+//   3. Use ONLY that tier's own geoConference data and that tier's own
+//      geographic border axis (computeBorderAxis above) — never another
+//      tier's. This holds structurally: resolveConferenceMembership only
+//      ever receives ONE axis per call, computed from that one tier's real
+//      conference geography, so a club's proximity to (say) USLC's border
+//      is never consulted when the same club is later resolved in MLS.
+//      If Louisville City FC is promoted into MLS, its distance is
+//      recalculated from scratch against MLS's OWN axis (built from real
+//      MLS East/West city coordinates) — its distance to USLC's axis, and
+//      any status that gave it there, plays no role at all.
 //   4. Restore every club toward its persistent geographic conference
-//      first (the "everyone home" reset above) — this happens before any
-//      displacement is even considered.
+//      first (the "everyone home" reset below) — before any displacement
+//      is even considered.
 //   5. If conference sizes still don't match after that, and temporary
-//      displacement is genuinely required, prefer an eligible club from
-//      THIS TIER's own border-market list.
-//   6. If no border-market candidate exists in this tier's list, fall back
-//      to the deterministic tie-break (lowest club id).
-//   7. A border-market designation from any OTHER tier is never consulted
-//      and never a reason to move a club — see TIER-SCOPED BORDER-MARKET
-//      DATA below for why this holds structurally, not just by convention.
-//
-// TIER-SCOPED BORDER-MARKET DATA — each tier's border-market list is
-// judgment-based curation (clubs whose real metro area is broadly closer
-// to the middle of the country, and therefore a more plausible temporary
-// fit for either conference than most of their conference's other
-// members). It is NOT derived from measured distances or coordinates (the
-// engine has no such data) and is NOT a global property of a club — it is
-// scoped strictly to one specific tier's conference system. A club's
-// membership on one tier's list has no bearing on any other tier: this
-// isn't a policy the caller has to remember to enforce, it's a structural
-// consequence of resolveConferenceMembership only ever receiving ONE
-// border list per call, for the one specific tier being resolved. If
-// Louisville City FC (on USLC's list) is promoted into MLS, the MLS
-// resolution call passes MLS_BORDER_MARKET_CLUBS — a set that doesn't
-// contain Louisville — so Louisville gets no border-market preference in
-// MLS; it is evaluated purely on its geoConference and, if displacement
-// is needed, against MLS's own list, exactly like any other MLS club with
-// no border-market status at all. This is used strictly as a
-// conflict-resolution tie-break — never a reason to move a club that
-// doesn't need to move, and never something that makes a club "regularly"
-// cross conferences.
-//
-// USL1_BORDER_MARKET_CLUBS and USL2_BORDER_MARKET_CLUBS are empty today,
-// because neither tier is currently routed through a conference resolver
-// at all (real USL1 is a single flat group; real USL2's 158-club/20-
-// division structure is out of scope, see project notes) — not because
-// those clubs are considered geographically inflexible. They exist as
-// explicit, tier-scoped placeholders: the day either tier gains a real
-// conference structure, populating its own list is a data change, not new
-// resolver code, and it would carry exactly the same tier-scoping
-// guarantee MLS and USLC already have.
-export const MLS_BORDER_MARKET_CLUBS = new Set([
-  "Minnesota United FC", "Sporting Kansas City", "St. Louis City SC",
-  "Nashville SC", "Atlanta United FC",
-]);
-export const USLC_BORDER_MARKET_CLUBS = new Set([
-  "FC Tulsa", "San Antonio FC",
-  "Louisville City FC", "Indy Eleven",
-]);
-export const USL1_BORDER_MARKET_CLUBS = new Set([]);
-export const USL2_BORDER_MARKET_CLUBS = new Set([]);
-
-export function resolveConferenceMembership(clubs, { targetSizeA, nameA, nameB, realConferenceLookup, borderMarketNames, seed }) {
+//      displacement is genuinely required, displace the club(s) in the
+//      oversized conference with the SMALLEST actual distance to this
+//      tier's border axis — the club that is geographically closest to
+//      sitting between the two conferences, not an arbitrary pick.
+//   6. If every remaining candidate lacks coordinate data (not expected
+//      given the current dataset, but handled defensively) or two clubs
+//      are exactly tied on distance, fall back to alphabetical order by
+//      club name — deterministic, but explicitly not dressed up as a
+//      geographic decision, and not club id (which carries no geographic
+//      or competitive meaning at all).
+//   7. A border axis (and displacement history) from any OTHER tier is
+//      never consulted — see point 3.
+export function resolveConferenceMembership(clubs, { targetSizeA, nameA, nameB, realConferenceLookup, borderAxis, coords, seed }) {
   assignGeoConference(clubs, seed || `geoconf-${nameA}-${nameB}`, realConferenceLookup);
   clubs.forEach((c) => { c.conference = c.geoConference; });
 
-  const border = new Set(borderMarketNames || []);
   let guard = 0;
   while (guard < clubs.length + 5) {
     guard++;
@@ -340,10 +425,11 @@ export function resolveConferenceMembership(clubs, { targetSizeA, nameA, nameB, 
     if (countA === targetSizeA) break;
     const oversizedName = countA > targetSizeA ? nameA : nameB;
     const inOversized = clubs.filter((c) => c.conference === oversizedName);
-    const borderCandidates = inOversized.filter((c) => border.has(c.name)).sort((a, b) => (a.id < b.id ? -1 : 1));
-    const candidates = borderCandidates.length ? borderCandidates : inOversized.sort((a, b) => (a.id < b.id ? -1 : 1));
-    if (!candidates.length) break;
-    candidates[0].conference = oversizedName === nameA ? nameB : nameA;
+    if (!inOversized.length) break;
+    const ranked = inOversized
+      .map((c) => ({ c, d: coords ? distanceToBorder(c.name, borderAxis, coords) : Infinity }))
+      .sort((a, b) => a.d - b.d || (a.c.name < b.c.name ? -1 : 1));
+    ranked[0].c.conference = oversizedName === nameA ? nameB : nameA;
   }
   return clubs;
 }

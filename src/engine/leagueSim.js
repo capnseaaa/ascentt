@@ -4,8 +4,15 @@ import { applySeasonFanHappiness, completeSeasonEndFacilityUpgrades, facilityMai
 import { runDraft } from "./worldBuild";
 import { computeTable, simulateMatch, squadStrength } from "./matchSim";
 import { applyDisqualificationCheck, checkTransferRecord, computeEventBonuses, decayPrizePools, distributePrizeMoney, dpRevenueForClub, effectivePayroll, ownershipDepositFor, runTransferWindow, trimSquad } from "./finance";
-import { MLS_EAST_CLUBS, MLS_WEST_CLUBS, USLC_EAST_CLUBS, USLC_WEST_CLUBS } from "../data/rosters";
-import { generateConferenceSeasonSchedule, MLS_BORDER_MARKET_CLUBS, resolveConferenceMembership, USLC_BORDER_MARKET_CLUBS } from "./scheduling";
+import { CLUB_HOME_COORDS, MLS_EAST_CLUBS, MLS_WEST_CLUBS, USLC_EAST_CLUBS, USLC_WEST_CLUBS } from "../data/rosters";
+import { computeBorderAxis, generateConferenceSeasonSchedule, resolveConferenceMembership } from "./scheduling";
+
+// Each tier's border axis is computed once, from that tier's OWN real
+// conference geography (see computeBorderAxis in scheduling.js) — MLS's
+// axis and USLC's axis are genuinely different lines, derived from
+// different real cities, not a shared or curated notion of "border club."
+const MLS_BORDER_AXIS = computeBorderAxis([...MLS_EAST_CLUBS], [...MLS_WEST_CLUBS], CLUB_HOME_COORDS);
+const USLC_BORDER_AXIS = computeBorderAxis([...USLC_EAST_CLUBS], [...USLC_WEST_CLUBS], CLUB_HOME_COORDS);
 
 export function generateDoubleRoundRobin(clubIds) {
   const firstLeg = generateRoundRobin(clubIds);
@@ -289,7 +296,7 @@ export function resolveMlsConferences(mlsClubs) {
   return resolveConferenceMembership(mlsClubs, {
     targetSizeA: MLS_CONFERENCE_SIZE_TARGET, nameA: "East", nameB: "West",
     realConferenceLookup: (name) => (MLS_EAST_CLUBS.has(name) ? "East" : MLS_WEST_CLUBS.has(name) ? "West" : null),
-    borderMarketNames: MLS_BORDER_MARKET_CLUBS,
+    borderAxis: MLS_BORDER_AXIS, coords: CLUB_HOME_COORDS,
     seed: "mls-geoconf",
   });
 }
@@ -298,7 +305,7 @@ export function resolveUslcConferences(uslcClubs) {
   return resolveConferenceMembership(uslcClubs, {
     targetSizeA: USLC_EAST_SIZE_TARGET, nameA: "East", nameB: "West",
     realConferenceLookup: (name) => (USLC_EAST_CLUBS.has(name) ? "East" : USLC_WEST_CLUBS.has(name) ? "West" : null),
-    borderMarketNames: USLC_BORDER_MARKET_CLUBS,
+    borderAxis: USLC_BORDER_AXIS, coords: CLUB_HOME_COORDS,
     seed: "uslc-geoconf",
   });
 }
