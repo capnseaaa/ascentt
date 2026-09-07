@@ -6,6 +6,7 @@ import { computeTable, simulateMatch, squadStrength } from "./matchSim";
 import { applyDisqualificationCheck, checkTransferRecord, computeEventBonuses, decayPrizePools, distributePrizeMoney, dpRevenueForClub, effectivePayroll, ownershipDepositFor, runTransferWindow, trimSquad } from "./finance";
 import { CLUB_HOME_COORDS, MLS_EAST_CLUBS, MLS_WEST_CLUBS, USLC_EAST_CLUBS, USLC_WEST_CLUBS } from "../data/rosters";
 import { computeBorderAxis, generateConferenceSeasonSchedule, resolveConferenceMembership } from "./scheduling";
+import { assignFixturesToCalendar, createContinuousSeasonProfile, isCompetitionScheduleComplete } from "./calendar";
 
 // Each tier's border axis is computed once, from that tier's OWN real
 // conference geography (see computeBorderAxis in scheduling.js) — MLS's
@@ -90,7 +91,7 @@ export function computeUserPlayoffQualification(tier, userClubId) {
   return { qualifies: inPlayoff, autoCount, seeds, table };
 }
 
-export function rolloverEnglandSeason(tiers, parachutePayments, difficulty, prizePools, userClubId, precomputedPromotionPlayoffs) {
+export function rolloverEnglandSeason(tiers, parachutePayments, difficulty, prizePools, userClubId, precomputedPromotionPlayoffs, seasonStartWeek = 1) {
   const playoffMatchday = 9999;
   const tables = tiers.map(computeTable);
   const clubsById = {};
@@ -265,7 +266,7 @@ export function rolloverEnglandSeason(tiers, parachutePayments, difficulty, priz
     if (restPayments.length > 0) newSchedule[clubId] = restPayments;
   });
 
-  return { tiers: newTiers, events, tables, parachutePayments: newSchedule, promotionPlayoffs, newPrizePools, userPrize, userPayroll };
+  return { tiers: attachCalendarProfiles(newTiers, seasonStartWeek), events, tables, parachutePayments: newSchedule, promotionPlayoffs, newPrizePools, userPrize, userPayroll };
 }
 
 export function ensureMlsConferences(mlsClubs) {
@@ -510,7 +511,7 @@ export function computeSeasonAwards(tier) {
   return { topScorer, teamOfSeason, bestYoungPlayer };
 }
 
-export function rolloverSeason(tiers, userClubId, prizePools, difficulty, precomputedPlayoffs) {
+export function rolloverSeason(tiers, userClubId, prizePools, difficulty, precomputedPlayoffs, seasonStartWeek = 1) {
   const { tables, movementByBoundary, promotionPlayoffs, mlsPlayoffResult, uslcPlayoffResult } =
     precomputedPlayoffs || computeSeasonPlayoffs(tiers, userClubId, difficulty);
   const userTierIdxForAwards = tiers.findIndex((t) => t.clubs.some((c) => c.id === userClubId));
@@ -789,25 +790,41 @@ export function rolloverSeason(tiers, userClubId, prizePools, difficulty, precom
   const userPromotionPlayoff = promotionPlayoffs.find((pp) => pp.tierIdx === userOriginalTierIdx);
 
   return {
-    newTiers, events, tables, windowResult, newPrizePools, userPrize, userRetirements, userDraftPicks, userPayroll,
+    newTiers: attachCalendarProfiles(newTiers, seasonStartWeek), events, tables, windowResult, newPrizePools, userPrize, userRetirements, userDraftPicks, userPayroll,
     mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, promotionPlayoffs, userPromotionPlayoff,
     userDisqualificationNotice, userDpRevenue, seasonAwards,
   };
 }
 
-// Season completion is a WORLD-level fact, not something any single tier
-// (e.g. the user's own) gets to decide on behalf of every other tier. This
-// returns the smallest matchday number, across ALL 8 tiers, that still has
-// an unplayed fixture — i.e. "what matchday should be simulated next so
-// that no tier's fixtures get silently skipped." Returns null only once
-// every tier has zero unplayed fixtures left.
-//
-// This is deliberately written as a simplified, single-shared-integer
-// stand-in for the future calendar system's "every competition reports its
-// own completion state, the world only advances once all of them agree"
-// rule — the completion CONDITION here (every tier has nothing left) is the
-// same one the calendar system will use later; only the representation
-// (a matchday integer vs. a real week/date) changes when that work happens.
+// Builds and attaches a real calendar profile to each tier, sized to its
+// own fixture count, starting at `seasonStartWeek` (an absolute world
+// week supplied by the caller — see calendar.js's computeNextSeasonStartWeek,
+// invoked from App.jsx's rollover orchestration), then stamps every
+// fixture with its calendar-derived `scheduledWeek`. Additive only: the
+// existing `matchday` field on each fixture is untouched, so nothing that
+// currently reads it needs to change in this pass.
+function attachCalendarProfiles(newTiers, seasonStartWeek) {
+  newTiers.forEach((t) => {
+    const maxMatchday = t.fixtures.length ? Math.max(...t.fixtures.map((f) => f.matchday)) : 0;
+    t.calendarProfile = createContinuousSeasonProfile(`tier-${t.id}`, maxMatchday, seasonStartWeek);
+    t.fixtures = assignFixturesToCalendar(t.fixtures, t.calendarProfile);
+  });
+  return newTiers;
+}
+
+// getCurrentMatchday deliberately stays matchday-driven and UNCHANGED in
+// this pass: it is what the actual simulation loop (App.jsx) uses to
+// decide what to simulate next, and every other consumer keyed to the
+// same number space (simulateMatchdayAcrossTiers, cup checkpoint gating,
+// player injury/suspension timers, facility construction timers) is ALSO
+// matchday-driven and untouched this pass. Changing what this function
+// scans without migrating every one of those consumers in the same pass
+// would create two incompatible numbering systems being compared against
+// each other — see calendar.js's module comment and this project's
+// calendar-foundation report for the full reasoning. The genuinely new,
+// calendar-driven value now available per fixture is `scheduledWeek`
+// (see calendar.js's assignFixturesToCalendar) — this pass adds it
+// additively rather than replacing what actually drives the loop today.
 export function getCurrentMatchday(next) {
   let min = null;
   next.tiers.forEach((t) => {
@@ -818,17 +835,18 @@ export function getCurrentMatchday(next) {
   return min;
 }
 
-// Companion check for cup competitions, which are not tracked in any tier's
-// `fixtures` array and so aren't visible to getCurrentMatchday's scan. A
-// season is only truly complete once every league tier AND every cup
-// competition reports itself done — this is the "no possible permanently-
-// pending competition" guarantee: it is a pure read of already-existing
-// state (never derives new work), so calling it repeatedly is always safe
-// and can never itself get stuck.
+// Season completion, refactored to be genuinely schedule-based rather
+// than a matchday-integer scan: a league tier's schedule is complete once
+// every one of its fixtures is marked played — no numeric comparison of
+// any kind. This is exactly equivalent to the old "no unplayed fixture
+// anywhere" check (both are true iff every fixture is played), so season
+// timing does not change; only the underlying concept does, matching the
+// requirement that completion be based on schedules finishing, not on
+// what matchday number happens to be current.
 export function isWorldSeasonComplete(next) {
-  const allFixturesPlayed = getCurrentMatchday(next) === null;
+  const allLeaguesComplete = next.tiers.every((t) => isCompetitionScheduleComplete(t.fixtures));
   const allCupsDone = !!next.usOpenCup?.done && !!next.faCup?.done && !!next.eflCup?.done;
-  return allFixturesPlayed && allCupsDone;
+  return allLeaguesComplete && allCupsDone;
 }
 
 export function maybeTriggerMidWindow(next, justPlayedMatchday) {

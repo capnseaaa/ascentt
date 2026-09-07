@@ -6,9 +6,10 @@ import { canStartFacilityUpgrade, defaultTicketPrice, downgradeFacility, facilit
 import { buildEnglandWorld, buildFullWorld } from "./engine/worldBuild";
 import { boardHappinessDelta, boardMessageNoticeText, checkBoardMessageCompliance, computeHints, computeInboxUrgentCount, generateBoardMessage, generateBoardObjective, generateJobOffer, jobOfferChanceFor } from "./engine/board";
 import { computeSeasonAwards, computeSeasonPlayoffs, computeUserPlayoffQualification, generateDoubleRoundRobin, generateMlsSeasonSchedule, generateUslcSeasonSchedule, getCurrentMatchday, isWorldSeasonComplete, maybeTriggerMidWindow, resolveKnockoutMatch, rolloverEnglandSeason, rolloverSeason } from "./engine/leagueSim";
+import { assignFixturesToCalendar, computeNextSeasonStartWeek, createContinuousSeasonProfile, createWorldTime, deriveWorldWeek } from "./engine/calendar";
 import { clubLineRatings, computeMatchOutcome, computeTable, isAvailable, isRivalryMatch, simulateMatch, simulateMatchdayAcrossTiers, startingXI, xiLineRatings } from "./engine/matchSim";
 import { checkTransferRecord, computeRecommendationScore, effectivePayroll, isFinanciallyRisky, marketValue, ownershipDepositFor, recommendationReason, renewalOutcome, runAiToAiTransfers } from "./engine/finance";
-import { cupRoundLabel, drawNextEnglandCupRound, drawNextUsOpenCupRound, isCupCheckpointPending, pendingEnglandCupCheckpoint, previewStageLabel, resolveCupRoundInPlace, resolveEnglandCupRoundInPlace } from "./engine/cups";
+import { cupRoundLabel, drawNextEnglandCupRound, drawNextUsOpenCupRound, EFL_CUP_CALENDAR, FA_CUP_CALENDAR, isCupCheckpointPending, pendingEnglandCupCheckpoint, previewStageLabel, resolveCupRoundInPlace, resolveEnglandCupRoundInPlace, US_OPEN_CUP_CALENDAR } from "./engine/cups";
 
 /* ============================================================
    FICTIONAL WORLD DATA
@@ -4177,6 +4178,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     }
     mutateAndSave((next) => {
       const { matches, disqualificationNotice } = simulateMatchdayAcrossTiers(next, currentMatchday);
+      next.worldTime = { ...next.worldTime, worldWeek: deriveWorldWeek(next.worldTime, currentMatchday) };
       applyCareerStatsDelta(outcomeToDelta(computeMatchOutcome(matches, userClub.name)));
       const w = maybeTriggerMidWindow(next, currentMatchday);
       setRecap({ matchday: currentMatchday, matches });
@@ -4219,6 +4221,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
           continue;
         }
         const { matches, disqualificationNotice } = simulateMatchdayAcrossTiers(next, md);
+        next.worldTime = { ...next.worldTime, worldWeek: deriveWorldWeek(next.worldTime, md) };
         statsDelta = mergeDelta(statsDelta, outcomeToDelta(computeMatchOutcome(matches, userClub.name)));
         if (disqualificationNotice) lastNotice = disqualificationNotice;
         const userRivalry = findUserRivalryMatch(matches);
@@ -4266,6 +4269,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
           continue;
         }
         const { matches, disqualificationNotice } = simulateMatchdayAcrossTiers(next, md);
+        next.worldTime = { ...next.worldTime, worldWeek: deriveWorldWeek(next.worldTime, md) };
         statsDelta = mergeDelta(statsDelta, outcomeToDelta(computeMatchOutcome(matches, userClub.name)));
         if (disqualificationNotice) lastNotice = disqualificationNotice;
         const userRivalry = findUserRivalryMatch(matches);
@@ -4414,10 +4418,21 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     const englandTiers = state.tiers.slice(4, 8);
     const userIsEngland = state.userTierId >= 4;
 
+    // The calendar layer, not the promotion/relegation logic, decides
+    // where in absolute world time next season begins — one week after
+    // whichever competition (any of the 8 tiers, or any of the 3 cups)
+    // finished latest this season, so no two seasons' active weeks ever
+    // overlap. This does not change promotion/relegation, finances, or
+    // any other rollover behavior — it only supplies the starting
+    // coordinate the new season's calendar profiles get built from.
+    const outgoingTierProfiles = state.tiers.map((t) => t.calendarProfile).filter(Boolean);
+    const outgoingCupProfiles = [US_OPEN_CUP_CALENDAR, FA_CUP_CALENDAR, EFL_CUP_CALENDAR];
+    const nextSeasonStartWeek = computeNextSeasonStartWeek(outgoingTierProfiles, outgoingCupProfiles);
+
     const usaResult = userIsEngland
-      ? rolloverSeason(usaTiers, "__background__", state.prizePools.slice(0, 4), state.difficulty, computeSeasonPlayoffs(usaTiers, "__background__", state.difficulty))
-      : rolloverSeason(usaTiers, state.userClubId, state.prizePools.slice(0, 4), state.difficulty, seasonPlayoffs);
-    const englandResult = rolloverEnglandSeason(englandTiers, state.parachutePayments, state.difficulty, state.prizePools.slice(4, 8), state.userClubId, precomputedEnglandPlayoffs);
+      ? rolloverSeason(usaTiers, "__background__", state.prizePools.slice(0, 4), state.difficulty, computeSeasonPlayoffs(usaTiers, "__background__", state.difficulty), nextSeasonStartWeek)
+      : rolloverSeason(usaTiers, state.userClubId, state.prizePools.slice(0, 4), state.difficulty, seasonPlayoffs, nextSeasonStartWeek);
+    const englandResult = rolloverEnglandSeason(englandTiers, state.parachutePayments, state.difficulty, state.prizePools.slice(4, 8), state.userClubId, precomputedEnglandPlayoffs, nextSeasonStartWeek);
 
     const newTiers = [...usaResult.newTiers, ...englandResult.tiers];
     // A manager who's actually won things commands more investment from
@@ -4908,6 +4923,10 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       seasonNumber: prev.seasonNumber + 1,
       midWindowSeason: prev.midWindowSeason,
       prizePools: newPrizePools,
+      // The new season's world clock starts exactly where the calendar
+      // layer decided (see nextSeasonStartWeek above) — one week after
+      // the latest-finishing competition from the season that just ended.
+      worldTime: { worldWeek: nextSeasonStartWeek, seasonStartWeek: nextSeasonStartWeek },
       // US Open Cup qualification is based on the PREVIOUS season's final
       // standings, same as the real tournament (not whatever's happening
       // in-progress this season) — bank this season's final top-16
@@ -5863,6 +5882,12 @@ export default function App() {
       if (t.id === 0) t.fixtures = generateMlsSeasonSchedule(t.clubs);
       else if (t.id === 1) t.fixtures = generateUslcSeasonSchedule(t.clubs);
       else t.fixtures = generateDoubleRoundRobin(t.clubs.map((c) => c.id));
+      // Season 1 always starts the world's absolute clock at week 1 — the
+      // calendar layer's first real assignment, additive alongside the
+      // existing matchday field (see calendar.js).
+      const maxMatchday = t.fixtures.length ? Math.max(...t.fixtures.map((f) => f.matchday)) : 0;
+      t.calendarProfile = createContinuousSeasonProfile(`tier-${t.id}`, maxMatchday, 1);
+      t.fixtures = assignFixturesToCalendar(t.fixtures, t.calendarProfile);
     });
     return <ClubSelectScreen world={previewWorld} defaultCountry={pendingCountry} saveWasReset={saveWasReset} difficulty={pendingDifficulty} managerReputation={managerHistory.managerReputation} managerHistory={managerHistory} isJobSearch={isJobSearch} onBack={() => setPendingCountry(null)} onResetToNewSave={handleNewGame} onPick={(tierId, clubId) => {
       // re-derive the same picked club/tier from a freshly built world containing it
@@ -5938,5 +5963,9 @@ function handlePickFromPreview(previewWorld, tierId, clubId, difficulty, setStat
     worldRecords: { ...DEFAULT_WORLD_RECORDS },
     jobOffers: [],
     newsFeed: [],
+    // Global world clock (calendar foundation) — a real, persisted value
+    // separate from the season-relative `matchday` field on fixtures. See
+    // engine/calendar.js's module comment for why these stay distinct.
+    worldTime: createWorldTime(1),
   });
 }

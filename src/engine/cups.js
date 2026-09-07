@@ -2,6 +2,19 @@ import { shuffle } from "./playerGen";
 import { EFL_CUP_CHAMPION_PRIZE, EFL_CUP_ROUND_MATCHDAYS, EFL_CUP_RUNNERUP_PRIZE, EFL_CUP_STAGE_PRIZES, ENGLAND_CUP_STAGE_NAMES, FA_CUP_CHAMPION_PRIZE, FA_CUP_ROUND3_LOSER_CONSOLATION, FA_CUP_ROUND_MATCHDAYS, FA_CUP_RUNNERUP_PRIZE, FA_CUP_STAGE_PRIZES, FULL_TIER_META, LATER_CUP_ROUND_LABELS, US_OPEN_CUP_CHAMPION_PRIZE, US_OPEN_CUP_GIANT_KILLER_BONUS, US_OPEN_CUP_ROUND_MATCHDAYS, US_OPEN_CUP_RUNNERUP_PRIZE } from "./constants";
 import { computeTable } from "./matchSim";
 import { resolveKnockoutMatch } from "./leagueSim";
+import { activeWeeksOf, createSparseWeeksProfile } from "./calendar";
+
+// Cup checkpoint timing is now real calendar-profile data (requirement:
+// migrate the cup checkpoint system off hardcoded sentinel-matchday
+// arrays), not a bare constant array a gating function happens to check
+// membership against. Same weeks, same behavior as before — this pass
+// only changes WHERE the timing data lives, not what it produces, so
+// nothing about cup pacing changes. This is what lets a future pass give
+// a cup real calendar dates/breaks without touching the checkpoint
+// functions below at all — only these profile definitions would change.
+export const US_OPEN_CUP_CALENDAR = createSparseWeeksProfile("us_open_cup", US_OPEN_CUP_ROUND_MATCHDAYS);
+export const FA_CUP_CALENDAR = createSparseWeeksProfile("fa_cup", FA_CUP_ROUND_MATCHDAYS);
+export const EFL_CUP_CALENDAR = createSparseWeeksProfile("efl_cup", EFL_CUP_ROUND_MATCHDAYS);
 
 export function drawCupPairs(entrants) {
   const roster = shuffle(entrants);
@@ -131,7 +144,7 @@ export function isCupCheckpointPending(stateLike, matchdayNum) {
   // in (product decision — the non-user side's cup used to never progress
   // at all, confirmed as a bug). The UI recap popup, not this function,
   // is what stays scoped to the user's own side — see App.jsx.
-  const idx = US_OPEN_CUP_ROUND_MATCHDAYS.indexOf(matchdayNum);
+  const idx = activeWeeksOf(US_OPEN_CUP_CALENDAR).indexOf(matchdayNum);
   if (idx === -1) return false;
   if (stateLike.usOpenCup?.done) return false;
   const playedSoFar = stateLike.usOpenCup?.rounds?.length ?? 0;
@@ -308,9 +321,9 @@ export function resolveEnglandCupRoundInPlace(next, cupKey) {
 export function pendingEnglandCupCheckpoint(stateLike, matchdayNum) {
   // See isCupCheckpointPending above — same product decision applies
   // symmetrically to the FA Cup / EFL Cup.
-  const faIdx = FA_CUP_ROUND_MATCHDAYS.indexOf(matchdayNum);
+  const faIdx = activeWeeksOf(FA_CUP_CALENDAR).indexOf(matchdayNum);
   if (faIdx !== -1 && !stateLike.faCup?.done && (stateLike.faCup?.rounds?.length ?? 0) === faIdx) return "fa";
-  const eflIdx = EFL_CUP_ROUND_MATCHDAYS.indexOf(matchdayNum);
+  const eflIdx = activeWeeksOf(EFL_CUP_CALENDAR).indexOf(matchdayNum);
   if (eflIdx !== -1 && !stateLike.eflCup?.done && (stateLike.eflCup?.rounds?.length ?? 0) === eflIdx) return "efl";
   return null;
 }
