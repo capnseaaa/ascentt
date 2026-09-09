@@ -1,5 +1,5 @@
 import {
-  ATTENDANCE_RATE_MAX, ATTENDANCE_RATE_MIN, FACILITY_COST_MULTIPLIER, FACILITY_FIRST_UPGRADE_MATCHDAYS,
+  ATTENDANCE_RATE_MAX, ATTENDANCE_RATE_MIN, FACILITY_COST_MULTIPLIER, FACILITY_FIRST_UPGRADE_WORLD_WEEKS,
   FACILITY_MAINTENANCE_RATE, FACILITY_MAX_LEVEL, FACILITY_TIER_RANGE, FACILITY_TYPES, FACILITY_UPGRADES_PER_SEASON,
   FACILITY_WORLD_CLASS_LEVEL, FAN_HAPPINESS_DEFAULT, FAN_HAPPINESS_EXPECTATION_DELTA, FAN_HAPPINESS_MATCH_DELTA,
   FAN_HAPPINESS_REVERSION_RATE, FAN_HAPPINESS_SEASON_DELTA, MERCHANDISE_BASE_FRACTION, OWNERSHIP_DEPOSIT_WAGED,
@@ -120,40 +120,41 @@ export function downgradeFacility(club, facilityType) {
 
 // Mutates club in place: deducts cost, marks the facility as under
 // construction. Returns true/false for whether it actually started.
-export function startFacilityUpgrade(club, facilityType, tierIdx, currentMatchday) {
+export function startFacilityUpgrade(club, facilityType, tierIdx, currentWorldWeek) {
   const check = canStartFacilityUpgrade(club, facilityType, tierIdx);
   if (!check.ok) return false;
   const f = club.facilities[facilityType];
   club.budget -= check.cost;
   const isFirstUpgrade = !f.hasEverUpgraded;
   f.upgrading = isFirstUpgrade
-    ? { targetLevel: check.targetLevel, completesAtMatchday: (currentMatchday ?? 1) + FACILITY_FIRST_UPGRADE_MATCHDAYS }
+    ? { targetLevel: check.targetLevel, startedAtWorldWeek: currentWorldWeek ?? 1, completesAtWorldWeek: (currentWorldWeek ?? 1) + FACILITY_FIRST_UPGRADE_WORLD_WEEKS }
     : { targetLevel: check.targetLevel, completesAtSeasonEnd: true };
   f.hasEverUpgraded = true;
   club.facilityUpgradesThisSeason = (club.facilityUpgradesThisSeason || 0) + 1;
   return true;
 }
 
-// Called every matchday for every club — completes any upgrade whose
-// matchday-based construction timer has elapsed. Season-end upgrades are
-// handled separately, at rollover. Academy keeps its own star-count field
-// (academyStars/academyUpgrading, not part of `club.facilities`) since its
-// pricing/prospect-quality system is untouched — but its UPGRADE TIMING
-// folds in here too, so there's only one place to remember to call this,
-// not two separate "did I wire this for both facilities and academy"
-// call sites (exactly the kind of thing that's gone missing for England
-// before).
-export function progressFacilityConstruction(club, currentMatchday) {
+// Called every world week for every club — completes any upgrade whose
+// real-elapsed-time construction timer has elapsed. A 10-week build takes
+// 10 world weeks regardless of how many fixtures the club's league plays
+// during that span — this is genuine elapsed time, not a fixture count.
+// Season-end upgrades are handled separately, at rollover. Academy keeps
+// its own star-count field (academyStars/academyUpgrading, not part of
+// `club.facilities`) since its pricing/prospect-quality system is
+// untouched — but its UPGRADE TIMING folds in here too, so there's only
+// one place to remember to call this, not two separate "did I wire this
+// for both facilities and academy" call sites.
+export function progressFacilityConstruction(club, currentWorldWeek) {
   if (club.facilities) {
     NEW_FACILITY_TYPES.forEach((type) => {
       const f = club.facilities[type];
-      if (f?.upgrading?.completesAtMatchday != null && currentMatchday >= f.upgrading.completesAtMatchday) {
+      if (f?.upgrading?.completesAtWorldWeek != null && currentWorldWeek >= f.upgrading.completesAtWorldWeek) {
         f.level = f.upgrading.targetLevel;
         f.upgrading = null;
       }
     });
   }
-  if (club.academyUpgrading?.completesAtMatchday != null && currentMatchday >= club.academyUpgrading.completesAtMatchday) {
+  if (club.academyUpgrading?.completesAtWorldWeek != null && currentWorldWeek >= club.academyUpgrading.completesAtWorldWeek) {
     club.academyStars = club.academyUpgrading.targetStars;
     if (club.academyUpgrading.pendingInvested != null) club.academyInvested = club.academyUpgrading.pendingInvested;
     club.academyUpgrading = null;

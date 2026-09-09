@@ -54,7 +54,7 @@ export function generateRoundRobin(clubIds) {
   return fixtures;
 }
 
-export function runPromotionPlayoffN(lowerTable, lowerTierClubs, matchday, autoCount) {
+export function runPromotionPlayoffN(lowerTable, lowerTierClubs, worldWeek, autoCount, tierIdx) {
   if (lowerTable.length < autoCount + 4) {
     return { autoPromoted: lowerTable.slice(0, autoCount).map((r) => r.clubId), playoffPromoted: lowerTable[autoCount]?.clubId, bracket: null };
   }
@@ -62,9 +62,9 @@ export function runPromotionPlayoffN(lowerTable, lowerTierClubs, matchday, autoC
   const autoPromoted = lowerTable.slice(0, autoCount).map((r) => r.clubId);
   const s1 = clubById(lowerTable[autoCount].clubId), s2 = clubById(lowerTable[autoCount + 1].clubId);
   const s3 = clubById(lowerTable[autoCount + 2].clubId), s4 = clubById(lowerTable[autoCount + 3].clubId);
-  const semi1 = resolveKnockoutMatch(s1, s4, matchday);
-  const semi2 = resolveKnockoutMatch(s2, s3, matchday);
-  const final = resolveKnockoutMatch(semi1.winner, semi2.winner, matchday);
+  const semi1 = resolveKnockoutMatch(s1, s4, worldWeek, tierIdx);
+  const semi2 = resolveKnockoutMatch(s2, s3, worldWeek, tierIdx);
+  const final = resolveKnockoutMatch(semi1.winner, semi2.winner, worldWeek, tierIdx);
   return { autoPromoted, playoffPromoted: final.winner.id, bracket: { semi1, semi2, final } };
 }
 
@@ -91,8 +91,16 @@ export function computeUserPlayoffQualification(tier, userClubId) {
   return { qualifies: inPlayoff, autoCount, seeds, table };
 }
 
-export function rolloverEnglandSeason(tiers, parachutePayments, difficulty, prizePools, userClubId, precomputedPromotionPlayoffs, seasonStartWeek = 1) {
-  const playoffMatchday = 9999;
+export function rolloverEnglandSeason(tiers, parachutePayments, difficulty, prizePools, userClubId, precomputedPromotionPlayoffs, seasonStartWeek = 1, worldWeek) {
+  // `worldWeek` is the real, current elapsed-time value at the moment this
+  // season's playoffs are resolved (end of the outgoing season) — NOT
+  // `seasonStartWeek`, which is where the NEXT season begins. No sentinel
+  // value here anymore: a player injured/carded during a promotion playoff
+  // now gets a real timer instead of one that could taint them for the
+  // rest of the game (the confirmed bug this migration fixes). Falls back
+  // to `seasonStartWeek` if the caller doesn't have a more precise value,
+  // which is still a real, sane world week — never a magic number.
+  const effectiveWorldWeek = worldWeek ?? seasonStartWeek;
   const tables = tiers.map(computeTable);
   const clubsById = {};
   tiers.forEach((t) => t.clubs.forEach((c) => (clubsById[c.id] = c)));
@@ -120,7 +128,7 @@ export function rolloverEnglandSeason(tiers, parachutePayments, difficulty, priz
     // where one exists for this boundary, instead of re-simulating a fresh
     // (and potentially different) random result.
     const playoff = precomputedPromotionPlayoffs?.[tiers[i + 1].id]
-      || runPromotionPlayoffN(lowerTable, tiers[i + 1].clubs, playoffMatchday, autoPromoteCounts[i]);
+      || runPromotionPlayoffN(lowerTable, tiers[i + 1].clubs, effectiveWorldWeek, autoPromoteCounts[i], tiers[i + 1].id);
     const promoted = [...playoff.autoPromoted, playoff.playoffPromoted];
     newTierClubIds[i] = newTierClubIds[i].filter((id) => !relegated.includes(id)).concat(promoted);
     newTierClubIds[i + 1] = newTierClubIds[i + 1].filter((id) => !promoted.includes(id)).concat(relegated);
@@ -167,7 +175,7 @@ export function rolloverEnglandSeason(tiers, parachutePayments, difficulty, priz
         // had simply never been ported over. Real players' contracts never
         // actually reached the renewal threshold as a result, so the Renew
         // button could never appear for anyone, ever.
-        return { ...grown, contractYearsLeft: grown.contractYearsLeft - 1, fitness: 100, morale: 60, injuredUntilMatchday: null, suspendedUntilMatchday: null, lastYellowMatchday: null, seasonGoals: 0 };
+        return { ...grown, contractYearsLeft: grown.contractYearsLeft - 1, fitness: 100, morale: 60, injuredUntilWorldWeek: null, suspension: null, lastYellowMatchday: null, seasonGoals: 0 };
       });
       const retiring = squad.filter((p) => Math.random() < retirementChance(p.age));
       const retiredIds = new Set(retiring.map((p) => p.id));
@@ -339,12 +347,12 @@ export function generateUslcSeasonSchedule(uslcClubs) {
   });
 }
 
-export function resolveKnockoutMatch(home, away, matchday) {
+export function resolveKnockoutMatch(home, away, worldWeek, tierIdx) {
   const fixture = { homeScore: null, awayScore: null, played: false };
-  const result = simulateMatch(fixture, home, away, matchday);
+  const result = simulateMatch(fixture, home, away, worldWeek, undefined, tierIdx);
   if (fixture.homeScore === fixture.awayScore) {
-    const homeStrength = squadStrength(home, matchday);
-    const awayStrength = squadStrength(away, matchday);
+    const homeStrength = squadStrength(home, worldWeek);
+    const awayStrength = squadStrength(away, worldWeek);
     const total = homeStrength + awayStrength;
     const homeWinChance = total > 0 ? homeStrength / total : 0.5;
     const homeWon = Math.random() < homeWinChance;
@@ -353,21 +361,21 @@ export function resolveKnockoutMatch(home, away, matchday) {
   return { winner: fixture.homeScore > fixture.awayScore ? home : away, result, wentToPenalties: false };
 }
 
-export function bestOfThreeSeries(higherSeed, lowerSeed, matchday) {
+export function bestOfThreeSeries(higherSeed, lowerSeed, worldWeek, tierIdx) {
   let hWins = 0, lWins = 0;
   const games = [];
   for (let g = 0; g < 3 && hWins < 2 && lWins < 2; g++) {
     const homeIsHigher = g !== 1;
     const home = homeIsHigher ? higherSeed : lowerSeed;
     const away = homeIsHigher ? lowerSeed : higherSeed;
-    const outcome = resolveKnockoutMatch(home, away, matchday);
+    const outcome = resolveKnockoutMatch(home, away, worldWeek, tierIdx);
     games.push(outcome);
     if (outcome.winner.id === higherSeed.id) hWins++; else lWins++;
   }
   return { winner: hWins > lWins ? higherSeed : lowerSeed, games, hWins, lWins };
 }
 
-export function runMlsPlayoffs(mlsTable, mlsClubs, matchday) {
+export function runMlsPlayoffs(mlsTable, mlsClubs, worldWeek) {
   ensureMlsConferences(mlsClubs);
   const clubById = (id) => mlsClubs.find((c) => c.id === id);
 
@@ -377,14 +385,14 @@ export function runMlsPlayoffs(mlsTable, mlsClubs, matchday) {
     const seeds = rows.slice(0, 9).map((r) => clubById(r.clubId)).filter(Boolean);
     if (seeds.length < 9) return null;
     const [s1, s2, s3, s4, s5, s6, s7, s8, s9] = seeds;
-    const wildcard = resolveKnockoutMatch(s8, s9, matchday);
-    const r1a = bestOfThreeSeries(s1, wildcard.winner, matchday);
-    const r1b = bestOfThreeSeries(s2, s7, matchday);
-    const r1c = bestOfThreeSeries(s3, s6, matchday);
-    const r1d = bestOfThreeSeries(s4, s5, matchday);
-    const semiA = resolveKnockoutMatch(r1a.winner, r1d.winner, matchday);
-    const semiB = resolveKnockoutMatch(r1b.winner, r1c.winner, matchday);
-    const confFinal = resolveKnockoutMatch(semiA.winner, semiB.winner, matchday);
+    const wildcard = resolveKnockoutMatch(s8, s9, worldWeek, 0);
+    const r1a = bestOfThreeSeries(s1, wildcard.winner, worldWeek, 0);
+    const r1b = bestOfThreeSeries(s2, s7, worldWeek, 0);
+    const r1c = bestOfThreeSeries(s3, s6, worldWeek, 0);
+    const r1d = bestOfThreeSeries(s4, s5, worldWeek, 0);
+    const semiA = resolveKnockoutMatch(r1a.winner, r1d.winner, worldWeek, 0);
+    const semiB = resolveKnockoutMatch(r1b.winner, r1c.winner, worldWeek, 0);
+    const confFinal = resolveKnockoutMatch(semiA.winner, semiB.winner, worldWeek, 0);
     return { champion: confFinal.winner, seeds, wildcard, r1a, r1b, r1c, r1d, semiA, semiB, confFinal };
   }
 
@@ -396,7 +404,7 @@ export function runMlsPlayoffs(mlsTable, mlsClubs, matchday) {
   const westRank = mlsTable.findIndex((r) => r.clubId === west.champion.id);
   const finalHome = eastRank <= westRank ? east.champion : west.champion;
   const finalAway = finalHome.id === east.champion.id ? west.champion : east.champion;
-  const finalResult = resolveKnockoutMatch(finalHome, finalAway, matchday);
+  const finalResult = resolveKnockoutMatch(finalHome, finalAway, worldWeek, 0);
 
   const qualifiers = new Set([...east.seeds, ...west.seeds].map((c) => c.id));
   const finalists = new Set([east.champion.id, west.champion.id]);
@@ -411,19 +419,19 @@ export function runMlsPlayoffs(mlsTable, mlsClubs, matchday) {
   };
 }
 
-export function runPromotionPlayoff(lowerTable, lowerTierClubs, matchday) {
+export function runPromotionPlayoff(lowerTable, lowerTierClubs, worldWeek, tierIdx) {
   if (lowerTable.length < 6) return { autoPromoted: lowerTable.slice(0, 2).map((r) => r.clubId), playoffPromoted: lowerTable[2]?.clubId, bracket: null };
   const clubById = (id) => lowerTierClubs.find((c) => c.id === id);
   const autoPromoted = lowerTable.slice(0, 2).map((r) => r.clubId);
   const s3 = clubById(lowerTable[2].clubId), s4 = clubById(lowerTable[3].clubId);
   const s5 = clubById(lowerTable[4].clubId), s6 = clubById(lowerTable[5].clubId);
-  const semi1 = resolveKnockoutMatch(s3, s6, matchday);
-  const semi2 = resolveKnockoutMatch(s4, s5, matchday);
-  const final = resolveKnockoutMatch(semi1.winner, semi2.winner, matchday);
+  const semi1 = resolveKnockoutMatch(s3, s6, worldWeek, tierIdx);
+  const semi2 = resolveKnockoutMatch(s4, s5, worldWeek, tierIdx);
+  const final = resolveKnockoutMatch(semi1.winner, semi2.winner, worldWeek, tierIdx);
   return { autoPromoted, playoffPromoted: final.winner.id, bracket: { semi1, semi2, final } };
 }
 
-export function runFlatPlayoffBracket(table, clubs, matchday, size) {
+export function runFlatPlayoffBracket(table, clubs, worldWeek, size, tierIdx) {
   if (table.length < size) return null;
   const clubById = (id) => clubs.find((c) => c.id === id);
   const seeds = table.slice(0, size).map((r) => clubById(r.clubId));
@@ -434,7 +442,7 @@ export function runFlatPlayoffBracket(table, clubs, matchday, size) {
   let finalMatchup = null;
   let champion = null;
   while (currentRound.length > 0) {
-    const results = currentRound.map(([home, away]) => resolveKnockoutMatch(home, away, matchday));
+    const results = currentRound.map(([home, away]) => resolveKnockoutMatch(home, away, worldWeek, tierIdx));
     rounds.push(results);
     if (results.length === 1) {
       finalMatchup = currentRound[0];
@@ -450,9 +458,8 @@ export function runFlatPlayoffBracket(table, clubs, matchday, size) {
   return { champion, runnerUp, rounds, qualifiers: seeds.map((c) => c.id) };
 }
 
-export function computeSeasonPlayoffs(tiers, userClubId, difficulty) {
+export function computeSeasonPlayoffs(tiers, userClubId, difficulty, worldWeek) {
   const tables = tiers.map(computeTable);
-  const playoffMatchday = 9999; // sentinel — playoffs happen after the season, past any lingering injury/suspension cutoffs
   const promotionPlayoffs = [];
   const movementByBoundary = [];
 
@@ -468,13 +475,13 @@ export function computeSeasonPlayoffs(tiers, userClubId, difficulty) {
       // thing and being told "no promotion this time" right after is a
       // real anticlimax. Deliberate deviation: same top-2-auto-promote +
       // playoff-winner-promotes structure as every other boundary.
-      const playoff = runPromotionPlayoff(lowerTable, tiers[i + 1].clubs, playoffMatchday);
+      const playoff = runPromotionPlayoff(lowerTable, tiers[i + 1].clubs, worldWeek, i + 1);
       promoted = [...playoff.autoPromoted, playoff.playoffPromoted];
       promotionPlayoffs.push({ tierIdx: i + 1, ...playoff });
     } else {
       // Top 2 promote automatically; the last spot is decided by a 4-team
       // playoff among 3rd-6th place, like most real pro/rel leagues do it.
-      const playoff = runPromotionPlayoff(lowerTable, tiers[i + 1].clubs, playoffMatchday);
+      const playoff = runPromotionPlayoff(lowerTable, tiers[i + 1].clubs, worldWeek, i + 1);
       promoted = [...playoff.autoPromoted, playoff.playoffPromoted];
       promotionPlayoffs.push({ tierIdx: i + 1, ...playoff });
     }
@@ -485,11 +492,11 @@ export function computeSeasonPlayoffs(tiers, userClubId, difficulty) {
   // outcome (who wins the Cup) isn't an economic feature, so it shouldn't be
   // tied to difficulty mode. Only the real-dollar bonuses tied to results
   // are Pro/Executive-exclusive (handled separately, in rolloverSeason).
-  const mlsPlayoffResult = runMlsPlayoffs(tables[0], tiers[0].clubs, playoffMatchday);
+  const mlsPlayoffResult = runMlsPlayoffs(tables[0], tiers[0].clubs, worldWeek);
   // USL Championship runs its own real playoff too — top 8, single
   // elimination, no conferences. Crowns the USL Cup separately from the
   // Players' Shield (the regular-season table topper).
-  const uslcPlayoffResult = runFlatPlayoffBracket(tables[1], tiers[1].clubs, playoffMatchday, 8);
+  const uslcPlayoffResult = runFlatPlayoffBracket(tables[1], tiers[1].clubs, worldWeek, 8, 1);
 
   return { tables, movementByBoundary, promotionPlayoffs, mlsPlayoffResult, uslcPlayoffResult };
 }
@@ -600,8 +607,8 @@ export function rolloverSeason(tiers, userClubId, prizePools, difficulty, precom
           contractYearsLeft: grown.contractYearsLeft - 1,
           fitness: Math.min(100, grown.fitness + 40),
           morale: Math.round(grown.morale + (55 - grown.morale) * 0.4),
-          injuredUntilMatchday: null,
-          suspendedUntilMatchday: null,
+          injuredUntilWorldWeek: null,
+          suspension: null,
           lastYellowMatchday: null,
           seasonGoals: 0,
           seasonYellowCards: 0,
@@ -849,8 +856,15 @@ export function isWorldSeasonComplete(next) {
   return allLeaguesComplete && allCupsDone;
 }
 
-export function maybeTriggerMidWindow(next, justPlayedMatchday) {
-  if (justPlayedMatchday !== MID_SEASON_WINDOW_MATCHDAY - 1) return null;
+export function maybeTriggerMidWindow(next, justPlayedWorldWeek) {
+  // MID_SEASON_WINDOW_MATCHDAY is a competition-local "how far into THIS
+  // season" trigger point, not a raw world week — world week never resets
+  // between seasons, so this must be measured relative to the season's
+  // own start week, not compared against a fixed absolute number (which
+  // would only ever match once, in season 1, and never again).
+  const seasonStartWeek = next.worldTime?.seasonStartWeek ?? 1;
+  const weeksIntoSeason = justPlayedWorldWeek - seasonStartWeek + 1;
+  if (weeksIntoSeason !== MID_SEASON_WINDOW_MATCHDAY - 1) return null;
   if (next.midWindowSeason === next.seasonNumber) return null;
   const result = runTransferWindow(next.tiers, next.userClubId);
   next.midWindowSeason = next.seasonNumber;

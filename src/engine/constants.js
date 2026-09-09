@@ -298,14 +298,15 @@ export const FACILITY_COST_MULTIPLIER = [0, 0.05, 0.2, 0.6, 1.5, 3.5, 8.0];
 // single season just to keep them running, not just to build them once.
 export const FACILITY_MAINTENANCE_RATE = 0.03;
 // The very first upgrade a club ever makes (level 1->2) takes real
-// construction time, in matchdays — every upgrade after the club's very
-// first one instead completes at the start of the next season, whenever
-// during the current season it was started.
-export const FACILITY_FIRST_UPGRADE_MATCHDAYS = 10;
+// construction time, in World Weeks (real elapsed time, not fixture
+// count) — every upgrade after the club's very first one instead
+// completes at the start of the next season, whenever during the current
+// season it was started.
+export const FACILITY_FIRST_UPGRADE_WORLD_WEEKS = 10;
 // A downgrade is fast, not construction — cutting a program or trimming
 // staff takes effect essentially right away rather than needing 10
-// matchdays like actually building something new.
-export const FACILITY_DOWNGRADE_MATCHDAYS = 1;
+// World Weeks like actually building something new.
+export const FACILITY_DOWNGRADE_WORLD_WEEKS = 1;
 // How many facility upgrades a club can have IN PROGRESS at once in a
 // single season — dictated by pyramid level (top-flight clubs can run
 // more simultaneous projects than a lower-league club scraping by).

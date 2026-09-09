@@ -2,19 +2,57 @@ import { shuffle } from "./playerGen";
 import { EFL_CUP_CHAMPION_PRIZE, EFL_CUP_ROUND_MATCHDAYS, EFL_CUP_RUNNERUP_PRIZE, EFL_CUP_STAGE_PRIZES, ENGLAND_CUP_STAGE_NAMES, FA_CUP_CHAMPION_PRIZE, FA_CUP_ROUND3_LOSER_CONSOLATION, FA_CUP_ROUND_MATCHDAYS, FA_CUP_RUNNERUP_PRIZE, FA_CUP_STAGE_PRIZES, FULL_TIER_META, LATER_CUP_ROUND_LABELS, US_OPEN_CUP_CHAMPION_PRIZE, US_OPEN_CUP_GIANT_KILLER_BONUS, US_OPEN_CUP_ROUND_MATCHDAYS, US_OPEN_CUP_RUNNERUP_PRIZE } from "./constants";
 import { computeTable } from "./matchSim";
 import { resolveKnockoutMatch } from "./leagueSim";
-import { activeWeeksOf, createSparseWeeksProfile } from "./calendar";
+import { activeWeeksOf, createCompetitionSeasonTemplate, resolveCupSeasonCalendar } from "./calendar";
 
-// Cup checkpoint timing is now real calendar-profile data (requirement:
-// migrate the cup checkpoint system off hardcoded sentinel-matchday
-// arrays), not a bare constant array a gating function happens to check
-// membership against. Same weeks, same behavior as before — this pass
-// only changes WHERE the timing data lives, not what it produces, so
-// nothing about cup pacing changes. This is what lets a future pass give
-// a cup real calendar dates/breaks without touching the checkpoint
-// functions below at all — only these profile definitions would change.
-export const US_OPEN_CUP_CALENDAR = createSparseWeeksProfile("us_open_cup", US_OPEN_CUP_ROUND_MATCHDAYS);
-export const FA_CUP_CALENDAR = createSparseWeeksProfile("fa_cup", FA_CUP_ROUND_MATCHDAYS);
-export const EFL_CUP_CALENDAR = createSparseWeeksProfile("efl_cup", EFL_CUP_ROUND_MATCHDAYS);
+// Cup timing is now a reusable, season-relative TEMPLATE, resolved fresh
+// into an absolute CalendarProfile every season — never a permanent
+// absolute-week constant. This is the direct fix for the confirmed bug
+// where the old static profiles (computed once, at module load) could
+// never fire again after early season 1, since the world week they were
+// compared against kept growing every season while the profile's own
+// weeks stayed fixed forever.
+//
+// The offsets below are the SAME round spacing as before (e.g. US Open
+// Cup round 1 was matchday 3 when the world always started at week 1 —
+// as an offset from that anchor, that's 3-1=2), just re-expressed
+// relative to a season anchor instead of baked in as absolute weeks.
+// anchorRule is included for completeness/documentation, but cups never
+// resolve their own anchor (see resolveCupSeasonCalendar) — they always
+// share their host pyramid's already-resolved anchor for that season.
+export const US_OPEN_CUP_TEMPLATE = createCompetitionSeasonTemplate({
+  id: "us_open_cup",
+  anchorRule: { mode: "ROLLING" }, // shares the USA pyramid's own rolling anchor — see resolveCupSeasonCalendar
+  seasonLengthWeeks: null, // cups don't have a continuous regular-season window; only round offsets matter
+  activeWindowOffsets: [],
+  cupWindowOffsets: US_OPEN_CUP_ROUND_MATCHDAYS.map((w) => w - 1),
+});
+export const FA_CUP_TEMPLATE = createCompetitionSeasonTemplate({
+  id: "fa_cup",
+  anchorRule: { mode: "ROLLING" }, // shares England's own rolling anchor
+  seasonLengthWeeks: null,
+  activeWindowOffsets: [],
+  cupWindowOffsets: FA_CUP_ROUND_MATCHDAYS.map((w) => w - 1),
+});
+export const EFL_CUP_TEMPLATE = createCompetitionSeasonTemplate({
+  id: "efl_cup",
+  anchorRule: { mode: "ROLLING" },
+  seasonLengthWeeks: null,
+  activeWindowOffsets: [],
+  cupWindowOffsets: EFL_CUP_ROUND_MATCHDAYS.map((w) => w - 1),
+});
+
+// Called once per season (world build for season 1, rollover for every
+// season after) with that season's already-resolved USA/England anchor —
+// the SAME anchor value the league tiers for that pyramid just resolved,
+// never independently computed. Returns the three fresh, season-specific
+// CalendarProfiles to attach to state (see App.jsx).
+export function resolveCupCalendarsForSeason(usaAnchorWorldWeek, englandAnchorWorldWeek) {
+  return {
+    usOpenCupCalendar: resolveCupSeasonCalendar(US_OPEN_CUP_TEMPLATE, usaAnchorWorldWeek),
+    faCupCalendar: resolveCupSeasonCalendar(FA_CUP_TEMPLATE, englandAnchorWorldWeek),
+    eflCupCalendar: resolveCupSeasonCalendar(EFL_CUP_TEMPLATE, englandAnchorWorldWeek),
+  };
+}
 
 export function drawCupPairs(entrants) {
   const roster = shuffle(entrants);
@@ -25,9 +63,9 @@ export function drawCupPairs(entrants) {
   return { pairs, byeEntrant };
 }
 
-export function resolveCupPairs(pairs, matchday) {
+export function resolveCupPairs(pairs, worldWeek, competitionId) {
   return pairs.map(([homeEntrant, awayEntrant]) => {
-    const outcome = resolveKnockoutMatch(homeEntrant.club, awayEntrant.club, matchday);
+    const outcome = resolveKnockoutMatch(homeEntrant.club, awayEntrant.club, worldWeek, competitionId, true);
     const winnerEntrant = outcome.winner.id === homeEntrant.club.id ? homeEntrant : awayEntrant;
     const loserEntrant = winnerEntrant === homeEntrant ? awayEntrant : homeEntrant;
     // Giant-killer: a club from a numerically higher tier index (a lower
@@ -37,9 +75,9 @@ export function resolveCupPairs(pairs, matchday) {
   });
 }
 
-export function playCupRound(entrants, matchday) {
+export function playCupRound(entrants, worldWeek, competitionId) {
   const { pairs, byeEntrant } = drawCupPairs(entrants);
-  const matches = resolveCupPairs(pairs, matchday);
+  const matches = resolveCupPairs(pairs, worldWeek, competitionId);
   const advancing = byeEntrant ? [...matches.map((m) => m.winnerEntrant), byeEntrant] : matches.map((m) => m.winnerEntrant);
   return { matches, byeEntrant, advancing };
 }
@@ -106,21 +144,27 @@ export function drawNextEnglandCupRound(cupKey, progress, englandTiers, eflCupQu
   return { roundIndex: progress ? progress.rounds.length : 0, pairs, byeEntrant };
 }
 
-export function playNextEnglandCupRound(cupKey, progress, englandTiers, preDrawn, eflCupQualifiers) {
-  const matchday = 9998; // distinct sentinel from the US Open Cup's 9999, so both can coexist in a combined world
+export function playNextEnglandCupRound(cupKey, progress, englandTiers, preDrawn, eflCupQualifiers, worldWeek) {
+  // Real scheduled World Week now, not a sentinel (9998) — this is the
+  // actual fix for the bug where a cup-match injury/suspension could
+  // taint a player with a timer value far outside any real season, making
+  // them permanently unavailable. competitionId is a real, distinct
+  // identifier per cup so suspensions decrement against the correct
+  // competition instead of a shared magic number.
+  const competitionId = cupKey === "fa" ? "faCup" : "eflCup";
   const roundIndex = progress ? progress.rounds.length : 0;
 
   let result;
   let poolSize;
   if (preDrawn && preDrawn.roundIndex === roundIndex) {
     poolSize = preDrawn.pairs.length * 2 + (preDrawn.byeEntrant ? 1 : 0);
-    const matches = resolveCupPairs(preDrawn.pairs, matchday);
+    const matches = resolveCupPairs(preDrawn.pairs, worldWeek, competitionId);
     const advancing = preDrawn.byeEntrant ? [...matches.map((m) => m.winnerEntrant), preDrawn.byeEntrant] : matches.map((m) => m.winnerEntrant);
     result = { matches, byeEntrant: preDrawn.byeEntrant, advancing };
   } else {
     const pool = computeEnglandCupRoundPool(cupKey, progress, englandTiers, eflCupQualifiers);
     poolSize = pool.length;
-    result = playCupRound(pool, matchday);
+    result = playCupRound(pool, worldWeek, competitionId);
   }
 
   const roundGiantKillers = result.matches.filter((m) => m.isUpset).map((m) => ({ clubId: m.winnerEntrant.club.id, clubName: m.winnerEntrant.club.name }));
@@ -138,13 +182,42 @@ export function playNextEnglandCupRound(cupKey, progress, englandTiers, preDrawn
   return { rounds, giantKillerBonuses, pool: result.advancing, done: false, champion: null, runnerUp: null };
 }
 
+// Companion to isCupCheckpointPending: "what IS the next pending checkpoint
+// week for this cup" rather than "is this specific candidate week it" —
+// used by the world-week scanner to know how far it must advance to reach
+// the next thing anywhere in the world that needs processing, cups
+// included (previously only league fixtures were visible to that scan).
+// Returns null if the cup is done or has no more scheduled rounds.
+// Reads the CURRENT SEASON's already-resolved calendar off state
+// (stateLike.usOpenCupCalendar) rather than a permanent module-level
+// constant — this is what makes the cup work correctly across multiple
+// seasons instead of only ever firing once, early in season 1.
+export function nextUsOpenCupCheckpointWeek(stateLike) {
+  if (stateLike.usOpenCup?.done) return null;
+  if (!stateLike.usOpenCupCalendar) return null;
+  const weeks = activeWeeksOf(stateLike.usOpenCupCalendar);
+  const playedSoFar = stateLike.usOpenCup?.rounds?.length ?? 0;
+  return playedSoFar < weeks.length ? weeks[playedSoFar] : null;
+}
+
+export function nextEnglandCupCheckpointWeek(stateLike, cupKey) {
+  const stateField = cupKey === "fa" ? "faCup" : "eflCup";
+  const calendarField = cupKey === "fa" ? "faCupCalendar" : "eflCupCalendar";
+  if (stateLike[stateField]?.done) return null;
+  if (!stateLike[calendarField]) return null;
+  const weeks = activeWeeksOf(stateLike[calendarField]);
+  const playedSoFar = stateLike[stateField]?.rounds?.length ?? 0;
+  return playedSoFar < weeks.length ? weeks[playedSoFar] : null;
+}
+
 export function isCupCheckpointPending(stateLike, matchdayNum) {
   // Both countries' domestic cups now run as persistent world competitions
   // every season, regardless of which pyramid the user is actively playing
   // in (product decision — the non-user side's cup used to never progress
   // at all, confirmed as a bug). The UI recap popup, not this function,
   // is what stays scoped to the user's own side — see App.jsx.
-  const idx = activeWeeksOf(US_OPEN_CUP_CALENDAR).indexOf(matchdayNum);
+  if (!stateLike.usOpenCupCalendar) return false;
+  const idx = activeWeeksOf(stateLike.usOpenCupCalendar).indexOf(matchdayNum);
   if (idx === -1) return false;
   if (stateLike.usOpenCup?.done) return false;
   const playedSoFar = stateLike.usOpenCup?.rounds?.length ?? 0;
@@ -188,18 +261,20 @@ export function drawNextUsOpenCupRound(progress, tiers, qualifiers) {
   return { roundIndex: progress ? progress.rounds.length : 0, pairs, byeEntrant };
 }
 
-export function playNextUsOpenCupRound(progress, tiers, qualifiers, preDrawn) {
-  const matchday = 9999; // sentinel — distinguishes cup matches from any real league matchday for card/injury logic
+export function playNextUsOpenCupRound(progress, tiers, qualifiers, preDrawn, worldWeek) {
+  // Real scheduled World Week now, not the old 9999 sentinel — see
+  // playNextEnglandCupRound's comment for the full rationale.
+  const competitionId = "usOpenCup";
   const roundIndex = progress ? progress.rounds.length : 0;
 
   let result;
   if (preDrawn && preDrawn.roundIndex === roundIndex) {
-    const matches = resolveCupPairs(preDrawn.pairs, matchday);
+    const matches = resolveCupPairs(preDrawn.pairs, worldWeek, competitionId);
     const advancing = preDrawn.byeEntrant ? [...matches.map((m) => m.winnerEntrant), preDrawn.byeEntrant] : matches.map((m) => m.winnerEntrant);
     result = { matches, byeEntrant: preDrawn.byeEntrant, advancing };
   } else {
     const pool = computeCupRoundPool(progress, tiers, qualifiers);
-    result = playCupRound(pool, matchday);
+    result = playCupRound(pool, worldWeek, competitionId);
   }
 
   const roundGiantKillers = result.matches.filter((m) => m.isUpset).map((m) => ({ clubId: m.winnerEntrant.club.id, clubName: m.winnerEntrant.club.name }));
@@ -217,9 +292,9 @@ export function playNextUsOpenCupRound(progress, tiers, qualifiers, preDrawn) {
   return { rounds, giantKillerBonuses, pool: result.advancing, done: false, champion: null, runnerUp: null };
 }
 
-export function resolveCupRoundInPlace(next) {
+export function resolveCupRoundInPlace(next, worldWeek) {
   const preDrawn = next.usOpenCup?.pendingDraw;
-  const progress = playNextUsOpenCupRound(next.usOpenCup, next.tiers, next.usOpenCupQualifiers, preDrawn);
+  const progress = playNextUsOpenCupRound(next.usOpenCup, next.tiers, next.usOpenCupQualifiers, preDrawn, worldWeek);
   const allClubs = next.tiers.flatMap((t) => t.clubs);
   const payOut = (clubId, amount) => {
     const c = allClubs.find((cl) => cl.id === clubId);
@@ -245,7 +320,7 @@ export function resolveCupRoundInPlace(next) {
   return newRound;
 }
 
-export function resolveEnglandCupRoundInPlace(next, cupKey) {
+export function resolveEnglandCupRoundInPlace(next, cupKey, worldWeek) {
   const stateKey = cupKey === "fa" ? "faCup" : "eflCup";
   const englandTiers = next.tiers.slice(4, 8);
   const preDrawn = next[stateKey]?.pendingDraw;
@@ -276,7 +351,7 @@ export function resolveEnglandCupRoundInPlace(next, cupKey) {
       .slice(0, 5)
       .map((c) => c.id),
   };
-  const progress = playNextEnglandCupRound(cupKey, next[stateKey], englandTiers, preDrawn, eflCupQualifiers);
+  const progress = playNextEnglandCupRound(cupKey, next[stateKey], englandTiers, preDrawn, eflCupQualifiers, worldWeek);
   const allClubs = next.tiers.flatMap((t) => t.clubs);
   const payOut = (clubId, amount) => {
     const c = allClubs.find((cl) => cl.id === clubId);
@@ -320,10 +395,12 @@ export function resolveEnglandCupRoundInPlace(next, cupKey) {
 
 export function pendingEnglandCupCheckpoint(stateLike, matchdayNum) {
   // See isCupCheckpointPending above — same product decision applies
-  // symmetrically to the FA Cup / EFL Cup.
-  const faIdx = activeWeeksOf(FA_CUP_CALENDAR).indexOf(matchdayNum);
+  // symmetrically to the FA Cup / EFL Cup, and same reasoning for reading
+  // the season's resolved calendar off state rather than a permanent
+  // module-level constant.
+  const faIdx = stateLike.faCupCalendar ? activeWeeksOf(stateLike.faCupCalendar).indexOf(matchdayNum) : -1;
   if (faIdx !== -1 && !stateLike.faCup?.done && (stateLike.faCup?.rounds?.length ?? 0) === faIdx) return "fa";
-  const eflIdx = activeWeeksOf(EFL_CUP_CALENDAR).indexOf(matchdayNum);
+  const eflIdx = stateLike.eflCupCalendar ? activeWeeksOf(stateLike.eflCupCalendar).indexOf(matchdayNum) : -1;
   if (eflIdx !== -1 && !stateLike.eflCup?.done && (stateLike.eflCup?.rounds?.length ?? 0) === eflIdx) return "efl";
   return null;
 }

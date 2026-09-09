@@ -20,15 +20,15 @@ export function effectiveRating(p) {
   return p.overall * fitnessFactor * moraleFactor;
 }
 
-export function isAvailable(p, matchday) {
-  const notInjured = p.injuredUntilMatchday == null || p.injuredUntilMatchday < matchday;
-  const notSuspended = p.suspendedUntilMatchday == null || p.suspendedUntilMatchday < matchday;
+export function isAvailable(p, worldWeek) {
+  const notInjured = p.injuredUntilWorldWeek == null || p.injuredUntilWorldWeek < worldWeek;
+  const notSuspended = !p.suspension; // suspensions are match-based now, not time-based — see applyCardsAndInjuries
   return notInjured && notSuspended;
 }
 
-export function unavailableReason(p, matchday) {
-  if (p.injuredUntilMatchday != null && p.injuredUntilMatchday >= matchday) return "injured";
-  if (p.suspendedUntilMatchday != null && p.suspendedUntilMatchday >= matchday) return "suspended";
+export function unavailableReason(p, worldWeek) {
+  if (p.injuredUntilWorldWeek != null && p.injuredUntilWorldWeek >= worldWeek) return "injured";
+  if (p.suspension) return "suspended";
   return null;
 }
 
@@ -39,11 +39,10 @@ export function lineupScore(mode, p) {
   return effectiveRating(p);
 }
 
-export function startingXI(club, matchday) {
+export function startingXI(club, worldWeek, isCupMatch = false) {
   const mode = club.tactics.lineupMode || "best";
-  const isCupMatch = matchday === 9999;
   const restThreshold = club.tactics.restThreshold ?? 0;
-  const hardAvailable = club.squad.filter((p) => isAvailable(p, matchday));
+  const hardAvailable = club.squad.filter((p) => isAvailable(p, worldWeek));
   // Rest preferences apply regardless of lineup mode — Best/Youth/Auto all
   // respect them the same way, they just change who's eligible to be
   // picked FROM, not how picking within that pool works.
@@ -167,24 +166,24 @@ export function dpAuraFactor(club, xi) {
   return 1 + Math.min(dpInXi * DP_XI_AURA_PER_PLAYER, DP_XI_AURA_CAP);
 }
 
-export function squadStrength(club, matchday) {
-  const xi = startingXI(club, matchday);
+export function squadStrength(club, worldWeek, isCupMatch = false) {
+  const xi = startingXI(club, worldWeek, isCupMatch);
   if (xi.length === 0) return 0;
   const avg = xi.reduce((s, p) => s + effectiveRating(p), 0) / xi.length;
   return avg * captainChemistryFactor(club, xi) * dpAuraFactor(club, xi);
 }
 
-export function attackStrength(club, matchday) {
-  return squadStrength(club, matchday) * ATTACK_MOD[club.tactics.style] * PRESS_MOD[club.tactics.press];
+export function attackStrength(club, worldWeek, isCupMatch = false) {
+  return squadStrength(club, worldWeek, isCupMatch) * ATTACK_MOD[club.tactics.style] * PRESS_MOD[club.tactics.press];
 }
 
-export function defenseStrength(club, matchday) {
-  return squadStrength(club, matchday) * DEFENSE_MOD[club.tactics.style];
+export function defenseStrength(club, worldWeek, isCupMatch = false) {
+  return squadStrength(club, worldWeek, isCupMatch) * DEFENSE_MOD[club.tactics.style];
 }
 
-export function expectedGoals(attacker, defender, matchday, isHome) {
-  const atk = attackStrength(attacker, matchday);
-  const dfn = defenseStrength(defender, matchday);
+export function expectedGoals(attacker, defender, worldWeek, isHome, isCupMatch = false) {
+  const atk = attackStrength(attacker, worldWeek, isCupMatch);
+  const dfn = defenseStrength(defender, worldWeek, isCupMatch);
   const ratio = atk / Math.max(dfn, 1.0);
   let rate = BASE_GOAL_RATE * Math.pow(ratio, 1.15);
   if (isHome) rate *= HOME_ADVANTAGE;
@@ -229,7 +228,7 @@ export function applyBenchUnhappiness(club, xi, difficulty, tierIdx) {
     // an injured or suspended player sitting out isn't a squad-management
     // complaint — only fit players building frustration from being left
     // out count here
-    if (p.injuredUntilMatchday != null || p.suspendedUntilMatchday != null) return;
+    if (p.injuredUntilWorldWeek != null || p.suspension) return;
     p.benchStreak = (p.benchStreak || 0) + 1;
     p.morale = clamp(p.morale - 1, 0, 100);
     const isProspect = p.age <= 21 && (p.potential - p.overall) >= 10 && p.potential >= baseRating;
@@ -252,14 +251,23 @@ export function applyFitnessAndMorale(xi, result) {
   });
 }
 
-export function recordAppearances(xi, matchday) {
+export function recordAppearances(xi, worldWeek) {
   xi.forEach((p) => {
     p.caps = (p.caps || 0) + 1;
-    p.lastPlayedMatchday = matchday;
+    p.lastPlayedMatchday = worldWeek; // dormant field, never read for a decision — left as-is, out of scope for this migration
   });
 }
 
-export function applyCardsAndInjuries(xi, clubName, matchday, events, difficulty, medicalLevel) {
+// Suspensions are competition-local and match-based (miss your next N
+// matches in THIS specific competition), not time-based — a real red card
+// doesn't expire because three weeks passed, it expires because the team
+// played its next fixture. `competitionId` is the tier index (0-7) for a
+// league match, or "usOpenCup"/"faCup"/"eflCup" for a cup match — whoever
+// decrements matchesRemaining (simulateMatchdayAcrossTiers for leagues,
+// the cup-round resolvers for cups) must use the same identifier space.
+// Injuries ARE time-based and use the real current World Week — no more
+// 9999/9998 sentinel values from cup or playoff matches (see simulateMatch).
+export function applyCardsAndInjuries(xi, clubName, worldWeek, events, difficulty, medicalLevel, competitionId) {
   const sentOff = new Set();
   const carded = new Set();
   const eligible = () => xi.filter((p) => !sentOff.has(p.id));
@@ -272,7 +280,7 @@ export function applyCardsAndInjuries(xi, clubName, matchday, events, difficulty
     if (carded.has(p.id)) {
       // second bookable offense this match — automatic red, sent off
       sentOff.add(p.id);
-      p.suspendedUntilMatchday = matchday + 1;
+      p.suspension = { competitionId, matchesRemaining: 1 };
       p.lastYellowMatchday = null;
       events.push({ type: "red_card", club: clubName, player: p.name, reason: "second yellow" });
       continue;
@@ -288,7 +296,7 @@ export function applyCardsAndInjuries(xi, clubName, matchday, events, difficulty
     // is genuinely rare, matching how seldom this actually bites in
     // real football.
     if (p.seasonYellowCards >= 5) {
-      p.suspendedUntilMatchday = matchday + 1;
+      p.suspension = { competitionId, matchesRemaining: 1 };
       p.seasonYellowCards = 0;
       events.push({ type: "suspension", club: clubName, player: p.name, reason: "five bookings this season" });
     }
@@ -299,7 +307,7 @@ export function applyCardsAndInjuries(xi, clubName, matchday, events, difficulty
     if (pool.length) {
       const p = choice(pool);
       sentOff.add(p.id);
-      p.suspendedUntilMatchday = matchday + 1;
+      p.suspension = { competitionId, matchesRemaining: 1 };
       events.push({ type: "red_card", club: clubName, player: p.name });
     }
   }
@@ -318,15 +326,22 @@ export function applyCardsAndInjuries(xi, clubName, matchday, events, difficulty
     const chance = (INJURY_BASE_RATE / xi.length + fitnessRisk) * injuryMultiplier;
     if (Math.random() < chance) {
       const duration = Math.max(1, Math.round(choice([1, 1, 2, 2, 3, 5]) * durationMultiplier));
-      p.injuredUntilMatchday = matchday + duration;
+      p.injuredUntilWorldWeek = worldWeek + duration;
       events.push({ type: "injury", club: clubName, player: p.name, outFor: duration });
     }
   });
 }
 
-export function simulateMatch(fixture, home, away, matchday, difficulty, tierIdx) {
-  const homeXI = startingXI(home, matchday);
-  const awayXI = startingXI(away, matchday);
+// `isCupMatch` (default false) replaces the old `matchday === 9999`
+// sentinel inference — an explicit flag rather than a magic number, so a
+// cup match no longer needs a fake timestamp to be recognized as one.
+// `competitionId` (defaults to `tierIdx`) is what a suspension picked up
+// in this match gets tagged with; cup callers pass an explicit cup id.
+// `worldWeek` is the real, current elapsed-time value — used for injury
+// duration and appearance history — never a sentinel.
+export function simulateMatch(fixture, home, away, worldWeek, difficulty, tierIdx, isCupMatch = false, competitionId = tierIdx) {
+  const homeXI = startingXI(home, worldWeek, isCupMatch);
+  const awayXI = startingXI(away, worldWeek, isCupMatch);
   // Debuts: caps === 0 means this is genuinely their first-ever appearance
   // — captured BEFORE recordAppearances increments it, since that's the
   // only moment this is knowable.
@@ -334,16 +349,16 @@ export function simulateMatch(fixture, home, away, matchday, difficulty, tierIdx
     ...homeXI.filter((p) => !p.caps).map((p) => ({ name: p.name, age: p.age, clubName: home.name })),
     ...awayXI.filter((p) => !p.caps).map((p) => ({ name: p.name, age: p.age, clubName: away.name })),
   ];
-  recordAppearances(homeXI, matchday);
-  recordAppearances(awayXI, matchday);
+  recordAppearances(homeXI, worldWeek);
+  recordAppearances(awayXI, worldWeek);
   // A "rest next match" request is used up once that match is actually
   // played, whether the player sat out or (safety valve) had to play
   // anyway — either way, this match was their "next match."
   home.squad.forEach((p) => { p.restRequested = false; });
   away.squad.forEach((p) => { p.restRequested = false; });
 
-  const homeXg = expectedGoals(home, away, matchday, true);
-  const awayXg = expectedGoals(away, home, matchday, false);
+  const homeXg = expectedGoals(home, away, worldWeek, true, isCupMatch);
+  const awayXg = expectedGoals(away, home, worldWeek, false, isCupMatch);
   const homeGoals = samplePoisson(homeXg);
   const awayGoals = samplePoisson(awayXg);
 
@@ -386,8 +401,8 @@ export function simulateMatch(fixture, home, away, matchday, difficulty, tierIdx
   }
   events.sort((a, b) => (a.type === "goal" ? a.minute : 999) - (b.type === "goal" ? b.minute : 999));
 
-  applyCardsAndInjuries(homeXI, home.name, matchday, events, difficulty, home.facilities?.medical?.level);
-  applyCardsAndInjuries(awayXI, away.name, matchday, events, difficulty, away.facilities?.medical?.level);
+  applyCardsAndInjuries(homeXI, home.name, worldWeek, events, difficulty, home.facilities?.medical?.level, competitionId);
+  applyCardsAndInjuries(awayXI, away.name, worldWeek, events, difficulty, away.facilities?.medical?.level, competitionId);
 
   let homeResult, awayResult;
   if (homeGoals > awayGoals) { homeResult = "win"; awayResult = "loss"; }
@@ -442,16 +457,44 @@ export function computeMatchOutcome(matches, userClubName) {
   return "draw";
 }
 
-export function simulateMatchdayAcrossTiers(next, currentMatchday) {
+// Decrements any active suspension tagged for THIS specific competition
+// on this club's squad, clearing it once served — called whenever this
+// club actually plays a fixture in that competition (a suspension only
+// counts as "served" by a match that genuinely happened for this club;
+// a bye week, or another club's fixture in the same league, does not
+// serve anyone's suspension).
+function decrementCompetitionSuspensions(club, competitionId) {
+  club.squad.forEach((p) => {
+    if (p.suspension && p.suspension.competitionId === competitionId) {
+      p.suspension = { ...p.suspension, matchesRemaining: p.suspension.matchesRemaining - 1 };
+      if (p.suspension.matchesRemaining <= 0) p.suspension = null;
+    }
+  });
+}
+
+// This function now operates on WORLD WEEK, not matchday — `currentWorldWeek`
+// identifies an actual, absolute point in elapsed game time. `f.scheduledWeek`
+// (stamped by the calendar layer at fixture-generation time) is what's
+// matched against it, not `f.matchday` (which stays a purely competition-
+// local fixture-round label). This is the function every tier's recovery,
+// facility progress, and suspension bookkeeping runs through once per
+// world-week tick — already true before this migration for recovery/
+// facilities (they ran for every tier regardless of whether that tier had
+// a fixture that tick); this migration is what makes "tick" mean a real
+// calendar week instead of a shared matchday integer.
+export function simulateMatchdayAcrossTiers(next, currentWorldWeek) {
   const matches = [];
   let disqualificationNotice = null;
   const eventBonusesOn = DIFFICULTY_MODES[next.difficulty]?.eventBonuses;
   next.tiers.forEach((t) => {
-    // recovery between matchdays for the whole squad — starters net a small
-    // amount of fatigue, rested players climb back toward full fitness
+    // recovery for the whole squad every world week — starters net a small
+    // amount of fatigue, rested players climb back toward full fitness.
+    // This must happen every world week regardless of whether this tier
+    // has a fixture this week, since fitness recovers with real time, not
+    // with how many matches a specific competition has played.
     t.clubs.forEach((c) => c.squad.forEach((p) => { p.fitness = clamp(p.fitness + 18, 0, 100); }));
 
-    const todays = t.fixtures.filter((f) => f.matchday === currentMatchday && !f.played);
+    const todays = t.fixtures.filter((f) => f.scheduledWeek === currentWorldWeek && !f.played);
     todays.forEach((fx) => {
       const home = t.clubs.find((c) => c.id === fx.homeClubId);
       const away = t.clubs.find((c) => c.id === fx.awayClubId);
@@ -466,11 +509,15 @@ export function simulateMatchdayAcrossTiers(next, currentMatchday) {
         fx.played = true;
         home.squad.forEach((p) => { p.restRequested = false; });
         away.squad.forEach((p) => { p.restRequested = false; });
+        decrementCompetitionSuspensions(home, t.id);
+        decrementCompetitionSuspensions(away, t.id);
         const result = { homeClub: home.name, awayClub: away.name, homeScore: fx.homeScore, awayScore: fx.awayScore, events: [], disqualifiedMatch: true };
         if (t.id === next.userTierId) matches.push(result);
         return;
       }
-      const result = simulateMatch(fx, home, away, currentMatchday, next.difficulty, t.id);
+      const result = simulateMatch(fx, home, away, currentWorldWeek, next.difficulty, t.id);
+      decrementCompetitionSuspensions(home, t.id);
+      decrementCompetitionSuspensions(away, t.id);
       updateWorldRecordsFromMatch(next, result, next.seasonNumber);
       (result.scorerRefs || []).forEach(({ playerRef, clubName }) => checkCareerGoalsRecord(next, playerRef, clubName, next.seasonNumber));
       if (eventBonusesOn && WIN_BONUS[t.id] > 0) {
@@ -592,7 +639,7 @@ export function simulateMatchdayAcrossTiers(next, currentMatchday) {
       const { club: updated, notice } = applyDisqualificationCheck(club, t.id);
       if (updated !== club) t.clubs[idx] = updated;
       if (notice && club.id === next.userClubId) disqualificationNotice = notice;
-      progressFacilityConstruction(club, currentMatchday);
+      progressFacilityConstruction(club, currentWorldWeek);
     });
 
     // Relegation drama — England's three relegation-battle tiers only (PL,

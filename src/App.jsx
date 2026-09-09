@@ -1,15 +1,15 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Trophy, TrendingUp, TrendingDown, Users, Sliders, Calendar, ShoppingBag, Award, ChevronRight, X, ArrowUpCircle, ArrowDownCircle, RotateCcw, GraduationCap, Lightbulb, DollarSign, Star, Newspaper } from "lucide-react";
 import { academySigningCost, academyStarsForInvestment, clamp, draftProspectValue, generateAcademyProspect, generateTryoutCandidates, growPlayer, promoteYouthToFirstTeam, tryoutCost, tryoutSigningCost, youthSaleValue } from "./engine/playerGen";
-import { ACADEMY_INVEST_INCREMENT, ACADEMY_MAX_PROSPECTS, ACADEMY_PROMOTE_MIN_AGE, ACADEMY_START_COST, DEFAULT_MANAGER_HISTORY, DEFAULT_WORLD_RECORDS, DIFFICULTY_MODES, DP_REPUTATION_BUMP, EFL_CUP_ROUND_MATCHDAYS, ENGLAND_TIER_META, FACILITY_FIRST_UPGRADE_MATCHDAYS, FACILITY_MAX_LEVEL, FACILITY_TYPES, FACILITY_UPGRADES_PER_SEASON, FA_CUP_ROUND_MATCHDAYS, FORCED_DEPARTURE_BENCH_THRESHOLD, FORMATION_NOTES, FULL_TIER_META, MANAGER_KEY, MARKET_PAGE_SIZE, MAX_DESIGNATED_PLAYERS, MAX_POSTSEASON_ROUNDS, MAX_SQUAD_SIZE, MIN_SQUAD_SIZE, MLS_SALARY_CAP, MLS_TOTAL_ROUNDS, PARACHUTE_PAYMENT_SCHEDULE, PROMO_TOTAL_ROUNDS, SACK_THRESHOLD, STORAGE_KEY, TICKET_PRICE_RANGE, TIER_META, USLC_TOTAL_ROUNDS, US_OPEN_CUP_ROUND_MATCHDAYS, US_OPEN_CUP_TOTAL_ROUNDS } from "./engine/constants";
+import { ACADEMY_INVEST_INCREMENT, ACADEMY_MAX_PROSPECTS, ACADEMY_PROMOTE_MIN_AGE, ACADEMY_START_COST, DEFAULT_MANAGER_HISTORY, DEFAULT_WORLD_RECORDS, DIFFICULTY_MODES, DP_REPUTATION_BUMP, EFL_CUP_ROUND_MATCHDAYS, ENGLAND_TIER_META, FACILITY_FIRST_UPGRADE_WORLD_WEEKS, FACILITY_MAX_LEVEL, FACILITY_TYPES, FACILITY_UPGRADES_PER_SEASON, FA_CUP_ROUND_MATCHDAYS, FORCED_DEPARTURE_BENCH_THRESHOLD, FORMATION_NOTES, FULL_TIER_META, MANAGER_KEY, MARKET_PAGE_SIZE, MAX_DESIGNATED_PLAYERS, MAX_POSTSEASON_ROUNDS, MAX_SQUAD_SIZE, MIN_SQUAD_SIZE, MLS_SALARY_CAP, MLS_TOTAL_ROUNDS, PARACHUTE_PAYMENT_SCHEDULE, PROMO_TOTAL_ROUNDS, SACK_THRESHOLD, STORAGE_KEY, TICKET_PRICE_RANGE, TIER_META, USLC_TOTAL_ROUNDS, US_OPEN_CUP_ROUND_MATCHDAYS, US_OPEN_CUP_TOTAL_ROUNDS } from "./engine/constants";
 import { canStartFacilityUpgrade, defaultTicketPrice, downgradeFacility, facilityMaintenanceCost, facilityMaxUpgradeLevel, facilityUpgradeCost, scoutedPotentialRange, startFacilityUpgrade, stadiumCapacity, ticketRevenueForMatch } from "./engine/facilities";
 import { buildEnglandWorld, buildFullWorld } from "./engine/worldBuild";
 import { boardHappinessDelta, boardMessageNoticeText, checkBoardMessageCompliance, computeHints, computeInboxUrgentCount, generateBoardMessage, generateBoardObjective, generateJobOffer, jobOfferChanceFor } from "./engine/board";
-import { computeSeasonAwards, computeSeasonPlayoffs, computeUserPlayoffQualification, generateDoubleRoundRobin, generateMlsSeasonSchedule, generateUslcSeasonSchedule, getCurrentMatchday, isWorldSeasonComplete, maybeTriggerMidWindow, resolveKnockoutMatch, rolloverEnglandSeason, rolloverSeason } from "./engine/leagueSim";
-import { assignFixturesToCalendar, computeNextSeasonStartWeek, createContinuousSeasonProfile, createWorldTime, deriveWorldWeek } from "./engine/calendar";
+import { computeSeasonAwards, computeSeasonPlayoffs, computeUserPlayoffQualification, generateDoubleRoundRobin, generateMlsSeasonSchedule, generateUslcSeasonSchedule, isWorldSeasonComplete, maybeTriggerMidWindow, resolveKnockoutMatch, rolloverEnglandSeason, rolloverSeason } from "./engine/leagueSim";
+import { assignFixturesToCalendar, computeNextSeasonStartWeek, createContinuousSeasonProfile, createWorldTime } from "./engine/calendar";
 import { clubLineRatings, computeMatchOutcome, computeTable, isAvailable, isRivalryMatch, simulateMatch, simulateMatchdayAcrossTiers, startingXI, xiLineRatings } from "./engine/matchSim";
 import { checkTransferRecord, computeRecommendationScore, effectivePayroll, isFinanciallyRisky, marketValue, ownershipDepositFor, recommendationReason, renewalOutcome, runAiToAiTransfers } from "./engine/finance";
-import { cupRoundLabel, drawNextEnglandCupRound, drawNextUsOpenCupRound, EFL_CUP_CALENDAR, FA_CUP_CALENDAR, isCupCheckpointPending, pendingEnglandCupCheckpoint, previewStageLabel, resolveCupRoundInPlace, resolveEnglandCupRoundInPlace, US_OPEN_CUP_CALENDAR } from "./engine/cups";
+import { cupRoundLabel, drawNextEnglandCupRound, drawNextUsOpenCupRound, isCupCheckpointPending, nextEnglandCupCheckpointWeek, nextUsOpenCupCheckpointWeek, pendingEnglandCupCheckpoint, previewStageLabel, resolveCupCalendarsForSeason, resolveCupRoundInPlace, resolveEnglandCupRoundInPlace } from "./engine/cups";
 
 /* ============================================================
    FICTIONAL WORLD DATA
@@ -213,8 +213,9 @@ import { cupRoundLabel, drawNextEnglandCupRound, drawNextUsOpenCupRound, EFL_CUP
 // club's lineup mode, then backfills any shortfall with the best remaining
 // available players so a thin squad still fields close to 11. This is also
 // used by the Tactics tab to preview the projected lineup before playing it.
-// Cup matches always use the 9999 sentinel matchday — used here to detect
-// "this is a cup match" so hold-back-for-cup preferences apply.
+// TacticsTab receives an explicit isCupMatchPending flag (no more sentinel
+// matchday inference) — used here to detect "this is a cup match" so
+// hold-back-for-cup preferences apply.
 // Club-level DEF/MID/ATT star ratings (out of 5), based on the average
 // overall of the best players in each line — roughly how many would start.
 // Star ratings are for display/reasoning only — the actual match engine
@@ -1762,8 +1763,8 @@ function SquadTab({ club, matchday, onToggleList, onRenew, tierId, difficulty, o
           </thead>
           <tbody>
             {sorted.map((p) => {
-              const injured = p.injuredUntilMatchday != null && p.injuredUntilMatchday >= matchday;
-              const suspended = !injured && p.suspendedUntilMatchday != null && p.suspendedUntilMatchday >= matchday;
+              const injured = p.injuredUntilWorldWeek != null && p.injuredUntilWorldWeek >= matchday;
+              const suspended = !injured && !!p.suspension;
               const expiring = p.contractYearsLeft <= 1;
               const isCaptain = p.id === club.captainId;
               return (
@@ -1942,10 +1943,10 @@ function suggestTactics(club, oppRatings, tier) {
   return { formation, style, press, reason: `${formationReason[0].toUpperCase()}${formationReason.slice(1)} — ${styleReason === formationReason ? "which also points to" : "and"} ${style}, ${press} press.` };
 }
 
-function TacticsTab({ club, matchday, onChange, tier, onSetCaptain, onSwapCustomXI }) {
+function TacticsTab({ club, matchday, isCupMatchPending, onChange, tier, onSetCaptain, onSwapCustomXI }) {
   const formations = ["4-4-2", "4-3-3", "3-5-2", "5-3-2", "4-2-3-1", "4-3-2-1", "3-4-3", "4-3-1-2"];
   const posOrder = { GK: 0, DEF: 1, MID: 2, FWD: 3 };
-  const projected = [...startingXI(club, matchday)].sort((a, b) => posOrder[a.position] - posOrder[b.position]);
+  const projected = [...startingXI(club, matchday, !!isCupMatchPending)].sort((a, b) => posOrder[a.position] - posOrder[b.position]);
   const lineRatings = xiLineRatings(projected);
 
   // Custom mode's selection surface lives here now: click a projected slot,
@@ -1957,7 +1958,7 @@ function TacticsTab({ club, matchday, onChange, tier, onSetCaptain, onSwapCustom
   // just silently fail to appear after being "swapped in".
   const projectedIds = useMemo(() => new Set(projected.map((p) => p.id)), [projected]);
   const eligiblePool = useMemo(() => {
-    const isCupMatch = matchday === 9999;
+    const isCupMatch = !!isCupMatchPending;
     const restThreshold = club.tactics.restThreshold ?? 0;
     return club.squad.filter((pl) => {
       if (!isAvailable(pl, matchday)) return false;
@@ -1966,7 +1967,7 @@ function TacticsTab({ club, matchday, onChange, tier, onSetCaptain, onSwapCustom
       if (pl.fitness < restThreshold) return false;
       return true;
     });
-  }, [club.squad, club.tactics.restThreshold, matchday]);
+  }, [club.squad, club.tactics.restThreshold, matchday, isCupMatchPending]);
   const swapOptionsFor = (position, excludeId) => eligiblePool
     .filter((pl) => pl.position === position && pl.id !== excludeId && !projectedIds.has(pl.id))
     .sort((a, b) => b.overall - a.overall);
@@ -3338,7 +3339,7 @@ const FACILITY_LABELS = {
   stadium: { name: "Stadium", icon: "🏟️", blurb: "More seats, more matchday revenue." },
 };
 
-function FacilitiesPanel({ club, tierIdx, currentMatchday, onUpgradeFacility, onDowngradeFacility, onSetTicketPrice }) {
+function FacilitiesPanel({ club, tierIdx, currentWorldWeek, onUpgradeFacility, onDowngradeFacility, onSetTicketPrice }) {
   const cap = FACILITY_UPGRADES_PER_SEASON[tierIdx];
   const used = club.facilityUpgradesThisSeason || 0;
   const [lo, hi] = TICKET_PRICE_RANGE[tierIdx];
@@ -3358,7 +3359,7 @@ function FacilitiesPanel({ club, tierIdx, currentMatchday, onUpgradeFacility, on
           const ceiling = facilityMaxUpgradeLevel(tierIdx);
           const grandfathered = f.level > ceiling;
           const check = canStartFacilityUpgrade(club, type, tierIdx);
-          const remaining = f.upgrading?.completesAtMatchday != null ? Math.max(0, f.upgrading.completesAtMatchday - currentMatchday) : null;
+          const remaining = f.upgrading?.completesAtWorldWeek != null ? Math.max(0, f.upgrading.completesAtWorldWeek - currentWorldWeek) : null;
           return (
             <div key={type} style={{ border: `1px solid ${grandfathered ? PALETTE.crimson : PALETTE.parchmentDim}`, borderRadius: 8, padding: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -3435,8 +3436,8 @@ function FacilitiesPanel({ club, tierIdx, currentMatchday, onUpgradeFacility, on
   );
 }
 
-function DevelopmentTab({ club, budget, tierIdx, currentMatchday, onStartAcademy, onInvestAcademy, onSignYouth, onPromoteYouth, onSellYouth, onHostTryouts, onSignTryout, onDismissTryouts, onUpgradeFacility, onDowngradeFacility, onSetTicketPrice }) {
-  const facilitiesPanel = <FacilitiesPanel club={club} tierIdx={tierIdx} currentMatchday={currentMatchday} onUpgradeFacility={onUpgradeFacility} onDowngradeFacility={onDowngradeFacility} onSetTicketPrice={onSetTicketPrice} />;
+function DevelopmentTab({ club, budget, tierIdx, currentWorldWeek, onStartAcademy, onInvestAcademy, onSignYouth, onPromoteYouth, onSellYouth, onHostTryouts, onSignTryout, onDismissTryouts, onUpgradeFacility, onDowngradeFacility, onSetTicketPrice }) {
+  const facilitiesPanel = <FacilitiesPanel club={club} tierIdx={tierIdx} currentWorldWeek={currentWorldWeek} onUpgradeFacility={onUpgradeFacility} onDowngradeFacility={onDowngradeFacility} onSetTicketPrice={onSetTicketPrice} />;
   if (club.academyEligible) {
     const signCost = academySigningCost(club.academyStars);
     return (
@@ -3450,7 +3451,7 @@ function DevelopmentTab({ club, budget, tierIdx, currentMatchday, onStartAcademy
             </div>
             {club.academyUpgrading ? (
               <div style={{ ...serif, fontSize: 13, color: PALETTE.gold }}>
-                Under construction — {Math.max(0, club.academyUpgrading.completesAtMatchday - currentMatchday)} game(s) left.
+                Under construction — {Math.max(0, club.academyUpgrading.completesAtWorldWeek - currentWorldWeek)} game(s) left.
               </div>
             ) : (
               <button
@@ -4061,6 +4062,94 @@ function WindowNotice({ notice, onClose }) {
 // random USL2 side reaching out to someone who's just won the league.
 // Can come from either country now — a manager's reputation is meant to
 // travel, not stay locked to whichever side of the pyramid they started on.
+// ===================== WORLD-WEEK SCANNING (Advance to Next Matchday) =====================
+// Two distinct questions, kept separate on purpose:
+//   - "What is the very next thing that needs processing ANYWHERE in the
+//     world?" (getGlobalNextWorldWeek) — used to step the simulation
+//     forward one world week at a time.
+//   - "What is the player's own next relevant matchday/event?"
+//     (getPlayerNextTargetWeek) — used to decide how far "Advance to Next
+//     Matchday" should go before stopping and presenting a recap. An
+//     unrelated background competition's earlier event must never cause
+//     this action to stop early — the player only cares about their own
+//     next event, even though everything scheduled before it still needs
+//     to be simulated along the way.
+function getGlobalNextWorldWeek(next) {
+  let min = null;
+  next.tiers.forEach((t) => {
+    t.fixtures.forEach((f) => {
+      if (!f.played && (min === null || f.scheduledWeek < min)) min = f.scheduledWeek;
+    });
+  });
+  [nextUsOpenCupCheckpointWeek(next), nextEnglandCupCheckpointWeek(next, "fa"), nextEnglandCupCheckpointWeek(next, "efl")].forEach((w) => {
+    if (w != null && (min === null || w < min)) min = w;
+  });
+  return min;
+}
+
+function getPlayerNextTargetWeek(next) {
+  const userTier = next.tiers[next.userTierId];
+  const weeks = [];
+  const nextUserFixture = userTier.fixtures.find((f) => !f.played && (f.homeClubId === next.userClubId || f.awayClubId === next.userClubId));
+  if (nextUserFixture) weeks.push(nextUserFixture.scheduledWeek);
+  const userIsUsa = next.userTierId < 4;
+  if (userIsUsa) {
+    const stillIn = !next.usOpenCup || (next.usOpenCup.pool || []).some((e) => e.club?.id === next.userClubId) || !next.usOpenCup.rounds?.length;
+    if (stillIn) {
+      const w = nextUsOpenCupCheckpointWeek(next);
+      if (w != null) weeks.push(w);
+    }
+  } else {
+    const faStillIn = !next.faCup || (next.faCup.pool || []).some((e) => e.club?.id === next.userClubId) || !next.faCup.rounds?.length;
+    if (faStillIn) {
+      const w = nextEnglandCupCheckpointWeek(next, "fa");
+      if (w != null) weeks.push(w);
+    }
+    const eflStillIn = !next.eflCup || (next.eflCup.pool || []).some((e) => e.club?.id === next.userClubId) || !next.eflCup.rounds?.length;
+    if (eflStillIn) {
+      const w = nextEnglandCupCheckpointWeek(next, "efl");
+      if (w != null) weeks.push(w);
+    }
+  }
+  return weeks.length ? Math.min(...weeks) : null;
+}
+
+// Advance target for a single "Advance to Next Matchday" press: normally
+// the player's own next event; if the player's own competitions are all
+// finished for the season but the rest of the world hasn't caught up yet,
+// fall back to advancing one global step at a time until it does (matches
+// the existing "Finishing other competitions…" UI state).
+function computeAdvanceTarget(next) {
+  const playerTarget = getPlayerNextTargetWeek(next);
+  if (playerTarget !== null) return playerTarget;
+  return getGlobalNextWorldWeek(next);
+}
+
+// Processes exactly one world week: resolves any pending cup checkpoint(s)
+// scheduled for it, then simulates whatever league fixtures are scheduled
+// for it across every tier (already handles "not every competition plays
+// every week" — simulateMatchdayAcrossTiers filters per-tier). Returns the
+// league matches (for career-stat/recap tracking) and, if a cup round
+// happened, its own recap-relevant info.
+function processWorldWeek(next, week, findUserCupMatchFn) {
+  let cupRecapInfo = null;
+  if (isCupCheckpointPending(next, week)) {
+    const newRound = resolveCupRoundInPlace(next, week);
+    const m = findUserCupMatchFn(newRound);
+    if (m) cupRecapInfo = { roundLabel: newRound.label, cupName: "US Open Cup", cupDone: !!next.usOpenCup?.done, match: m };
+  }
+  const pend = pendingEnglandCupCheckpoint(next, week);
+  if (pend) {
+    const newRound = resolveEnglandCupRoundInPlace(next, pend, week);
+    const m = findUserCupMatchFn(newRound);
+    if (m) cupRecapInfo = { roundLabel: newRound.label, cupName: pend === "fa" ? "FA Cup" : "EFL Cup", cupDone: !!next[pend === "fa" ? "faCup" : "eflCup"]?.done, match: m };
+  }
+  const { matches, disqualificationNotice } = simulateMatchdayAcrossTiers(next, week);
+  next.worldTime = { ...next.worldTime, worldWeek: week };
+  const fired = maybeTriggerMidWindow(next, week);
+  return { matches, disqualificationNotice, cupRecapInfo, fired };
+}
+
 function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerHistory, setManagerHistory, onAcceptJobOffer, onDeclineJobOffer }) {
   const [tab, setTab] = useState("squad");
   const [recap, setRecap] = useState(null);
@@ -4083,13 +4172,15 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
 
   const tier = state.tiers[state.userTierId];
   const userClub = tier.clubs.find((c) => c.id === state.userClubId);
-  // currentMatchday drives simulation progress everywhere (injury/suspension
+  // currentWorldWeek drives simulation progress everywhere (injury/suspension
   // timers, facility construction, transfer windows, match simulation
   // itself) and must reflect the WORLD's remaining matchdays across all 8
   // tiers, not just the user's own tier — otherwise fixtures in other tiers
   // get silently truncated the moment the user's own tier finishes first.
-  // See getCurrentMatchday in engine/leagueSim.js.
-  const currentMatchday = getCurrentMatchday(state);
+  // See getGlobalNextWorldWeek below, and getCurrentMatchday in
+  // engine/leagueSim.js (kept for reference/debugging, no longer used to
+  // drive the simulation loop).
+  const currentWorldWeek = getGlobalNextWorldWeek(state);
   // Purely cosmetic: matchday progress within the user's own tier only,
   // used for the "Matchday N" label so it stays meaningful to the user even
   // while the world clock may still be running for other tiers/cups.
@@ -4153,81 +4244,58 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
   const findUserRivalryMatch = (matches) => matches.find((m) => m.isRivalryMatch && (m.homeClub === userClub.name || m.awayClub === userClub.name));
 
   const simulateMatchday = () => {
-    if (currentMatchday === null) return;
-    if (pendingCupRoundIndex !== null) {
-      // Auto-resolve the cup round in place rather than force-navigating
-      // to the Open Cup tab — that was an intrusive interruption,
-      // especially now that the Fixtures tab already surfaces the
-      // upcoming cup round and your drawn opponent ahead of time. The
-      // match summary for your own cup game still pops up either way.
-      mutateAndSave((next) => {
-        const newRound = resolveCupRoundInPlace(next);
-        const match = findUserCupMatch(newRound);
-        if (match) setCupRecap({ roundLabel: newRound.label, cupName: "US Open Cup", cupDone: !!next.usOpenCup?.done, match });
-      });
-      return;
-    }
-    if (pendingEnglandCupKey) {
-      mutateAndSave((next) => {
-        const newRound = resolveEnglandCupRoundInPlace(next, pendingEnglandCupKey);
-        const match = findUserCupMatch(newRound);
-        const stateKey = pendingEnglandCupKey === "fa" ? "faCup" : "eflCup";
-        if (match) setCupRecap({ roundLabel: newRound.label, cupName: pendingEnglandCupKey === "fa" ? "FA Cup" : "EFL Cup", cupDone: !!next[stateKey]?.done, match });
-      });
-      return;
-    }
+    // Advance to Next Matchday: target the PLAYER's own next relevant
+    // event specifically — an unrelated background competition's earlier
+    // event must never cause this action to stop early. Everything
+    // scheduled before the target still gets processed along the way.
+    const targetWeek = computeAdvanceTarget(state);
+    if (targetWeek === null) return; // nothing left anywhere
     mutateAndSave((next) => {
-      const { matches, disqualificationNotice } = simulateMatchdayAcrossTiers(next, currentMatchday);
-      next.worldTime = { ...next.worldTime, worldWeek: deriveWorldWeek(next.worldTime, currentMatchday) };
-      applyCareerStatsDelta(outcomeToDelta(computeMatchOutcome(matches, userClub.name)));
-      const w = maybeTriggerMidWindow(next, currentMatchday);
-      setRecap({ matchday: currentMatchday, matches });
-      if (w) setWindowNotice(w);
-      if (disqualificationNotice) {
-        setInfoNotice(disqualificationNotice.resolved
-          ? `${disqualificationNotice.clubName} is back above the minimum squad size — disqualification lifted, you're clear to compete normally again.`
-          : `${disqualificationNotice.clubName} dropped below the ${MIN_SQUAD_SIZE}-player minimum (short ${disqualificationNotice.short}) — you're disqualified from competing until you sign back up to strength. Emergency funding of $${disqualificationNotice.funding.toLocaleString()} has been added to your budget to help.`);
+      let week = getGlobalNextWorldWeek(next);
+      let lastNotice = null, lastUserCupMatch = null, lastUserRivalry = null, windowFired = null, finalMatches = [];
+      let statsDelta = { games: 0, wins: 0, draws: 0, losses: 0 };
+      while (week !== null && week <= targetWeek) {
+        const { matches, disqualificationNotice, cupRecapInfo, fired } = processWorldWeek(next, week, findUserCupMatch);
+        if (cupRecapInfo) lastUserCupMatch = cupRecapInfo;
+        if (disqualificationNotice) lastNotice = disqualificationNotice;
+        const userRivalry = findUserRivalryMatch(matches);
+        if (userRivalry) lastUserRivalry = userRivalry;
+        if (fired) windowFired = fired;
+        statsDelta = mergeDelta(statsDelta, outcomeToDelta(computeMatchOutcome(matches, userClub.name)));
+        if (week === targetWeek) finalMatches = matches; // the player's own target week's matches drive the main recap
+        week = getGlobalNextWorldWeek(next);
       }
-      const userRivalry = findUserRivalryMatch(matches);
-      if (userRivalry) {
-        setRivalryRecap({ homeClub: userRivalry.homeClub, awayClub: userRivalry.awayClub, homeScore: userRivalry.homeScore, awayScore: userRivalry.awayScore, userIsHome: userRivalry.homeClub === userClub.name, difficulty: next.difficulty });
+      applyCareerStatsDelta(statsDelta);
+      setRecap({ matchday: targetWeek, matches: finalMatches });
+      if (windowFired) setWindowNotice(windowFired);
+      if (lastNotice) {
+        setInfoNotice(lastNotice.resolved
+          ? `${lastNotice.clubName} is back above the minimum squad size — disqualification lifted, you're clear to compete normally again.`
+          : `${lastNotice.clubName} dropped below the ${MIN_SQUAD_SIZE}-player minimum (short ${lastNotice.short}) — you're disqualified from competing until you sign back up to strength. Emergency funding of $${lastNotice.funding.toLocaleString()} has been added to your budget to help.`);
+      } else if (lastUserCupMatch) {
+        setCupRecap(lastUserCupMatch);
+      } else if (lastUserRivalry) {
+        setRivalryRecap({ homeClub: lastUserRivalry.homeClub, awayClub: lastUserRivalry.awayClub, homeScore: lastUserRivalry.homeScore, awayScore: lastUserRivalry.awayScore, userIsHome: lastUserRivalry.homeClub === userClub.name, difficulty: next.difficulty });
       }
     });
   };
 
   const simulateSeason = () => {
-    if (currentMatchday === null) return;
+    if (currentWorldWeek === null) return;
     mutateAndSave((next) => {
-      let md = getCurrentMatchday(next);
+      let week = getGlobalNextWorldWeek(next);
       let lastNotice = null;
       let lastUserCupMatch = null;
       let lastUserRivalry = null;
       let statsDelta = { games: 0, wins: 0, draws: 0, losses: 0 };
-      while (md !== null) {
-        if (isCupCheckpointPending(next, md)) {
-          const newRound = resolveCupRoundInPlace(next);
-          const match = findUserCupMatch(newRound);
-          if (match) lastUserCupMatch = { roundLabel: newRound.label, cupName: "US Open Cup", cupDone: !!next.usOpenCup?.done, match };
-          md = getCurrentMatchday(next);
-          continue;
-        }
-        const pendingEnglandCup = pendingEnglandCupCheckpoint(next, md);
-        if (pendingEnglandCup) {
-          const newRound = resolveEnglandCupRoundInPlace(next, pendingEnglandCup);
-          const match = findUserCupMatch(newRound);
-          const stateKey = pendingEnglandCup === "fa" ? "faCup" : "eflCup";
-          if (match) lastUserCupMatch = { roundLabel: newRound.label, cupName: pendingEnglandCup === "fa" ? "FA Cup" : "EFL Cup", cupDone: !!next[stateKey]?.done, match };
-          md = getCurrentMatchday(next);
-          continue;
-        }
-        const { matches, disqualificationNotice } = simulateMatchdayAcrossTiers(next, md);
-        next.worldTime = { ...next.worldTime, worldWeek: deriveWorldWeek(next.worldTime, md) };
+      while (week !== null) {
+        const { matches, disqualificationNotice, cupRecapInfo } = processWorldWeek(next, week, findUserCupMatch);
+        if (cupRecapInfo) lastUserCupMatch = cupRecapInfo;
         statsDelta = mergeDelta(statsDelta, outcomeToDelta(computeMatchOutcome(matches, userClub.name)));
         if (disqualificationNotice) lastNotice = disqualificationNotice;
         const userRivalry = findUserRivalryMatch(matches);
         if (userRivalry) lastUserRivalry = userRivalry;
-        maybeTriggerMidWindow(next, md);
-        md = getCurrentMatchday(next);
+        week = getGlobalNextWorldWeek(next);
       }
       applyCareerStatsDelta(statsDelta);
       if (lastNotice) {
@@ -4243,39 +4311,23 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
   };
 
   const simulateToNextWindow = () => {
-    if (currentMatchday === null) return;
+    if (currentWorldWeek === null) return;
     mutateAndSave((next) => {
-      let md = getCurrentMatchday(next);
+      let week = getGlobalNextWorldWeek(next);
       let fired = null;
       let lastNotice = null;
       let lastUserCupMatch = null;
       let lastUserRivalry = null;
       let statsDelta = { games: 0, wins: 0, draws: 0, losses: 0 };
-      while (md !== null) {
-        if (isCupCheckpointPending(next, md)) {
-          const newRound = resolveCupRoundInPlace(next);
-          const match = findUserCupMatch(newRound);
-          if (match) lastUserCupMatch = { roundLabel: newRound.label, cupName: "US Open Cup", cupDone: !!next.usOpenCup?.done, match };
-          md = getCurrentMatchday(next);
-          continue;
-        }
-        const pendingEnglandCup = pendingEnglandCupCheckpoint(next, md);
-        if (pendingEnglandCup) {
-          const newRound = resolveEnglandCupRoundInPlace(next, pendingEnglandCup);
-          const match = findUserCupMatch(newRound);
-          const stateKey = pendingEnglandCup === "fa" ? "faCup" : "eflCup";
-          if (match) lastUserCupMatch = { roundLabel: newRound.label, cupName: pendingEnglandCup === "fa" ? "FA Cup" : "EFL Cup", cupDone: !!next[stateKey]?.done, match };
-          md = getCurrentMatchday(next);
-          continue;
-        }
-        const { matches, disqualificationNotice } = simulateMatchdayAcrossTiers(next, md);
-        next.worldTime = { ...next.worldTime, worldWeek: deriveWorldWeek(next.worldTime, md) };
-        statsDelta = mergeDelta(statsDelta, outcomeToDelta(computeMatchOutcome(matches, userClub.name)));
-        if (disqualificationNotice) lastNotice = disqualificationNotice;
-        const userRivalry = findUserRivalryMatch(matches);
+      while (week !== null) {
+        const result = processWorldWeek(next, week, findUserCupMatch);
+        if (result.cupRecapInfo) lastUserCupMatch = result.cupRecapInfo;
+        statsDelta = mergeDelta(statsDelta, outcomeToDelta(computeMatchOutcome(result.matches, userClub.name)));
+        if (result.disqualificationNotice) lastNotice = result.disqualificationNotice;
+        const userRivalry = findUserRivalryMatch(result.matches);
         if (userRivalry) lastUserRivalry = userRivalry;
-        fired = maybeTriggerMidWindow(next, md);
-        md = getCurrentMatchday(next);
+        fired = result.fired;
+        week = getGlobalNextWorldWeek(next);
         if (fired) break;
       }
       applyCareerStatsDelta(statsDelta);
@@ -4300,7 +4352,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
         setTab("table");
         return;
       }
-      setSeasonPlayoffs(computeSeasonPlayoffs(state.tiers.slice(0, 4), state.userClubId, state.difficulty));
+      setSeasonPlayoffs(computeSeasonPlayoffs(state.tiers.slice(0, 4), state.userClubId, state.difficulty, state.worldTime?.worldWeek));
       setRevealedRounds(0);
       setTab("table");
     } catch (e) {
@@ -4317,13 +4369,15 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
   // popping up without needing separate "eliminated" state.
   const findUserCupMatch = (round) => round.matches.find((m) => m.homeEntrant.club.id === state.userClubId || m.awayEntrant.club.id === state.userClubId);
 
-  // The cup now runs DURING the season: a specific league matchday number
-  // comes due, and instead of playing that league matchday, this round
-  // of the cup plays first. Nothing else advances until it's done.
-  const pendingCupRoundIndex = currentMatchday !== null && isCupCheckpointPending(state, currentMatchday)
-    ? US_OPEN_CUP_ROUND_MATCHDAYS.indexOf(currentMatchday)
+  // Whether a cup round is due at the current world week — used by the
+  // Fixtures tab and TacticsTab's hold-back-for-cup logic to know a cup
+  // match is coming up. Actual resolution now happens uniformly inside
+  // processWorldWeek as the "Advance to Next Matchday" loop steps through
+  // world weeks, not as a special early-return case in simulateMatchday.
+  const pendingCupRoundIndex = currentWorldWeek !== null && isCupCheckpointPending(state, currentWorldWeek)
+    ? US_OPEN_CUP_ROUND_MATCHDAYS.indexOf(currentWorldWeek)
     : null;
-  const pendingEnglandCupKey = currentMatchday !== null ? pendingEnglandCupCheckpoint(state, currentMatchday) : null;
+  const pendingEnglandCupKey = currentWorldWeek !== null ? pendingEnglandCupCheckpoint(state, currentWorldWeek) : null;
 
   // The pairing for a cup round is random — drawing it fresh every render
   // would show a different "next opponent" each time. Draw it once, the
@@ -4426,13 +4480,13 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     // any other rollover behavior — it only supplies the starting
     // coordinate the new season's calendar profiles get built from.
     const outgoingTierProfiles = state.tiers.map((t) => t.calendarProfile).filter(Boolean);
-    const outgoingCupProfiles = [US_OPEN_CUP_CALENDAR, FA_CUP_CALENDAR, EFL_CUP_CALENDAR];
+    const outgoingCupProfiles = [state.usOpenCupCalendar, state.faCupCalendar, state.eflCupCalendar].filter(Boolean);
     const nextSeasonStartWeek = computeNextSeasonStartWeek(outgoingTierProfiles, outgoingCupProfiles);
 
     const usaResult = userIsEngland
-      ? rolloverSeason(usaTiers, "__background__", state.prizePools.slice(0, 4), state.difficulty, computeSeasonPlayoffs(usaTiers, "__background__", state.difficulty), nextSeasonStartWeek)
+      ? rolloverSeason(usaTiers, "__background__", state.prizePools.slice(0, 4), state.difficulty, computeSeasonPlayoffs(usaTiers, "__background__", state.difficulty, state.worldTime?.worldWeek), nextSeasonStartWeek)
       : rolloverSeason(usaTiers, state.userClubId, state.prizePools.slice(0, 4), state.difficulty, seasonPlayoffs, nextSeasonStartWeek);
-    const englandResult = rolloverEnglandSeason(englandTiers, state.parachutePayments, state.difficulty, state.prizePools.slice(4, 8), state.userClubId, precomputedEnglandPlayoffs, nextSeasonStartWeek);
+    const englandResult = rolloverEnglandSeason(englandTiers, state.parachutePayments, state.difficulty, state.prizePools.slice(4, 8), state.userClubId, precomputedEnglandPlayoffs, nextSeasonStartWeek, state.worldTime?.worldWeek);
 
     const newTiers = [...usaResult.newTiers, ...englandResult.tiers];
     // A manager who's actually won things commands more investment from
@@ -4944,6 +4998,12 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       usOpenCup: null,
       faCup: null,
       eflCup: null,
+      // Fresh, this-season-only cup calendars, resolved from the SAME
+      // anchor the USA/England league tiers just resolved (both pyramids
+      // currently share nextSeasonStartWeek) — not a permanent constant.
+      // This is what makes cups keep working every season instead of
+      // only ever firing once, early in season 1 (the confirmed bug).
+      ...resolveCupCalendarsForSeason(nextSeasonStartWeek, nextSeasonStartWeek),
       playersOnLoan: stillOnLoan,
       userSigningsThisSeason: [],
       // Rolling log of AI-to-AI transfers, capped so a very long save
@@ -5014,7 +5074,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
   const handleSetCaptain = (playerId) => {
     const club = userClub;
     const picked = club.squad.find((p) => p.id === playerId);
-    const xi = startingXI(club, currentMatchday ?? 1);
+    const xi = startingXI(club, currentWorldWeek ?? 1);
     const bestLeader = [...xi].sort((a, b) => b.leadership - a.leadership)[0];
     if (picked && bestLeader && bestLeader.id !== picked.id && bestLeader.leadership - picked.leadership >= 10) {
       setInfoNotice(`${picked.name} isn't your strongest leader — ${bestLeader.name} (leadership ${bestLeader.leadership} vs ${picked.leadership}) is currently in your XI and might wear the armband better.`);
@@ -5216,7 +5276,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     mutateAndSave((next) => {
       const t = next.tiers[next.userTierId];
       const club = t.clubs.find((c) => c.id === next.userClubId);
-      startFacilityUpgrade(club, facilityType, next.userTierId, currentMatchday ?? 1);
+      startFacilityUpgrade(club, facilityType, next.userTierId, currentWorldWeek ?? 1);
     });
   };
 
@@ -5249,7 +5309,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       // The very first academy investment is real construction, same as
       // any other facility's first upgrade — it doesn't open its doors
       // the instant the check clears.
-      club.academyUpgrading = { targetStars: 1, completesAtMatchday: (currentMatchday ?? 1) + FACILITY_FIRST_UPGRADE_MATCHDAYS };
+      club.academyUpgrading = { targetStars: 1, completesAtWorldWeek: (currentWorldWeek ?? 1) + FACILITY_FIRST_UPGRADE_WORLD_WEEKS };
       club.facilityUpgradesThisSeason = used + 1;
     });
   };
@@ -5485,7 +5545,15 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
 
       {englandPlayoffProgress && (() => {
         const { seeds, semi1, semi2, final } = englandPlayoffProgress;
-        const matchday = 9997;
+        // Real current world week, not a sentinel (was 9997) — this is the
+        // third instance of the same cup/playoff sentinel bug found during
+        // the migration audit: an interactively-viewed England promotion
+        // playoff could taint a player's injury/suspension timer with a
+        // fake value, just like the cup-round and end-of-season-playoff
+        // cases. `state.userTierId` is the correct competition for
+        // suspension tagging, since this playoff is always for the
+        // tier the user's own club is currently in.
+        const worldWeek = state.worldTime?.worldWeek ?? 1;
         const rows = [
           { key: "semi1", label: "Semifinal 1", a: seeds.s1, b: seeds.s4, result: semi1, ready: true },
           { key: "semi2", label: "Semifinal 2", a: seeds.s2, b: seeds.s3, result: semi2, ready: true },
@@ -5511,7 +5579,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
                 {!row.result && row.ready && row.a && row.b && (
                   <button
                     onClick={() => {
-                      const outcome = resolveKnockoutMatch(row.a, row.b, matchday);
+                      const outcome = resolveKnockoutMatch(row.a, row.b, worldWeek, state.userTierId);
                       setEnglandPlayoffProgress((prev) => ({ ...prev, [row.key]: outcome }));
                     }}
                     style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: PALETTE.gold, color: PALETTE.ink, fontSize: 12, fontWeight: 700, cursor: "pointer", ...display, whiteSpace: "nowrap" }}
@@ -5531,7 +5599,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
           const Icon = t.icon;
           const active = tab === t.id;
           const label = t.id === "opencup" && state.userTierId >= 4 ? "Competitions" : t.label;
-          const inboxCount = t.id === "inbox" ? computeInboxUrgentCount(userClub, currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1), tier, managerHistory?.seenOneTimeHints || [], state.difficulty, managerHistory?.clearedOneTimeHints || [], (state.jobOffers || []).length) : 0;
+          const inboxCount = t.id === "inbox" ? computeInboxUrgentCount(userClub, currentWorldWeek ?? (state.seasonNumber > 1 ? 999 : 1), tier, managerHistory?.seenOneTimeHints || [], state.difficulty, managerHistory?.clearedOneTimeHints || [], (state.jobOffers || []).length) : 0;
           return (
             <button
               key={t.id}
@@ -5559,17 +5627,17 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       </div>
 
       <div style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
-        {tab === "squad" && <SquadTab club={userClub} matchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)} onToggleList={handleToggleList} onRenew={handleRenew} tierId={state.userTierId} difficulty={state.difficulty} onToggleDP={handleToggleDP} onToggleRest={handleToggleRest} onToggleRestIndefinitely={handleToggleRestIndefinitely} onToggleHoldBack={handleToggleHoldBack} onLoanOut={handleLoanOut} playersOnLoan={state.playersOnLoan} tier={tier} />}
-        {tab === "tactics" && <TacticsTab club={userClub} matchday={currentMatchday ?? 1} onChange={handleTacticsChange} tier={tier} onSetCaptain={handleSetCaptain} onSwapCustomXI={handleSwapCustomXI} />}
+        {tab === "squad" && <SquadTab club={userClub} matchday={currentWorldWeek ?? (state.seasonNumber > 1 ? 999 : 1)} onToggleList={handleToggleList} onRenew={handleRenew} tierId={state.userTierId} difficulty={state.difficulty} onToggleDP={handleToggleDP} onToggleRest={handleToggleRest} onToggleRestIndefinitely={handleToggleRestIndefinitely} onToggleHoldBack={handleToggleHoldBack} onLoanOut={handleLoanOut} playersOnLoan={state.playersOnLoan} tier={tier} />}
+        {tab === "tactics" && <TacticsTab club={userClub} matchday={currentWorldWeek ?? 1} isCupMatchPending={pendingCupRoundIndex !== null || !!pendingEnglandCupKey} onChange={handleTacticsChange} tier={tier} onSetCaptain={handleSetCaptain} onSwapCustomXI={handleSwapCustomXI} />}
         {tab === "table" && <TableTab tier={tier} userClubId={userClub.id} seasonPlayoffs={seasonPlayoffs} revealedRounds={revealedRounds} onSimRound={handleSimRound} onSimRest={handleSimRestOfPostseason} />}
         {tab === "fixtures" && <FixturesTab tier={tier} userClubId={userClub.id} usOpenCup={state.usOpenCup} faCup={state.faCup} eflCup={state.eflCup} />}
-        {tab === "market" && <MarketTab tiers={state.tiers} userClub={userClub} userTierId={state.userTierId} onBuy={handleBuy} difficulty={state.difficulty} matchday={currentMatchday ?? 1} />}
+        {tab === "market" && <MarketTab tiers={state.tiers} userClub={userClub} userTierId={state.userTierId} onBuy={handleBuy} difficulty={state.difficulty} matchday={currentWorldWeek ?? 1} />}
         {tab === "development" && (
           <DevelopmentTab
             club={userClub}
             budget={userClub.budget}
             tierIdx={state.userTierId}
-            currentMatchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)}
+            currentWorldWeek={currentWorldWeek ?? (state.seasonNumber > 1 ? 999 : 1)}
             onStartAcademy={handleStartAcademy}
             onInvestAcademy={handleInvestAcademy}
             onSignYouth={handleSignYouth}
@@ -5603,7 +5671,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
           )
         )}
         {tab === "news" && <NewsTab newsFeed={state.newsFeed} />}
-        {tab === "inbox" && <InboxTab club={userClub} matchday={currentMatchday ?? (state.seasonNumber > 1 ? 999 : 1)} tier={tier} managerHistory={managerHistory} setManagerHistory={setManagerHistory} difficulty={state.difficulty} jobOffers={state.jobOffers} onAcceptJobOffer={onAcceptJobOffer} onDeclineJobOffer={onDeclineJobOffer} />}
+        {tab === "inbox" && <InboxTab club={userClub} matchday={currentWorldWeek ?? (state.seasonNumber > 1 ? 999 : 1)} tier={tier} managerHistory={managerHistory} setManagerHistory={setManagerHistory} difficulty={state.difficulty} jobOffers={state.jobOffers} onAcceptJobOffer={onAcceptJobOffer} onDeclineJobOffer={onDeclineJobOffer} />}
         {tab === "trophies" && <TrophyTab trophyLog={managerHistory.trophyLog} bestFinish={managerHistory.bestFinish} bestFinishUsa={managerHistory.bestFinishUsa} bestFinishEngland={managerHistory.bestFinishEngland} currentClubName={userClub.name} worldRecords={state.worldRecords} careerStats={managerHistory.careerStats} />}
       </div>
 
@@ -5955,6 +6023,10 @@ function handlePickFromPreview(previewWorld, tierId, clubId, difficulty, setStat
     usOpenCupQualifiers: null,
     faCup: null,
     eflCup: null,
+    // Season 1's cup calendars, resolved from the world's starting anchor
+    // (week 1) — same mechanism as every subsequent season's rollover,
+    // not a special first-season case.
+    ...resolveCupCalendarsForSeason(1, 1),
     eflCupQualifiers: null,
     parachutePayments: null,
     playersOnLoan: [],
