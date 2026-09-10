@@ -20,15 +20,23 @@ export function effectiveRating(p) {
   return p.overall * fitnessFactor * moraleFactor;
 }
 
-export function isAvailable(p, worldWeek) {
+export function isAvailable(p, worldWeek, competitionId) {
   const notInjured = p.injuredUntilWorldWeek == null || p.injuredUntilWorldWeek < worldWeek;
-  const notSuspended = !p.suspension; // suspensions are match-based now, not time-based — see applyCardsAndInjuries
+  // Suspensions are competition-specific — a suspension only makes a
+  // player unavailable for the SAME competition it was picked up in.
+  // `competitionId` is optional for backward-compatible call sites that
+  // don't care about a specific competition (there currently are none in
+  // this file, but keeping it optional avoids a hard crash if one is ever
+  // added); when omitted, this falls back to the old "any suspension
+  // blocks" behavior, so pass it explicitly wherever a specific
+  // competition is actually known — see startingXI/simulateMatch.
+  const notSuspended = !p.suspension || (competitionId !== undefined && p.suspension.competitionId !== competitionId);
   return notInjured && notSuspended;
 }
 
-export function unavailableReason(p, worldWeek) {
+export function unavailableReason(p, worldWeek, competitionId) {
   if (p.injuredUntilWorldWeek != null && p.injuredUntilWorldWeek >= worldWeek) return "injured";
-  if (p.suspension) return "suspended";
+  if (p.suspension && (competitionId === undefined || p.suspension.competitionId === competitionId)) return "suspended";
   return null;
 }
 
@@ -39,10 +47,10 @@ export function lineupScore(mode, p) {
   return effectiveRating(p);
 }
 
-export function startingXI(club, worldWeek, isCupMatch = false) {
+export function startingXI(club, worldWeek, isCupMatch = false, competitionId) {
   const mode = club.tactics.lineupMode || "best";
   const restThreshold = club.tactics.restThreshold ?? 0;
-  const hardAvailable = club.squad.filter((p) => isAvailable(p, worldWeek));
+  const hardAvailable = club.squad.filter((p) => isAvailable(p, worldWeek, competitionId));
   // Rest preferences apply regardless of lineup mode — Best/Youth/Auto all
   // respect them the same way, they just change who's eligible to be
   // picked FROM, not how picking within that pool works.
@@ -166,24 +174,24 @@ export function dpAuraFactor(club, xi) {
   return 1 + Math.min(dpInXi * DP_XI_AURA_PER_PLAYER, DP_XI_AURA_CAP);
 }
 
-export function squadStrength(club, worldWeek, isCupMatch = false) {
-  const xi = startingXI(club, worldWeek, isCupMatch);
+export function squadStrength(club, worldWeek, isCupMatch = false, competitionId) {
+  const xi = startingXI(club, worldWeek, isCupMatch, competitionId);
   if (xi.length === 0) return 0;
   const avg = xi.reduce((s, p) => s + effectiveRating(p), 0) / xi.length;
   return avg * captainChemistryFactor(club, xi) * dpAuraFactor(club, xi);
 }
 
-export function attackStrength(club, worldWeek, isCupMatch = false) {
-  return squadStrength(club, worldWeek, isCupMatch) * ATTACK_MOD[club.tactics.style] * PRESS_MOD[club.tactics.press];
+export function attackStrength(club, worldWeek, isCupMatch = false, competitionId) {
+  return squadStrength(club, worldWeek, isCupMatch, competitionId) * ATTACK_MOD[club.tactics.style] * PRESS_MOD[club.tactics.press];
 }
 
-export function defenseStrength(club, worldWeek, isCupMatch = false) {
-  return squadStrength(club, worldWeek, isCupMatch) * DEFENSE_MOD[club.tactics.style];
+export function defenseStrength(club, worldWeek, isCupMatch = false, competitionId) {
+  return squadStrength(club, worldWeek, isCupMatch, competitionId) * DEFENSE_MOD[club.tactics.style];
 }
 
-export function expectedGoals(attacker, defender, worldWeek, isHome, isCupMatch = false) {
-  const atk = attackStrength(attacker, worldWeek, isCupMatch);
-  const dfn = defenseStrength(defender, worldWeek, isCupMatch);
+export function expectedGoals(attacker, defender, worldWeek, isHome, isCupMatch = false, competitionId) {
+  const atk = attackStrength(attacker, worldWeek, isCupMatch, competitionId);
+  const dfn = defenseStrength(defender, worldWeek, isCupMatch, competitionId);
   const ratio = atk / Math.max(dfn, 1.0);
   let rate = BASE_GOAL_RATE * Math.pow(ratio, 1.15);
   if (isHome) rate *= HOME_ADVANTAGE;
@@ -340,8 +348,8 @@ export function applyCardsAndInjuries(xi, clubName, worldWeek, events, difficult
 // `worldWeek` is the real, current elapsed-time value — used for injury
 // duration and appearance history — never a sentinel.
 export function simulateMatch(fixture, home, away, worldWeek, difficulty, tierIdx, isCupMatch = false, competitionId = tierIdx) {
-  const homeXI = startingXI(home, worldWeek, isCupMatch);
-  const awayXI = startingXI(away, worldWeek, isCupMatch);
+  const homeXI = startingXI(home, worldWeek, isCupMatch, competitionId);
+  const awayXI = startingXI(away, worldWeek, isCupMatch, competitionId);
   // Debuts: caps === 0 means this is genuinely their first-ever appearance
   // — captured BEFORE recordAppearances increments it, since that's the
   // only moment this is knowable.
@@ -357,8 +365,8 @@ export function simulateMatch(fixture, home, away, worldWeek, difficulty, tierId
   home.squad.forEach((p) => { p.restRequested = false; });
   away.squad.forEach((p) => { p.restRequested = false; });
 
-  const homeXg = expectedGoals(home, away, worldWeek, true, isCupMatch);
-  const awayXg = expectedGoals(away, home, worldWeek, false, isCupMatch);
+  const homeXg = expectedGoals(home, away, worldWeek, true, isCupMatch, competitionId);
+  const awayXg = expectedGoals(away, home, worldWeek, false, isCupMatch, competitionId);
   const homeGoals = samplePoisson(homeXg);
   const awayGoals = samplePoisson(awayXg);
 

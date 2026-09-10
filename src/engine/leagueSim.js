@@ -347,12 +347,12 @@ export function generateUslcSeasonSchedule(uslcClubs) {
   });
 }
 
-export function resolveKnockoutMatch(home, away, worldWeek, tierIdx) {
+export function resolveKnockoutMatch(home, away, worldWeek, tierIdx, isCupMatch = false, competitionId = tierIdx) {
   const fixture = { homeScore: null, awayScore: null, played: false };
-  const result = simulateMatch(fixture, home, away, worldWeek, undefined, tierIdx);
+  const result = simulateMatch(fixture, home, away, worldWeek, undefined, tierIdx, isCupMatch, competitionId);
   if (fixture.homeScore === fixture.awayScore) {
-    const homeStrength = squadStrength(home, worldWeek);
-    const awayStrength = squadStrength(away, worldWeek);
+    const homeStrength = squadStrength(home, worldWeek, isCupMatch, competitionId);
+    const awayStrength = squadStrength(away, worldWeek, isCupMatch, competitionId);
     const total = homeStrength + awayStrength;
     const homeWinChance = total > 0 ? homeStrength / total : 0.5;
     const homeWon = Math.random() < homeWinChance;

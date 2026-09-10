@@ -1,21 +1,28 @@
 import { shuffle } from "./playerGen";
-import { EFL_CUP_CHAMPION_PRIZE, EFL_CUP_ROUND_MATCHDAYS, EFL_CUP_RUNNERUP_PRIZE, EFL_CUP_STAGE_PRIZES, ENGLAND_CUP_STAGE_NAMES, FA_CUP_CHAMPION_PRIZE, FA_CUP_ROUND3_LOSER_CONSOLATION, FA_CUP_ROUND_MATCHDAYS, FA_CUP_RUNNERUP_PRIZE, FA_CUP_STAGE_PRIZES, FULL_TIER_META, LATER_CUP_ROUND_LABELS, US_OPEN_CUP_CHAMPION_PRIZE, US_OPEN_CUP_GIANT_KILLER_BONUS, US_OPEN_CUP_ROUND_MATCHDAYS, US_OPEN_CUP_RUNNERUP_PRIZE } from "./constants";
+import { EFL_CUP_CHAMPION_PRIZE, EFL_CUP_RUNNERUP_PRIZE, EFL_CUP_STAGE_PRIZES, ENGLAND_CUP_STAGE_NAMES, FA_CUP_CHAMPION_PRIZE, FA_CUP_ROUND3_LOSER_CONSOLATION, FA_CUP_RUNNERUP_PRIZE, FA_CUP_STAGE_PRIZES, FULL_TIER_META, LATER_CUP_ROUND_LABELS, US_OPEN_CUP_CHAMPION_PRIZE, US_OPEN_CUP_GIANT_KILLER_BONUS, US_OPEN_CUP_RUNNERUP_PRIZE } from "./constants";
 import { computeTable } from "./matchSim";
 import { resolveKnockoutMatch } from "./leagueSim";
 import { activeWeeksOf, createCompetitionSeasonTemplate, resolveCupSeasonCalendar } from "./calendar";
 
-// Cup timing is now a reusable, season-relative TEMPLATE, resolved fresh
-// into an absolute CalendarProfile every season — never a permanent
-// absolute-week constant. This is the direct fix for the confirmed bug
-// where the old static profiles (computed once, at module load) could
-// never fire again after early season 1, since the world week they were
-// compared against kept growing every season while the profile's own
-// weeks stayed fixed forever.
+// Cup timing is a reusable, season-relative TEMPLATE, resolved fresh into
+// an absolute CalendarProfile every season — never a permanent absolute-
+// week constant. This is what makes cup checkpoints keep firing correctly
+// every season (a static, once-computed profile would only ever match
+// during early season 1, since the world week it's compared against
+// keeps growing every season after).
 //
-// The offsets below are the SAME round spacing as before (e.g. US Open
-// Cup round 1 was matchday 3 when the world always started at week 1 —
-// as an offset from that anchor, that's 3-1=2), just re-expressed
-// relative to a season anchor instead of baked in as absolute weeks.
+// The offsets below are RESEARCH-GROUNDED, not placeholders: each is
+// (rounded to the nearest week) the real gap between that competition's
+// actual season start and each round, verified against official sources
+// (US Soccer's own 2026 Lamar Hunt U.S. Open Cup schedule; the FA's own
+// 2026-27 round-dates page; EFL Cup 2024-25/2026-27 official dates) —
+// see the project's cup-calendar validation report for the full
+// derivation and every source used. Round counts and gap sizes are
+// deliberately UNEVEN (2 to 16+ weeks between consecutive rounds) because
+// that's what the real competitions actually do — none of the three
+// cups run on a fixed cadence in reality, and forcing one here would
+// contradict the research rather than reflect it.
+//
 // anchorRule is included for completeness/documentation, but cups never
 // resolve their own anchor (see resolveCupSeasonCalendar) — they always
 // share their host pyramid's already-resolved anchor for that season.
@@ -24,21 +31,58 @@ export const US_OPEN_CUP_TEMPLATE = createCompetitionSeasonTemplate({
   anchorRule: { mode: "ROLLING" }, // shares the USA pyramid's own rolling anchor — see resolveCupSeasonCalendar
   seasonLengthWeeks: null, // cups don't have a continuous regular-season window; only round offsets matter
   activeWindowOffsets: [],
-  cupWindowOffsets: US_OPEN_CUP_ROUND_MATCHDAYS.map((w) => w - 1),
+  // Round 1, Round 2, Round of 32-ish (MLS enters), Round of 16-ish,
+  // Quarterfinal-ish, an extra round, Semifinal, Final. The real 2026
+  // tournament has 7 reported stages, but this game's own entrant-pool
+  // construction (fixed group sizes, not a clean power-of-two bracket)
+  // takes exactly 8 knockout rounds to converge to a single champion —
+  // confirmed empirically by running the actual pool logic, not assumed.
+  // Rather than redesign the entrant-pool construction (out of scope for
+  // a calendar pass), this keeps all 5 research-grounded timing anchors
+  // (Round 1 Mar 17 +3wk, Round 2 Mar 31 +5wk, Round of 32 Apr 14 +7wk,
+  // Round of 16 Apr 28 +9wk, Quarterfinal May 19 +12wk — all from the
+  // real 2026 U.S. Open Cup schedule against MLS's real Feb 21 start)
+  // and inserts one additional round (+16, unlabeled by real research,
+  // an engine necessity) before the real Semifinal (Sep 16, +30wk) and
+  // Final (Oct 21, +35wk) anchors.
+  cupWindowOffsets: [3, 5, 7, 9, 12, 16, 30, 35],
 });
 export const FA_CUP_TEMPLATE = createCompetitionSeasonTemplate({
   id: "fa_cup",
   anchorRule: { mode: "ROLLING" }, // shares England's own rolling anchor
   seasonLengthWeeks: null,
   activeWindowOffsets: [],
-  cupWindowOffsets: FA_CUP_ROUND_MATCHDAYS.map((w) => w - 1),
+  // Round 1 (League One/Two enter), Round 2, Round 3 (Championship/
+  // Premier League enter), Round 4, Round 5, Quarterfinal, Semifinal,
+  // Final — matching the real FA Cup's 8-round structure from First
+  // Round Proper onward. Offsets computed from the FA's own official
+  // 2026-27 round-dates page, approximated against a shared England
+  // anchor of early August (the real Premier League itself starts
+  // ~3 weeks later, but England's single shared rolling anchor in this
+  // game doesn't distinguish Premier League's start from the lower
+  // three tiers' earlier one — a disclosed approximation, not a
+  // precisely verified fact for the lower tiers specifically). The
+  // Final lands close to the season's own natural end, matching how
+  // the real FA Cup Final is traditionally the last major date of the
+  // English football year.
+  cupWindowOffsets: [14, 18, 23, 28, 31, 35, 38, 42],
 });
 export const EFL_CUP_TEMPLATE = createCompetitionSeasonTemplate({
   id: "efl_cup",
   anchorRule: { mode: "ROLLING" },
   seasonLengthWeeks: null,
   activeWindowOffsets: [],
-  cupWindowOffsets: EFL_CUP_ROUND_MATCHDAYS.map((w) => w - 1),
+  // Round 1 (all EFL clubs enter), Round 2, Round 3 (remaining Premier
+  // League clubs enter), Round 4, Quarterfinal, Semifinal, Final —
+  // matching the real EFL Cup's 7-round structure. The real semifinal
+  // is two legs; collapsed to a single round here since the knockout
+  // engine resolves one match per tie (a deliberate, disclosed
+  // simplification, not an oversight). Offsets computed from the real
+  // 2024-25 and 2026-27 EFL Cup schedules, front-loaded (2-6 week gaps
+  // through October) then a genuine ~7-week gap before the Quarterfinal
+  // in December, then a March Final — well before the FA Cup Final and
+  // well before the season's own end.
+  cupWindowOffsets: [1, 3, 6, 12, 19, 25, 33],
 });
 
 // Called once per season (world build for season 1, rollover for every
@@ -65,7 +109,17 @@ export function drawCupPairs(entrants) {
 
 export function resolveCupPairs(pairs, worldWeek, competitionId) {
   return pairs.map(([homeEntrant, awayEntrant]) => {
-    const outcome = resolveKnockoutMatch(homeEntrant.club, awayEntrant.club, worldWeek, competitionId, true);
+    // No single tierIdx applies to a cup tie — the two entrants can come
+    // from different tiers entirely — so `tierIdx` is passed as undefined
+    // (handled gracefully everywhere it's read) and `competitionId` is
+    // passed explicitly rather than left to default from tierIdx. This is
+    // the actual fix for the cross-competition suspension bug: the
+    // previous call passed `competitionId` into resolveKnockoutMatch's
+    // `tierIdx` slot by position (the function had no dedicated
+    // competitionId/isCupMatch parameters at all), which is what let a
+    // cup match's suspension collide with a league suspension sharing the
+    // same tier index.
+    const outcome = resolveKnockoutMatch(homeEntrant.club, awayEntrant.club, worldWeek, undefined, true, competitionId);
     const winnerEntrant = outcome.winner.id === homeEntrant.club.id ? homeEntrant : awayEntrant;
     const loserEntrant = winnerEntrant === homeEntrant ? awayEntrant : homeEntrant;
     // Giant-killer: a club from a numerically higher tier index (a lower

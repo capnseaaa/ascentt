@@ -164,10 +164,6 @@ export const US_OPEN_CUP_RUNNERUP_PRIZE = 250_000;
 
 export const US_OPEN_CUP_GIANT_KILLER_BONUS = 50_000;
 
-export const FA_CUP_ROUND_MATCHDAYS = [4, 8, 12, 16, 20, 24, 28, 32];
-
-export const EFL_CUP_ROUND_MATCHDAYS = [2, 6, 10, 14, 18, 22, 26, 30];
-
 export const FA_CUP_STAGE_PRIZES = { 7: 47_750, 6: 79_500, 5: 121_500, 4: 127_000, 3: 477_000, 2: 954_000 };
 
 export const FA_CUP_CHAMPION_PRIZE = 2_000_000;
@@ -184,8 +180,16 @@ export const EFL_CUP_RUNNERUP_PRIZE = 50_000;
 
 export const US_OPEN_CUP_TOTAL_ROUNDS = 8;
 
-export const US_OPEN_CUP_ROUND_MATCHDAYS = [3, 5, 7, 9, 11, 13, 15, 17];
-
+// Labels for rounds after the first two numbered rounds, used by
+// cupRoundLabel (US Open Cup only). The game's own entrant-pool
+// construction (fixed group sizes: all USL2, then +USL1 +USLC top 16,
+// then +MLS bottom 16, then pure knockout) does not produce a clean
+// power-of-two bracket — confirmed empirically, it takes exactly 8
+// knockout rounds to converge to a single champion, one more than the
+// real 2026 tournament's reported 7 stages. Rather than redesign the
+// entrant-pool logic (out of scope for a calendar/timing pass), this
+// keeps the extra round with a placeholder-style label ("Round of 8")
+// alongside the accurately-named stages that DO correspond to real ones.
 export const LATER_CUP_ROUND_LABELS = ["Round of 32", "Round of 16", "Quarterfinal", "Round of 8", "Semifinal", "Final"];
 
 export const ENGLAND_CUP_STAGE_NAMES = { 4: "Round 4", 3: "Quarterfinal", 2: "Semifinal" };
