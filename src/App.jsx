@@ -3639,7 +3639,7 @@ const TABS = [
   { id: "table", label: "Table", icon: Trophy },
   { id: "fixtures", label: "Fixtures", icon: Calendar },
   { id: "market", label: "Market", icon: ShoppingBag },
-  { id: "development", label: "Development", icon: GraduationCap },
+  { id: "development", label: "Facilities", icon: GraduationCap },
   { id: "opencup", label: "Open Cup", icon: Star },
   { id: "trophies", label: "Trophy Room", icon: Award },
   { id: "news", label: "News", icon: Newspaper },
@@ -3813,7 +3813,7 @@ const ONBOARDING_STEPS = [
   {
     icon: Users,
     title: "Running your club",
-    body: "Squad is your full roster — set your captain and pick a lineup mode. Tactics is your game plan (formation, style, press) for the next match — set this well and it actually changes how matches play out. Market is where you buy and sell players. Development lets you grow young talent through an academy or open tryouts, depending on your club.",
+    body: "Squad is your full roster — set your captain and pick a lineup mode. Tactics is your game plan (formation, style, press) for the next match — set this well and it actually changes how matches play out. Market is where you buy and sell players. Facilities lets you grow young talent through an academy or open tryouts, depending on your club.",
   },
   {
     icon: Lightbulb,
