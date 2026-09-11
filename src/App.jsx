@@ -3475,7 +3475,7 @@ function FacilitiesPanel({ club, tierIdx, currentWorldWeek, onUpgradeFacility, o
   );
 }
 
-function DevelopmentTab({ club, budget, tierIdx, currentWorldWeek, onStartAcademy, onInvestAcademy, onSignYouth, onPromoteYouth, onSellYouth, onHostTryouts, onSignTryout, onDismissTryouts, onUpgradeFacility, onDowngradeFacility, onSetTicketPrice }) {
+function FacilitiesTab({ club, budget, tierIdx, currentWorldWeek, onStartAcademy, onInvestAcademy, onSignYouth, onPromoteYouth, onSellYouth, onHostTryouts, onSignTryout, onDismissTryouts, onUpgradeFacility, onDowngradeFacility, onSetTicketPrice }) {
   const facilitiesPanel = <FacilitiesPanel club={club} tierIdx={tierIdx} currentWorldWeek={currentWorldWeek} onUpgradeFacility={onUpgradeFacility} onDowngradeFacility={onDowngradeFacility} onSetTicketPrice={onSetTicketPrice} />;
   if (club.academyEligible) {
     const signCost = academySigningCost(club.academyStars);
@@ -3639,7 +3639,7 @@ const TABS = [
   { id: "table", label: "Table", icon: Trophy },
   { id: "fixtures", label: "Fixtures", icon: Calendar },
   { id: "market", label: "Market", icon: ShoppingBag },
-  { id: "development", label: "Facilities", icon: GraduationCap },
+  { id: "facilities", label: "Facilities", icon: GraduationCap },
   { id: "opencup", label: "Open Cup", icon: Star },
   { id: "trophies", label: "Trophy Room", icon: Award },
   { id: "news", label: "News", icon: Newspaper },
@@ -5707,8 +5707,8 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
         {tab === "table" && <TableTab tier={tier} userClubId={userClub.id} seasonPlayoffs={seasonPlayoffs} revealedRounds={revealedRounds} onSimRound={handleSimRound} onSimRest={handleSimRestOfPostseason} />}
         {tab === "fixtures" && <FixturesTab tier={tier} userClubId={userClub.id} usOpenCup={state.usOpenCup} faCup={state.faCup} eflCup={state.eflCup} usOpenCupCalendar={state.usOpenCupCalendar} faCupCalendar={state.faCupCalendar} eflCupCalendar={state.eflCupCalendar} />}
         {tab === "market" && <MarketTab tiers={state.tiers} userClub={userClub} userTierId={state.userTierId} onBuy={handleBuy} difficulty={state.difficulty} matchday={currentWorldWeek ?? 1} />}
-        {tab === "development" && (
-          <DevelopmentTab
+        {tab === "facilities" && (
+          <FacilitiesTab
             club={userClub}
             budget={userClub.budget}
             tierIdx={state.userTierId}
