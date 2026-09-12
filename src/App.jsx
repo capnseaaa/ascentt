@@ -3378,18 +3378,39 @@ const FACILITY_LABELS = {
   stadium: { name: "Stadium", icon: "🏟️", blurb: "More seats, more matchday revenue." },
 };
 
+// A1 — narrative-only phrasing for a club's permanent facility identity
+// (facilitySignature/facilityWeakSpot). Text only, no numbers/multipliers —
+// this is flavor describing the club's reputation, not a readout of any
+// mechanical effect.
+const FACILITY_IDENTITY_NOUN = {
+  training: "training setup",
+  medical: "medical setup",
+  scouting: "scouting network",
+  stadium: "stadium",
+};
+function facilityIdentityLine(club) {
+  if (!club.facilitySignature || !club.facilityWeakSpot) return null; // old save, predates this feature — no line, no guess
+  const strong = FACILITY_IDENTITY_NOUN[club.facilitySignature];
+  const weak = FACILITY_IDENTITY_NOUN[club.facilityWeakSpot];
+  return `Known for their ${strong} — but have long neglected the ${weak}.`;
+}
+
 function FacilitiesPanel({ club, tierIdx, currentWorldWeek, onUpgradeFacility, onDowngradeFacility, onSetTicketPrice }) {
   const cap = FACILITY_UPGRADES_PER_SEASON[tierIdx];
   const used = club.facilityUpgradesThisSeason || 0;
   const [lo, hi] = TICKET_PRICE_RANGE[tierIdx];
   const price = club.ticketPrice ?? defaultTicketPrice(tierIdx);
   const capacity = stadiumCapacity(club.facilities?.stadium?.level, tierIdx);
+  const identityLine = facilityIdentityLine(club);
   return (
     <div style={{ marginBottom: 22 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
         <span style={{ ...display, fontSize: 15, fontWeight: 700, color: PALETTE.ink }}>Facilities</span>
         <span style={{ ...serif, fontSize: 12, color: PALETTE.inkSoft }}>{used} / {cap} upgrades started this season</span>
       </div>
+      {identityLine && (
+        <div style={{ ...serif, fontSize: 12.5, fontStyle: "italic", color: PALETTE.inkSoft, marginBottom: 10 }}>{identityLine}</div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 10 }}>
         {FACILITY_TYPES.filter((t) => t !== "academy").map((type) => {
           const f = club.facilities?.[type];
@@ -4835,7 +4856,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       let boardMessageNotice = null;
       let messageBudgetDelta = 0;
       if (pendingMessage) {
-        const compliant = checkBoardMessageCompliance(pendingMessage, userClubPreForMessages, state.userSigningsThisSeason, state.playersOnLoan);
+        const compliant = checkBoardMessageCompliance(pendingMessage, userClubPreForMessages, state.userSigningsThisSeason, state.playersOnLoan, userClubPostForMessages);
         messageComplianceDelta = compliant ? 10 : -12;
         const depositScale = ownershipDepositFor(nextTierIdx, state.difficulty);
         messageBudgetDelta = compliant ? Math.round(depositScale * 0.08) : -Math.round(depositScale * 0.05);
@@ -4843,7 +4864,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       }
       // 25% chance of a fresh demand for next season — never issued while
       // one's already pending, so there's only ever one live demand at a time.
-      const newBoardMessage = !pendingMessage && Math.random() < 0.25 ? generateBoardMessage(userClubPostForMessages) : null;
+      const newBoardMessage = !pendingMessage && Math.random() < 0.25 ? generateBoardMessage(userClubPostForMessages, nextTierIdx) : null;
       if (boardMessageNotice) boardNotice = boardNotice ? `${boardNotice}\n\n${boardMessageNotice}` : boardMessageNotice;
       const idxMsg = newTiers[nextTierIdx].clubs.findIndex((c) => c.id === state.userClubId);
       if (idxMsg >= 0) {

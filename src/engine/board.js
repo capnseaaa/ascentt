@@ -1,6 +1,12 @@
 import { clamp } from "./playerGen";
 import { ACADEMY_PROMOTE_MIN_AGE, ACADEMY_START_COST, BOARD_MESSAGE_FORMATIONS, DIFFICULTY_MODES, FULL_TIER_META, MIN_SQUAD_SIZE, PROMOTE_RELEGATE_COUNT } from "./constants";
+import { facilityMaxUpgradeLevel, NEW_FACILITY_TYPES } from "./facilities";
 import { clubLineRatings, computeTable, startingXI } from "./matchSim";
+
+// Display names for the four facilities, local to board-message text — kept
+// separate from App.jsx's FACILITY_LABELS (which also carries icons/blurbs
+// for the UI) so this engine module doesn't reach into UI-layer constants.
+const FACILITY_DISPLAY_NAME = { training: "Training", medical: "Medical", scouting: "Scouting", stadium: "Stadium" };
 
 export function weakestPositionMessage(squad) {
   const positions = ["GK", "DEF", "MID", "FWD"];
@@ -14,20 +20,22 @@ export function weakestPositionMessage(squad) {
   return { position: weakest, minOverall };
 }
 
-export function generateBoardMessage(club) {
-  const roll = Math.random();
-  if (roll < 0.4) {
-    const { position, minOverall } = weakestPositionMessage(club.squad);
-    return { kind: "sign_position", position, minOverall, description: `The board wants a ${position} rated ${minOverall}+ overall signed before next season.` };
-  }
-  if (roll < 0.6) {
-    const options = BOARD_MESSAGE_FORMATIONS.filter((f) => f !== club.tactics?.formation);
-    const formation = options[Math.floor(Math.random() * options.length)] ?? BOARD_MESSAGE_FORMATIONS[0];
-    return { kind: "use_formation", formation, description: `The board wants to see a ${formation} setup by the end of the season.` };
-  }
-  if (roll < 0.8) {
-    return { kind: "youth_mode", description: "The board wants to see more academy players getting first-team minutes — switch to Youth lineup mode by the end of the season." };
-  }
+function genSignPosition(club) {
+  const { position, minOverall } = weakestPositionMessage(club.squad);
+  return { kind: "sign_position", position, minOverall, description: `The board wants a ${position} rated ${minOverall}+ overall signed before next season.` };
+}
+
+function genUseFormation(club) {
+  const options = BOARD_MESSAGE_FORMATIONS.filter((f) => f !== club.tactics?.formation);
+  const formation = options[Math.floor(Math.random() * options.length)] ?? BOARD_MESSAGE_FORMATIONS[0];
+  return { kind: "use_formation", formation, description: `The board wants to see a ${formation} setup by the end of the season.` };
+}
+
+function genYouthMode() {
+  return { kind: "youth_mode", description: "The board wants to see more academy players getting first-team minutes — switch to Youth lineup mode by the end of the season." };
+}
+
+function genLoanOut(club) {
   const candidates = club.squad.filter((p) => p.age <= 26);
   const pool = candidates.length ? candidates : club.squad;
   const target = pool[Math.floor(Math.random() * pool.length)];
@@ -35,7 +43,86 @@ export function generateBoardMessage(club) {
   return { kind: "loan_out", playerId: target.id, playerName: target.name, description: `The board wants ${target.name} out on loan for experience before next season.` };
 }
 
-export function checkBoardMessageCompliance(message, clubPre, signingsThisSeason, playersOnLoan) {
+// invest_facility — target selection is a weighted mix of the club's weak
+// spot, its signature facility, and a generic pick independent of either
+// identity. Weak spot deliberately does NOT dominate: it's the smallest of
+// the three shares, not the largest or the only path in. Old-save clubs
+// with no recorded identity (facilitySignature/facilityWeakSpot unset) only
+// ever get the generic case — there's nothing to weight toward.
+function genInvestFacility(club, tierIdx) {
+  if (tierIdx == null) return null;
+  const ceiling = facilityMaxUpgradeLevel(tierIdx);
+  const eligible = NEW_FACILITY_TYPES.filter((t) => (club.facilities?.[t]?.level ?? 0) < ceiling);
+  if (eligible.length === 0) return null; // every facility already at ceiling — nothing to ask for this cycle
+
+  const cases = [];
+  if (club.facilitySignature && club.facilityWeakSpot) {
+    if (eligible.includes(club.facilityWeakSpot)) cases.push({ framing: "weak", facility: club.facilityWeakSpot, weight: 0.3 });
+    if (eligible.includes(club.facilitySignature)) cases.push({ framing: "signature", facility: club.facilitySignature, weight: 0.2 });
+  }
+  cases.push({ framing: "generic", facility: null, weight: 0.5 });
+
+  const totalWeight = cases.reduce((s, c) => s + c.weight, 0);
+  let roll = Math.random() * totalWeight;
+  let chosen = cases[cases.length - 1];
+  for (const c of cases) {
+    if (roll < c.weight) { chosen = c; break; }
+    roll -= c.weight;
+  }
+  const facility = chosen.facility ?? eligible[Math.floor(Math.random() * eligible.length)];
+  const name = FACILITY_DISPLAY_NAME[facility];
+  const levelAtIssue = club.facilities[facility].level;
+  let description;
+  if (chosen.framing === "weak") description = `The board wants to see investment in ${name} to shore up a known weakness — start an upgrade before next season.`;
+  else if (chosen.framing === "signature") description = `The board wants to build further on our strength in ${name} — start an upgrade before next season.`;
+  else description = `The board wants to see investment in ${name} before next season.`;
+  return { kind: "invest_facility", facility, levelAtIssue, description };
+}
+
+// invest_academy — entirely independent of the A1 signature/weak-spot
+// identity. Never generated if it can't possibly be fulfilled: club not
+// academy-eligible, an academy already at max stars, or a start already
+// underway (nothing new for the board to be asking for).
+function genInvestAcademy(club) {
+  if (!club.academyEligible) return null;
+  if (club.academyStars === 0) {
+    if (club.academyUpgrading) return null; // already starting — already actioned
+    return { kind: "invest_academy", startedBefore: false, starsAtIssue: 0, description: "The board wants to see an academy established before next season." };
+  }
+  if (club.academyStars >= 5) return null; // already maxed — nothing left to ask for
+  return { kind: "invest_academy", startedBefore: true, starsAtIssue: club.academyStars, description: "The board wants to see further investment in the academy before next season." };
+}
+
+function pickWeightedMessage(generators) {
+  if (generators.length === 0) return null;
+  const totalWeight = generators.reduce((s, g) => s + g.weight, 0);
+  let roll = Math.random() * totalWeight;
+  let chosenIdx = generators.length - 1;
+  for (let i = 0; i < generators.length; i++) {
+    if (roll < generators[i].weight) { chosenIdx = i; break; }
+    roll -= generators[i].weight;
+  }
+  const message = generators[chosenIdx].gen();
+  if (message) return message;
+  // This kind turned out not to be generatable this cycle (e.g. every
+  // facility already at ceiling, or the academy's already maxed) — fall
+  // through and re-roll among whatever's left, rather than losing the
+  // message entirely.
+  return pickWeightedMessage(generators.filter((_, i) => i !== chosenIdx));
+}
+
+export function generateBoardMessage(club, tierIdx) {
+  return pickWeightedMessage([
+    { weight: 0.30, gen: () => genSignPosition(club) },
+    { weight: 0.15, gen: () => genUseFormation(club) },
+    { weight: 0.15, gen: () => genYouthMode() },
+    { weight: 0.15, gen: () => genLoanOut(club) },
+    { weight: 0.15, gen: () => genInvestFacility(club, tierIdx) },
+    { weight: 0.10, gen: () => genInvestAcademy(club) },
+  ]);
+}
+
+export function checkBoardMessageCompliance(message, clubPre, signingsThisSeason, playersOnLoan, clubPost) {
   if (message.kind === "sign_position") {
     return (signingsThisSeason || []).some((s) => s.position === message.position && s.overall >= message.minOverall);
   }
@@ -47,6 +134,18 @@ export function checkBoardMessageCompliance(message, clubPre, signingsThisSeason
   }
   if (message.kind === "loan_out") {
     return (playersOnLoan || []).some((entry) => entry.player.id === message.playerId);
+  }
+  if (message.kind === "invest_facility") {
+    // clubPost — the post-rollover club — since season-end facility
+    // upgrades complete as part of rollover itself; clubPre would still
+    // show the pre-upgrade level even for a fully-compliant club.
+    const level = (clubPost ?? clubPre).facilities?.[message.facility]?.level ?? 0;
+    return level >= message.levelAtIssue + 1;
+  }
+  if (message.kind === "invest_academy") {
+    const stars = (clubPost ?? clubPre).academyStars ?? 0;
+    if (!message.startedBefore) return stars > 0;
+    return stars > message.starsAtIssue;
   }
   return false;
 }
@@ -71,6 +170,17 @@ export function boardMessageNoticeText(message, compliant) {
     return compliant
       ? `The board is pleased you sent ${message.playerName} out on loan as they'd asked — happiness up.`
       : `The board is unhappy ${message.playerName} never went out on loan as they'd specifically asked — happiness down.`;
+  }
+  if (message.kind === "invest_facility") {
+    const name = FACILITY_DISPLAY_NAME[message.facility];
+    return compliant
+      ? `The board is pleased you invested in ${name} as they'd asked — happiness up.`
+      : `The board is unhappy you never invested in ${name} as they'd specifically asked — happiness down.`;
+  }
+  if (message.kind === "invest_academy") {
+    return compliant
+      ? "The board is pleased to see real progress at the academy — happiness up."
+      : "The board is unhappy nothing changed at the academy despite their request — happiness down.";
   }
   return "";
 }

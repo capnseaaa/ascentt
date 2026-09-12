@@ -109,7 +109,10 @@ export function buildEnglandWorld(sharedUsedNames, tierIdOffset = 0) {
     const sorted = [...clubs].sort((a, b) => b.reputation - a.reputation);
     sorted.forEach((c, rank) => {
       const percentile = sorted.length > 1 ? rank / (sorted.length - 1) : 0;
-      c.facilities = autoAssignFacilities(tierIdx, percentile, rank < 6);
+      const assigned = autoAssignFacilities(tierIdx, percentile, rank < 6);
+      c.facilities = assigned.facilities;
+      c.facilitySignature = assigned.signature;
+      c.facilityWeakSpot = assigned.weakSpot;
     });
   };
   assignFacilitiesForTier(plClubs, tierIdOffset + 0);
@@ -231,7 +234,10 @@ export function buildInitialWorld(sharedUsedNames) {
     const sorted = [...clubs].sort((a, b) => b.reputation - a.reputation);
     sorted.forEach((c, rank) => {
       const percentile = sorted.length > 1 ? rank / (sorted.length - 1) : 0;
-      c.facilities = autoAssignFacilities(tierIdx, percentile, rank < 6);
+      const assigned = autoAssignFacilities(tierIdx, percentile, rank < 6);
+      c.facilities = assigned.facilities;
+      c.facilitySignature = assigned.signature;
+      c.facilityWeakSpot = assigned.weakSpot;
     });
   };
   assignFacilitiesForTier(mlsClubs, 0);

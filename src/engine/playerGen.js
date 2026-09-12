@@ -303,6 +303,11 @@ export function makeClub({ name, squad, isReal, budget, academyEligible }) {
     disqualified: false,
     facilities: defaultFacilities(),
     facilityUpgradesThisSeason: 0,
+    // Placeholders, same pattern as `facilities` above — world generation
+    // (autoAssignFacilities, called right after makeClub) overwrites these
+    // with the real, immutable-for-the-life-of-the-save identity strings.
+    facilitySignature: null,
+    facilityWeakSpot: null,
     fanHappiness: FAN_HAPPINESS_DEFAULT,
     ticketPrice: null, // null = use the tier's default until the user (or an AI club's owner) sets one explicitly
   };

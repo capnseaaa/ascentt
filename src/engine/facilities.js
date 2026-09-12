@@ -80,7 +80,12 @@ export function autoAssignFacilities(tierIdx, percentile, isTopSixInTier) {
   const weakSpotPool = NEW_FACILITY_TYPES.filter((t) => t !== signature);
   const weakSpot = choice(weakSpotPool);
   facilities[weakSpot].level = clamp(facilities[weakSpot].level - 1, minL, autoAssignCap);
-  return facilities;
+  // Identity capture (A1): the same signature/weakSpot picked above, just
+  // also handed back as immutable club-level identity strings alongside
+  // the level data, instead of being discarded once the +1/-1 nudge is
+  // applied. Callers assign these onto the club once, at creation, and
+  // never touch them again.
+  return { facilities, signature, weakSpot };
 }
 
 // Cost to reach `targetLevel` for a club in the given tier.
