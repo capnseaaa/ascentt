@@ -1,5 +1,5 @@
 import { choice, clamp, computeRealisticWage, computeReputation, growPlayer, growYouthProspect, makePlayer, randInt, retirementChance, uid } from "./playerGen";
-import { DEFAULT_WORLD_RECORDS, DIFFICULTY_MODES, ENGLAND_AUTO_PROMOTE_BY_TIER, ENGLAND_TIER_META, MID_SEASON_WINDOW_MATCHDAY, MIN_PRIZE_POOL, MIN_SQUAD_SIZE, MLS_CONFERENCE_SIZE_TARGET, MLS_CROSS_CONFERENCE_CAP, MLS_TOTAL_GAMES, PARACHUTE_PAYMENT_SCHEDULE, PROMOTE_RELEGATE_COUNT, TIER_META, TIER_OVERALL_CEILING, USLC_CROSS_CONFERENCE_CAP, USLC_EAST_SIZE_TARGET, USLC_TOTAL_GAMES } from "./constants";
+import { DEFAULT_WORLD_RECORDS, DIFFICULTY_MODES, ENGLAND_AUTO_PROMOTE_BY_TIER, ENGLAND_TIER_META, MID_SEASON_WINDOW_MATCHDAY, MIN_PRIZE_POOL, MIN_SQUAD_SIZE, MLS_CONFERENCE_SIZE_TARGET, MLS_CROSS_CONFERENCE_CAP, MLS_TOTAL_GAMES, PARACHUTE_PAYMENT_SCHEDULE, PROMOTE_RELEGATE_COUNT, TIER_META, USLC_CROSS_CONFERENCE_CAP, USLC_EAST_SIZE_TARGET, USLC_TOTAL_GAMES } from "./constants";
 import { applySeasonFanHappiness, completeSeasonEndFacilityUpgrades, facilityMaintenanceCost, seasonMerchandiseRevenue, seasonSponsorshipRevenue } from "./facilities";
 import { runDraft } from "./worldBuild";
 import { computeTable, simulateMatch, squadStrength } from "./matchSim";
@@ -91,6 +91,25 @@ export function computeUserPlayoffQualification(tier, userClubId) {
   return { qualifies: inPlayoff, autoCount, seeds, table };
 }
 
+// Stage 2 (persistent player pool): a free agent still needs to age and
+// eventually retire while sitting unattached in the pool, or a save that
+// runs many seasons would accumulate players frozen forever at whatever
+// age they left their last club. Reuses growPlayer/retirementChance exactly
+// as every rollover already does for a club's own squad — tierIdx/
+// trainingLevel are both left undefined, which growPlayer already treats
+// as a neutral (tierFactor 1, no training boost) default, so an unattached
+// player ages/develops at a plain baseline rate rather than needing a fake
+// tier assigned to them. A genuine retirement here is a real, permanent
+// removal from the pool (and therefore the world) — nothing else consumes
+// this pool yet in this stage, so this is the only place a free agent can
+// currently disappear for good, matching the project's single "retirement
+// is the only permanent deletion" rule.
+export function ageFreeAgentPool(freeAgents) {
+  return freeAgents
+    .map((p) => growPlayer(p, null, undefined))
+    .filter((p) => !(Math.random() < retirementChance(p.age)));
+}
+
 export function rolloverEnglandSeason(tiers, parachutePayments, difficulty, prizePools, userClubId, precomputedPromotionPlayoffs, seasonStartWeek = 1, worldWeek) {
   // `worldWeek` is the real, current elapsed-time value at the moment this
   // season's playoffs are resolved (end of the outgoing season) — NOT
@@ -164,6 +183,12 @@ export function rolloverEnglandSeason(tiers, parachutePayments, difficulty, priz
   const promotedIds = new Set(events.filter((e) => e.type === "promoted").map((e) => e.clubId));
   const relegatedIds = new Set(events.filter((e) => e.type === "relegated").map((e) => e.clubId));
 
+  // Stage 2 (persistent player pool): every player who leaves a club here
+  // for a reason OTHER than retirement — expired user contract, AI
+  // non-renewal — gets captured into this season's free-agent batch instead
+  // of being silently discarded. Retirement (just below) removes a player
+  // permanently and must never feed this array.
+  const seasonFreeAgents = [];
   const newTiers = tiers.map((t, i) => {
     const clubs = newTierClubIds[i].map((id) => {
       const club = clubsById[id];
@@ -181,6 +206,11 @@ export function rolloverEnglandSeason(tiers, parachutePayments, difficulty, priz
       const retiredIds = new Set(retiring.map((p) => p.id));
       squad = squad.filter((p) => !retiredIds.has(p.id));
       if (isUser) {
+        // A user-club contract expiring is a real ownership transition, not
+        // a deletion — the player enters the shared free-agent pool instead
+        // of vanishing (Stage 2: persistent player pool).
+        const expiring = squad.filter((p) => p.contractYearsLeft <= 0);
+        if (expiring.length) seasonFreeAgents.push(...expiring);
         squad = squad.filter((p) => p.contractYearsLeft > 0);
         if (club.designatedPlayerIds?.length) {
           const stillOnRoster = new Set(squad.map((p) => p.id));
@@ -200,6 +230,11 @@ export function rolloverEnglandSeason(tiers, parachutePayments, difficulty, priz
           if (Math.random() < renewChance) {
             return { ...p, contractYearsLeft: randInt(2, 4), wage: Math.round(p.wage * 1.05) };
           }
+          // Not renewed — captured into the free-agent pool instead of
+          // discarded (Stage 2). England has no replacement mechanism of
+          // its own, so unlike MLS's rollover there's nothing to keep
+          // symmetrical here.
+          seasonFreeAgents.push(p);
           return null;
         }).filter(Boolean);
       }
@@ -250,6 +285,17 @@ export function rolloverEnglandSeason(tiers, parachutePayments, difficulty, priz
     return { id: t.id, name: t.name, clubs, fixtures: generateDoubleRoundRobin(clubs.map((c) => c.id)) };
   });
 
+  // England has never had an organic end-of-season transfer mechanism of
+  // its own — squads could end a season below MIN_SQUAD_SIZE with nothing
+  // but the last-resort makePlayer() backfill above to paper over it. This
+  // reuses the exact same, already-generic runTransferWindow MLS's own
+  // rolloverSeason calls (see its own call site further down this file) —
+  // no USA/MLS-specific logic exists in that function, it operates purely
+  // on tiers/clubs/squad/budget, so it drops in unchanged here. Run after
+  // promotion/relegation, contract/retirement processing, and fixture
+  // generation are all settled, same relative timing as MLS's call.
+  const windowResult = runTransferWindow(newTiers, userClubId);
+
   // Pay out this season's parachute installment to anyone already on a
   // schedule from an earlier relegation, then start fresh 3-year schedules
   // (paying the first installment immediately) for clubs relegated from
@@ -274,7 +320,7 @@ export function rolloverEnglandSeason(tiers, parachutePayments, difficulty, priz
     if (restPayments.length > 0) newSchedule[clubId] = restPayments;
   });
 
-  return { tiers: attachCalendarProfiles(newTiers, seasonStartWeek), events, tables, parachutePayments: newSchedule, promotionPlayoffs, newPrizePools, userPrize, userPayroll };
+  return { tiers: attachCalendarProfiles(newTiers, seasonStartWeek), events, tables, parachutePayments: newSchedule, promotionPlayoffs, newPrizePools, userPrize, userPayroll, windowResult, freeAgents: seasonFreeAgents };
 }
 
 export function ensureMlsConferences(mlsClubs) {
@@ -595,6 +641,13 @@ export function rolloverSeason(tiers, userClubId, prizePools, difficulty, precom
   let userRetirements = [];
   let userDisqualificationNotice = null;
   let userDpRevenue = 0;
+  // Stage 2 (persistent player pool): every player who leaves a club here
+  // for a reason OTHER than retirement — expired user contract, AI
+  // non-renewal, or the post-draft squad-size trim below — gets captured
+  // into this season's free-agent batch instead of being silently
+  // discarded. Retirement (just below) removes a player permanently and
+  // must never feed this array.
+  const seasonFreeAgents = [];
   const newTiers = tiers.map((t, i) => {
     const clubs = newTierClubIds[i].map((id) => {
       const club = clubsById[id];
@@ -619,6 +672,11 @@ export function rolloverSeason(tiers, userClubId, prizePools, difficulty, precom
       const retiredIds = new Set(retiring.map((p) => p.id));
       squad = squad.filter((p) => !retiredIds.has(p.id));
       if (isUser) {
+        // A user-club contract expiring is a real ownership transition, not
+        // a deletion — the player enters the shared free-agent pool instead
+        // of vanishing (Stage 2: persistent player pool).
+        const expiring = squad.filter((p) => p.contractYearsLeft <= 0);
+        if (expiring.length) seasonFreeAgents.push(...expiring);
         squad = squad.filter((p) => p.contractYearsLeft > 0);
         // A retired or expired-contract player who was a Designated Player
         // needs that slot actually freed up — otherwise it stays occupied
@@ -641,17 +699,29 @@ export function rolloverSeason(tiers, userClubId, prizePools, difficulty, precom
           if (Math.random() < renewChance) {
             return { ...p, contractYearsLeft: randInt(2, 4), wage: Math.round(p.wage * 1.05) };
           }
-          // MLS occasionally lands a marquee free-agent signing instead of
-          // just generating another academy-tier prospect — without this,
-          // the pool of genuinely elite (85+) players only ever shrinks as
-          // real stars age out, since replacements otherwise cluster near
-          // the tier's base rating.
-          if (i === 0 && Math.random() < 0.06) {
-            return makePlayer(p.position, Math.min(baseRating + randInt(18, 30), TIER_OVERALL_CEILING[0]), undefined, t.id);
-          }
-          return makePlayer(p.position, baseRating + randInt(-8, 8), undefined, t.id);
-        });
-        // top back up to a full squad if retirements left an AI club short
+          // Not renewed — captured into the free-agent pool instead of
+          // discarded (Stage 2). Stage 3, objective 4 (mandatory): the old
+          // 1-for-1 makePlayer(...) replacement that used to sit right here
+          // is REMOVED — a club's vacancy is no longer auto-filled just
+          // because a contract expired. The departing player still lands in
+          // the free-agent pool below; the vacancy itself is now only ever
+          // resolved by the real recruitment ecosystem (academy promotion,
+          // free-agent signing, or a transfer — see recruitment.js and
+          // App.jsx's doRollover), which may or may not fire this season.
+          // Squads shrinking as a result is the expected, intended effect of
+          // this removal, not a bug to compensate for here.
+          seasonFreeAgents.push(p);
+          return null;
+        }).filter(Boolean);
+        // Emergency floor backstop only (unchanged from before this stage,
+        // and identical in spirit to England's own rollover a few lines
+        // below in this same file) — this is NOT the replacement mechanism
+        // removed above. It only fires if retirements alone already pushed
+        // a club below the hard MIN_SQUAD_SIZE floor, which is a genuine
+        // roster-legality emergency Stage 1's disqualification system is
+        // built around, not routine squad management. Left in place
+        // deliberately: removing it would weaken a Stage 1 floor guard,
+        // which is explicitly out of scope for this stage.
         while (squad.length < MIN_SQUAD_SIZE) {
           squad.push(makePlayer(choice(["GK", "DEF", "MID", "FWD"]), baseRating + randInt(-8, 8), undefined, t.id));
         }
@@ -787,9 +857,19 @@ export function rolloverSeason(tiers, userClubId, prizePools, difficulty, precom
   // Draft additions are the one pure-growth step with no natural release —
   // cap every club (except the user's, whose picks aren't applied until
   // they choose Keep) so the world can't balloon season over season.
+  // Whoever trimSquad drops is a real player being cut for roster-size
+  // reasons, not a retirement — captured into the free-agent pool (Stage 2)
+  // instead of being discarded, same as every other non-retirement
+  // departure in this function.
   newTiers.forEach((t) => {
     t.clubs.forEach((c) => {
-      if (c.id !== userClubId) c.squad = trimSquad(c.squad);
+      if (c.id === userClubId) return;
+      const before = c.squad;
+      c.squad = trimSquad(c.squad);
+      if (c.squad.length < before.length) {
+        const keptIds = new Set(c.squad.map((p) => p.id));
+        seasonFreeAgents.push(...before.filter((p) => !keptIds.has(p.id)));
+      }
     });
   });
 
@@ -799,7 +879,7 @@ export function rolloverSeason(tiers, userClubId, prizePools, difficulty, precom
   return {
     newTiers: attachCalendarProfiles(newTiers, seasonStartWeek), events, tables, windowResult, newPrizePools, userPrize, userRetirements, userDraftPicks, userPayroll,
     mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, promotionPlayoffs, userPromotionPlayoff,
-    userDisqualificationNotice, userDpRevenue, seasonAwards,
+    userDisqualificationNotice, userDpRevenue, seasonAwards, freeAgents: seasonFreeAgents,
   };
 }
 

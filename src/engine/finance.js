@@ -1,5 +1,71 @@
 import { choice, clamp } from "./playerGen";
-import { AI_TRANSFER_ATTEMPTS_PER_TIER, DEFAULT_WORLD_RECORDS, DIFFICULTY_MODES, DISQUALIFICATION_FUNDING_PER_PLAYER, DP_REVENUE_PER_OVERALL, FULL_TIER_META, MAX_DESIGNATED_PLAYERS, MAX_SQUAD_SIZE, MIN_PRIZE_POOL, MIN_SQUAD_SIZE, MLS_SALARY_CAP, OWNERSHIP_DEPOSIT, OWNERSHIP_DEPOSIT_WAGED, PRIZE_DECAY, PRIZE_SHARE, SEASON_BONUS } from "./constants";
+import { AI_TRANSFER_ATTEMPTS_PER_TIER, DEFAULT_WORLD_RECORDS, DIFFICULTY_MODES, DISQUALIFICATION_FUNDING_PER_PLAYER, DP_REVENUE_PER_OVERALL, FULL_TIER_META, MAX_DESIGNATED_PLAYERS, MAX_SQUAD_SIZE, MIN_PRIZE_POOL, MIN_SQUAD_SIZE, MLS_SALARY_CAP, OWNERSHIP_DEPOSIT, OWNERSHIP_DEPOSIT_WAGED, PRIZE_DECAY, PRIZE_SHARE, SEASON_BONUS, TRANSFER_MAX_TIER_DISTANCE } from "./constants";
+
+// Stage 3 (Universal Recruitment Ecosystem): the shared, position-need
+// signal used everywhere a "does this club actually need a player" decision
+// is made — extracted from what runAiToAiTransfers already computed inline
+// so the new recruitment.js decision logic (objective 7) can reuse the
+// exact same need-detection instead of inventing a second one.
+export function computeWeakestPosition(club) {
+  const positions = ["GK", "DEF", "MID", "FWD"];
+  const avgByPos = {};
+  positions.forEach((pos) => {
+    const players = club.squad.filter((p) => p.position === pos);
+    avgByPos[pos] = players.length ? players.reduce((s, p) => s + p.overall, 0) / players.length : 50;
+  });
+  const weakest = positions.reduce((a, b) => (avgByPos[a] <= avgByPos[b] ? a : b));
+  return { weakest, avgByPos };
+}
+
+// Stage 3: the shared cross-tier eligibility resolver (precheck item 1 /
+// objective 1). Bounded to TRANSFER_MAX_TIER_DISTANCE (adjacent tiers only)
+// rather than removing tier restriction outright — a club in the world's top
+// flight realistically doesn't buy straight out of the fourth division. The
+// "same country only" half of the policy is NOT enforced by a branch in
+// here: every caller (runTransferWindow, runAiToAiTransfers, and both
+// rollover functions via their App.jsx call sites) already only ever passes
+// a single country's own tiers array, so a tier-id-adjacency check can never
+// bridge the USA/England boundary even though ids 3 and 4 sit next to each
+// other numerically — the boundary is structural, not logical.
+export function clubsWithinTierDistance(tiers, centerTierId, maxDistance = TRANSFER_MAX_TIER_DISTANCE) {
+  return tiers.filter((t) => Math.abs(t.id - centerTierId) <= maxDistance);
+}
+
+// Returns every {club, tierId} pair eligible to buy, from the buyer's own
+// tier and any tier within policy distance of the seller's tier — used by
+// runTransferWindow so a listed player can be bought by a club one tier up
+// or down, not only from within its own tier's clubs.
+export function eligibleBuyers(tiers, sellerTierId, excludeClubId, userClubId, minBudget, maxDistance = TRANSFER_MAX_TIER_DISTANCE) {
+  const pairs = [];
+  clubsWithinTierDistance(tiers, sellerTierId, maxDistance).forEach((t) => {
+    t.clubs.forEach((c) => {
+      if (c.id === excludeClubId || c.id === userClubId) return;
+      if (c.budget < minBudget) return;
+      if (c.squad.length >= MAX_SQUAD_SIZE) return;
+      pairs.push({ club: c, tierId: t.id });
+    });
+  });
+  return pairs;
+}
+
+// The mirror of eligibleBuyers — every {player, seller, tierId} candidate a
+// given buyer (sitting in buyerTierId) could realistically pursue, from its
+// own tier and any tier within policy distance.
+export function eligibleSellers(tiers, buyerTierId, buyerClubId, userClubId, position, minOverall, maxDistance = TRANSFER_MAX_TIER_DISTANCE) {
+  const candidates = [];
+  clubsWithinTierDistance(tiers, buyerTierId, maxDistance).forEach((t) => {
+    t.clubs.forEach((seller) => {
+      if (seller.id === buyerClubId || seller.id === userClubId) return;
+      if (seller.squad.length <= MIN_SQUAD_SIZE + 2) return; // never gut a seller below a real squad
+      seller.squad.forEach((p) => {
+        if (p.position !== position) return;
+        if (p.overall < minOverall) return;
+        candidates.push({ player: p, seller, tierId: t.id });
+      });
+    });
+  });
+  return candidates;
+}
 
 export function distributePrizeMoney(table, poolAmount) {
   const n = table.length;
@@ -360,11 +426,17 @@ export function runTransferWindow(tiers, userClubId) {
         // deliberate voluntary listing. Otherwise several unhappy players
         // could get sold off in a single bulk sim with no real say from
         // the user, suddenly gutting the squad below the minimum.
+        if (seller.squad.length <= MIN_SQUAD_SIZE) return; // a sale removes exactly one player, so this is the minimal pre-sale floor that guarantees squad.length - 1 >= MIN_SQUAD_SIZE afterward
         const buyChance = isUserSeller ? (p.transferRequested ? 0.2 : 0.6) : 0.35;
         if (Math.random() >= buyChance) return;
-        const buyers = t.clubs.filter((c) => c.id !== seller.id && c.id !== userClubId && c.budget >= p.askingPrice && c.squad.length < MAX_SQUAD_SIZE);
-        if (!buyers.length) return;
-        const buyer = choice(buyers);
+        // Stage 3: buyer pool now spans the seller's own tier plus any tier
+        // within TRANSFER_MAX_TIER_DISTANCE of it, not just t.clubs — a
+        // cross-tier move (e.g. a USL Championship player bought by an MLS
+        // club) is now possible here, bounded to adjacent tiers only.
+        const buyerPairs = eligibleBuyers(tiers, t.id, seller.id, userClubId, p.askingPrice);
+        if (!buyerPairs.length) return;
+        const pick = choice(buyerPairs);
+        const buyer = pick.club;
         const fee = p.askingPrice; // capture before it gets nulled out below — reading it after always came out $0
         buyer.budget -= fee;
         seller.budget += fee;
@@ -382,7 +454,7 @@ export function runTransferWindow(tiers, userClubId) {
         // "the world moving on its own" — the user already knows about
         // their own transfers, so those don't need a news headline.
         if (!isUserSeller) {
-          transferLog.push({ tierId: t.id, playerName: p.name, position: p.position, overall: p.overall, age: p.age, fee, buyerName: buyer.name, sellerName: seller.name });
+          transferLog.push({ tierId: t.id, sellerTierId: t.id, buyerTierId: pick.tierId, crossTier: pick.tierId !== t.id, playerName: p.name, position: p.position, overall: p.overall, age: p.age, fee, buyerName: buyer.name, sellerName: seller.name });
         }
       });
     });
@@ -412,24 +484,13 @@ export function runAiToAiTransfers(tiers, userClubId) {
         if (roll <= 0) { buyer = buyerPool[i]; break; }
       }
 
-      const positions = ["GK", "DEF", "MID", "FWD"];
-      const avgByPos = {};
-      positions.forEach((pos) => {
-        const players = buyer.squad.filter((p) => p.position === pos);
-        avgByPos[pos] = players.length ? players.reduce((s, p) => s + p.overall, 0) / players.length : 50;
-      });
-      const weakest = positions.reduce((a, b) => (avgByPos[a] <= avgByPos[b] ? a : b));
+      const { weakest, avgByPos } = computeWeakestPosition(buyer);
 
-      const candidates = [];
-      tier.clubs.forEach((seller) => {
-        if (seller.id === buyer.id || seller.id === userClubId) return;
-        if (seller.squad.length <= MIN_SQUAD_SIZE + 2) return; // never gut a seller below a real squad
-        seller.squad.forEach((p) => {
-          if (p.position !== weakest) return;
-          if (p.overall < avgByPos[weakest] + 5) return; // must be a real upgrade, not a lateral move
-          candidates.push({ player: p, seller });
-        });
-      });
+      // Stage 3: candidate sellers now span the buyer's own tier plus any
+      // tier within TRANSFER_MAX_TIER_DISTANCE of it (eligibleSellers),
+      // rather than only tier.clubs — a club can now buy its weak-position
+      // upgrade from one tier up or down, not only from a same-tier rival.
+      const candidates = eligibleSellers(tiers, tier.id, buyer.id, userClubId, weakest, avgByPos[weakest] + 5);
       if (!candidates.length) continue;
 
       // Afford-and-prefer-the-best rather than a flat random pick among
@@ -452,6 +513,9 @@ export function runAiToAiTransfers(tiers, userClubId) {
       buyer.squad = [...buyer.squad, pick.player];
       log.push({
         tierId: tier.id,
+        buyerTierId: tier.id,
+        sellerTierId: pick.tierId,
+        crossTier: pick.tierId !== tier.id,
         playerName: pick.player.name,
         position: pick.player.position,
         overall: pick.player.overall,

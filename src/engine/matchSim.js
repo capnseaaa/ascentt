@@ -1,5 +1,5 @@
 import { choice, clamp, randInt } from "./playerGen";
-import { ATTACK_MOD, BASE_GOAL_RATE, DEFAULT_WORLD_RECORDS, DEFENSE_MOD, DIFFICULTY_MODES, DP_XI_AURA_CAP, DP_XI_AURA_PER_PLAYER, FITNESS_DRAIN_MAX, FITNESS_DRAIN_MIN, FORMATION_SLOTS, FULL_TIER_META, HOME_ADVANTAGE, INJURY_BASE_RATE, MAX_SQUAD_SIZE, MORALE_DELTA, PRESS_MOD, RED_CARD_CHANCE, RIVALRY_PAIRS, RIVALRY_REPUTATION_BUMP, RIVALRY_REVENUE_BONUS, SCORER_WEIGHTS, TIER_OVERALL_CEILING, UNHAPPY_BENCH_STREAK_THRESHOLD, UNHAPPY_MORALE_THRESHOLD, WIN_BONUS, YELLOW_CARD_BASE_RATE } from "./constants";
+import { ATTACK_MOD, BASE_GOAL_RATE, DEFAULT_WORLD_RECORDS, DEFENSE_MOD, DIFFICULTY_MODES, DP_XI_AURA_CAP, DP_XI_AURA_PER_PLAYER, FITNESS_DRAIN_MAX, FITNESS_DRAIN_MIN, FORMATION_SLOTS, FULL_TIER_META, HOME_ADVANTAGE, INJURY_BASE_RATE, MAX_SQUAD_SIZE, MIN_SQUAD_SIZE, MORALE_DELTA, PRESS_MOD, RED_CARD_CHANCE, RIVALRY_PAIRS, RIVALRY_REPUTATION_BUMP, RIVALRY_REVENUE_BONUS, SCORER_WEIGHTS, TIER_OVERALL_CEILING, UNHAPPY_BENCH_STREAK_THRESHOLD, UNHAPPY_MORALE_THRESHOLD, WIN_BONUS, YELLOW_CARD_BASE_RATE } from "./constants";
 import { applyMatchFanHappiness, medicalInjuryDurationMultiplier, medicalInjuryFrequencyMultiplier, progressFacilityConstruction, ticketRevenueForMatch } from "./facilities";
 import { applyDisqualificationCheck, marketValue } from "./finance";
 
@@ -616,6 +616,16 @@ export function simulateMatchdayAcrossTiers(next, currentWorldWeek) {
         // rate — that compounding across many matchdays in one bulk sim
         // (Sim to Next Window, Sim Season) is what could suddenly gut a
         // squad below the minimum with no real say from the user.
+        // Live floor check: seller.squad.length is read fresh on every
+        // player in this forEach, and seller.squad is reassigned in place
+        // immediately after each sale below — so if this same seller sells
+        // more than one player across this squad's listings in one
+        // matchday pass, the second (and any later) sale sees the
+        // already-reduced count, not a value captured before the loop
+        // started. A sale removes exactly one player, so skipping at
+        // <= MIN_SQUAD_SIZE guarantees squad.length - 1 >= MIN_SQUAD_SIZE
+        // afterward, matching the same derivation used in runTransferWindow.
+        if (seller.squad.length <= MIN_SQUAD_SIZE) return;
         const buyChance = isUserSeller ? (p.transferRequested ? 0.03 : 0.1) : 0.025;
         if (p.transferListed && Math.random() < buyChance) {
           // The user's own club must never be randomly picked as the

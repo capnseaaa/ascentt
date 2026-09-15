@@ -1,5 +1,5 @@
 import { ENGLAND_ROSTERS, NATIONALITY_POOLS } from "../data/rosters";
-import { ACADEMY_STAR_THRESHOLDS, FAN_HAPPINESS_DEFAULT, FULL_TIER_META, TIER_META, TIER_OVERALL_CEILING, WAGE_BANDS } from "./constants";
+import { ACADEMY_EXPECTED_CONTRIBUTION_PER_CLUB, ACADEMY_STAR_THRESHOLDS, FAN_HAPPINESS_DEFAULT, FULL_TIER_META, TIER_META, TIER_OVERALL_CEILING, WAGE_BANDS, WORLD_POPULATION_BUFFER, WORLD_POPULATION_GENERATION_DEAD_ZONE, WORLD_POPULATION_PER_CLUB } from "./constants";
 import { defaultFacilities, trainingGrowthMultiplier } from "./facilities";
 import { marketValue } from "./finance";
 
@@ -215,6 +215,115 @@ export function makePlayer(position, overall, usedNames, tierIdx) {
   };
 }
 
+// Stage 3 (Universal Recruitment Ecosystem), objective 5: world-level player
+// generation. New players enter the WORLD (state.freeAgents), never a
+// specific club — this is the one and only call site for that, invoked once
+// per season from App.jsx's doRollover, covering both countries at once
+// rather than once per country (there is nothing country-specific about a
+// clubless player entering the world pool). Reuses makePlayer/
+// randomPlayerAge completely unmodified, exactly as instructed — a random
+// tierIdx (0-7) is passed through only as generation-quality flavor
+// (potential-ceiling shape, wage scale), never to place the player at any
+// club or tier. `count` is a starting volume, deliberately conservative and
+// explicitly NOT hand-tuned to a "correct" final population: Stage 2's own
+// instrumentation put world retirements/departures in the 40-90/season
+// range PER COUNTRY, and this stage also removes USA's old 1-for-1
+// replacement (a major population driver per Stage 2's data) without adding
+// any other auto-fill — so a real net population decline is expected. This
+// picks roughly a third of one country's typical departure rate as a modest
+// replenishment stream, leaving the actual balance question to a later,
+// explicitly-deferred tuning pass.
+//
+// Stage 4 update: the flat, always-30 volume described above is gone — the
+// call site (App.jsx's doRollover) now passes computeWorldGenerationCount's
+// result instead of a hardcoded number, so the actual volume responds to
+// the real desired-vs-current shortfall each season. generateWorldFreeAgents
+// itself is unchanged; only what `count` the caller supplies has changed.
+// Stage 4 (Dynamic World Player Capacity), structural formula only — the
+// tunable magnitudes it's built from (WORLD_POPULATION_PER_CLUB,
+// WORLD_POPULATION_BUFFER) live in constants.js so a later balancing pass
+// can retune them without touching this logic. Deliberately reads
+// tiers.length/tiers[].clubs.length directly rather than any hardcoded
+// country or tier count, so a future country/tier addition raises the
+// target automatically with zero change here.
+export function computeDesiredWorldPopulation(tiers) {
+  const totalClubs = tiers.reduce((sum, t) => sum + t.clubs.length, 0);
+  return totalClubs * WORLD_POPULATION_PER_CLUB + WORLD_POPULATION_BUFFER;
+}
+
+// Current world population for comparison against the target above. Counts
+// every club's squad (every senior/first-team player is owned by exactly
+// one club's squad OR state.freeAgents — Stage 2/3's single-owner
+// invariant — never both) plus the free-agent pool itself.
+//
+// Deliberately EXCLUDES youthPlayers: academy prospects are not yet part of
+// the transferable/senior population this system is balancing — they are a
+// separate development pipeline that already feeds INTO this same senior
+// population later, on its own schedule, via recruitment.js's academy
+// promotion/exit-to-free-agents. Counting them here too would conflate two
+// different systems and make this generator under-fire while a large
+// academy pipeline is simply brewing (a temporary, healthy state, not a
+// population surplus).
+export function computeCurrentWorldPopulation(tiers, freeAgents) {
+  const squadTotal = tiers.reduce((sum, t) => sum + t.clubs.reduce((s, c) => s + c.squad.length, 0), 0);
+  return squadTotal + (freeAgents ? freeAgents.length : 0);
+}
+
+// Stage 5: expected per-season senior-population inflow from the academy
+// pipeline (recruitment.js's runClubRecruitment), used to offset the
+// external world-generation shortfall below WITHOUT counting academy/youth
+// players in the population target itself (computeCurrentWorldPopulation
+// still excludes youthPlayers entirely, unchanged). Reads only live club
+// data — academyEligible and academyStars — so a club only counts as
+// "academy-active" if it actually has real academy investment (academyStars
+// 0, or academyEligible false, contribute nothing), and a future
+// country/tier addition changes this automatically with zero code change
+// here (same universality guarantee as computeDesiredWorldPopulation).
+// See ACADEMY_EXPECTED_CONTRIBUTION_PER_CLUB's definition in constants.js
+// for how that per-club rate is grounded in recruitment.js's real
+// ACADEMY_INTAKE_CHANCE/queue-conservation behavior.
+export function computeExpectedAcademyContribution(tiers) {
+  const academyActiveClubCount = tiers.reduce(
+    (sum, t) => sum + t.clubs.filter((c) => c.academyEligible && (c.academyStars || 0) > 0).length,
+    0
+  );
+  return academyActiveClubCount * ACADEMY_EXPECTED_CONTRIBUTION_PER_CLUB;
+}
+
+// Stage 4 objective 3: shortfall-only generation, with a dead zone so
+// ordinary season-to-season noise doesn't trigger a fresh batch every
+// single season (see WORLD_POPULATION_GENERATION_DEAD_ZONE's definition for
+// why that specific threshold). Replaces the flat, unconditional `count`
+// this function's caller used to pass straight through every season
+// regardless of how large the pool had already grown.
+//
+// Stage 5 update: the shortfall is reduced by computeExpectedAcademyContribution
+// before the dead-zone check, so external generation doesn't double-count
+// players the academy pipeline is already about to add on its own. This can
+// only ever pull the external requirement DOWN toward zero, never below it —
+// the `shortfall >= DEAD_ZONE ? shortfall : 0` floor pattern is unchanged, so
+// generation still never goes negative and Stage 4's "never culls" guarantee
+// (this function only ever returns 0 or a positive generation count, never a
+// deletion) holds exactly as before.
+export function computeWorldGenerationCount(tiers, freeAgents) {
+  const rawShortfall = computeDesiredWorldPopulation(tiers) - computeCurrentWorldPopulation(tiers, freeAgents);
+  const shortfall = rawShortfall - computeExpectedAcademyContribution(tiers);
+  return shortfall >= WORLD_POPULATION_GENERATION_DEAD_ZONE ? shortfall : 0;
+}
+
+export function generateWorldFreeAgents(count, usedNames) {
+  const positions = ["GK", "DEF", "DEF", "MID", "MID", "MID", "FWD"];
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    const tierIdx = randInt(0, 7);
+    const position = choice(positions);
+    const overall = clamp(38 + randInt(-8, 30), 30, 75);
+    const p = makePlayer(position, overall, usedNames, tierIdx);
+    out.push({ ...p, wage: computeRealisticWage(p.overall, p.age, tierIdx, p.potential), wageSet: true });
+  }
+  return out;
+}
+
 export function generateFictionalSquad(baseRating, spread = 8, usedNames, tierIdx) {
   const layout = [
     "GK","GK","DEF","DEF","DEF","DEF","DEF","MID","MID","MID","MID","MID","FWD","FWD","FWD",
@@ -278,6 +387,42 @@ export function computeReputation(squad) {
   return clamp(Math.round((avgOverall - 60) * 3 + 20), 20, 95);
 }
 
+// Stage 3 (Universal Recruitment Ecosystem) club identity — precheck found
+// nothing existing usable as a recruitment-tendency proxy: facilitySignature/
+// facilityWeakSpot (A1) are about WHICH physical facility a club is strong/
+// weak in (training/medical/scouting/stadium), not how it prefers to fill a
+// squad vacancy, and academyStars/reputation are quantities, not a strategy
+// choice. This is the smallest addition that captures the missing concept —
+// one categorical field, assigned once at club creation and never touched
+// again afterward, same immutable-identity pattern facilitySignature/
+// facilityWeakSpot already established. Feeds directly into the objective-7
+// decision logic in recruitment.js (an "academy" club leans hard on
+// promoting its own prospects, a "transfer" club leans on the market/free
+// agents, "balanced" splits the difference) — it is read there, never
+// written there.
+export const RECRUITMENT_STYLES = ["academy", "transfer", "balanced"];
+
+export function assignRecruitmentStyle() {
+  const r = Math.random();
+  if (r < 0.32) return "academy";
+  if (r < 0.64) return "transfer";
+  return "balanced";
+}
+
+// Stage 4 (Evolving Recruitment Philosophy) club identity — same
+// immutable-at-creation pattern as recruitmentStyle/facilitySignature/
+// facilityWeakSpot just above/nearby: assigned once in makeClub and never
+// reassigned afterward. Represents how resistant THIS specific club is to
+// its recruitmentStyle ever drifting to a different one — a continuous 0
+// (volatile, a boardroom that changes its mind often) through 1 (rock-solid,
+// effectively never changes) value, read by
+// recruitment.js's evaluateRecruitmentStyleShift (the once-per-season
+// rollover check) to scale that club's own per-season change probability.
+// Never written anywhere outside this one assignment.
+export function assignRecruitmentStability() {
+  return Math.random();
+}
+
 export function makeClub({ name, squad, isReal, budget, academyEligible }) {
   return {
     id: uid(),
@@ -288,6 +433,8 @@ export function makeClub({ name, squad, isReal, budget, academyEligible }) {
     tactics: { formation: "4-4-2", style: "balanced", press: "medium", lineupMode: "best", restThreshold: 0 },
     budget: budget ?? randInt(3_000_000, 8_000_000),
     reputation: computeReputation(squad),
+    recruitmentStyle: assignRecruitmentStyle(),
+    recruitmentStability: assignRecruitmentStability(),
     academyEligible: !!academyEligible,
     academyStars: 0,
     academyInvested: 0,

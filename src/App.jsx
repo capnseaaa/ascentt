@@ -1,14 +1,15 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Trophy, TrendingUp, TrendingDown, Users, Sliders, Calendar, ShoppingBag, Award, ChevronRight, X, ArrowUpCircle, ArrowDownCircle, RotateCcw, GraduationCap, Lightbulb, DollarSign, Star, Newspaper } from "lucide-react";
-import { academySigningCost, academyStarsForInvestment, clamp, draftProspectValue, generateAcademyProspect, generateTryoutCandidates, growPlayer, promoteYouthToFirstTeam, tryoutCost, tryoutSigningCost, youthSaleValue } from "./engine/playerGen";
+import { academySigningCost, academyStarsForInvestment, clamp, computeRealisticWage, computeWorldGenerationCount, draftProspectValue, generateAcademyProspect, generateTryoutCandidates, generateWorldFreeAgents, growPlayer, promoteYouthToFirstTeam, randInt, tryoutCost, tryoutSigningCost, youthSaleValue } from "./engine/playerGen";
 import { ACADEMY_INVEST_INCREMENT, ACADEMY_MAX_PROSPECTS, ACADEMY_PROMOTE_MIN_AGE, ACADEMY_START_COST, DEFAULT_MANAGER_HISTORY, DEFAULT_WORLD_RECORDS, DIFFICULTY_MODES, DP_REPUTATION_BUMP, ENGLAND_TIER_META, FACILITY_FIRST_UPGRADE_WORLD_WEEKS, FACILITY_MAX_LEVEL, FACILITY_TYPES, FACILITY_UPGRADES_PER_SEASON, FORCED_DEPARTURE_BENCH_THRESHOLD, FORMATION_NOTES, FULL_TIER_META, MANAGER_KEY, MARKET_PAGE_SIZE, MAX_DESIGNATED_PLAYERS, MAX_POSTSEASON_ROUNDS, MAX_SQUAD_SIZE, MIN_SQUAD_SIZE, MLS_SALARY_CAP, MLS_TOTAL_ROUNDS, PARACHUTE_PAYMENT_SCHEDULE, PROMO_TOTAL_ROUNDS, SACK_THRESHOLD, STORAGE_KEY, TICKET_PRICE_RANGE, TIER_META, USLC_TOTAL_ROUNDS, US_OPEN_CUP_TOTAL_ROUNDS } from "./engine/constants";
 import { canStartFacilityUpgrade, defaultTicketPrice, downgradeFacility, facilityMaintenanceCost, facilityMaxUpgradeLevel, facilityUpgradeCost, scoutedPotentialRange, startFacilityUpgrade, stadiumCapacity, ticketRevenueForMatch } from "./engine/facilities";
 import { buildEnglandWorld, buildFullWorld } from "./engine/worldBuild";
 import { boardHappinessDelta, boardMessageNoticeText, checkBoardMessageCompliance, computeHints, computeInboxUrgentCount, generateBoardMessage, generateBoardObjective, generateJobOffer, jobOfferChanceFor } from "./engine/board";
-import { computeSeasonAwards, computeSeasonPlayoffs, computeUserPlayoffQualification, generateDoubleRoundRobin, generateMlsSeasonSchedule, generateUslcSeasonSchedule, isWorldSeasonComplete, maybeTriggerMidWindow, resolveKnockoutMatch, rolloverEnglandSeason, rolloverSeason } from "./engine/leagueSim";
+import { ageFreeAgentPool, computeSeasonAwards, computeSeasonPlayoffs, computeUserPlayoffQualification, generateDoubleRoundRobin, generateMlsSeasonSchedule, generateUslcSeasonSchedule, isWorldSeasonComplete, maybeTriggerMidWindow, resolveKnockoutMatch, rolloverEnglandSeason, rolloverSeason } from "./engine/leagueSim";
 import { assignFixturesToCalendar, activeWeeksOf, computeNextSeasonStartWeek, createContinuousSeasonProfile, createWorldTime } from "./engine/calendar";
 import { clubLineRatings, computeMatchOutcome, computeTable, isAvailable, isRivalryMatch, simulateMatch, simulateMatchdayAcrossTiers, startingXI, xiLineRatings } from "./engine/matchSim";
 import { checkTransferRecord, computeRecommendationScore, effectivePayroll, isFinanciallyRisky, marketValue, ownershipDepositFor, recommendationReason, renewalOutcome, runAiToAiTransfers } from "./engine/finance";
+import { evaluateRecruitmentStyleShift, runClubRecruitment } from "./engine/recruitment";
 import { cupRoundLabel, drawNextEnglandCupRound, drawNextUsOpenCupRound, isCupCheckpointPending, nextEnglandCupCheckpointWeek, nextUsOpenCupCheckpointWeek, pendingEnglandCupCheckpoint, previewStageLabel, resolveCupCalendarsForSeason, resolveCupRoundInPlace, resolveEnglandCupRoundInPlace } from "./engine/cups";
 
 /* ============================================================
@@ -2876,7 +2877,7 @@ function FixturesTab({ tier, userClubId, usOpenCup, faCup, eflCup, usOpenCupCale
 // its own so the Market tab can flag a signing as financially risky and
 // require confirmation, regardless of which sort mode is active (not just
 // when browsing "Recommended").
-function MarketTab({ tiers, userClub, userTierId, onBuy, difficulty, matchday }) {
+function MarketTab({ tiers, userClub, userTierId, onBuy, difficulty, matchday, freeAgents }) {
   const [sortField, setSortField] = useState("overall");
   const [sortDir, setSortDir] = useState("desc");
   const [page, setPage] = useState(0);
@@ -2886,14 +2887,40 @@ function MarketTab({ tiers, userClub, userTierId, onBuy, difficulty, matchday })
   const [confirmingBuyId, setConfirmingBuyId] = useState(null);
   const xi = startingXI(userClub, matchday ?? 1, false, userTierId);
 
+  // Stage 7 (Market Wage Consistency): every listed entry's wage is
+  // recomputed here, once, using the PROSPECTIVE BUYER's tier (userTierId)
+  // via the exact same computeRealisticWage(overall, age, tierId, potential)
+  // call handleBuy uses when the signing actually happens — never the
+  // player's currently-stored wage, which reflects whatever tier context
+  // (a seller club, or a free agent's last club) it was last set in and can
+  // differ substantially from what the user would actually pay. Overriding
+  // player.wage on the copy pushed into `listed` means every downstream
+  // consumer in this component (the wage line, recommendation scoring,
+  // the risky-signing check, the affordable-fallback filter) automatically
+  // sees the correct number with no separate logic — and since handleBuy
+  // recomputes wage from the same (overall, age, userTierId, potential)
+  // inputs at purchase time, the displayed and stored wage can't drift
+  // apart.
   const listed = [];
   tiers.forEach((t) => {
     t.clubs.forEach((c) => {
       if (c.id === userClub.id) return;
       c.squad.forEach((p) => {
-        if (p.transferListed) listed.push({ player: p, seller: c, tierId: t.id });
+        if (p.transferListed) {
+          const buyerWage = computeRealisticWage(p.overall, p.age, userTierId, p.potential);
+          listed.push({ player: { ...p, wage: buyerWage }, seller: c, tierId: t.id });
+        }
       });
     });
+  });
+  // Stage 3 (Universal Recruitment Ecosystem), objective 3: the SAME
+  // underlying pool the AI recruitment logic draws from — not a separate/
+  // fake free-agent list. seller: null and tierId: null mark a free-agent
+  // entry throughout this component; askingPrice is forced to 0 since
+  // there's no transfer fee, only the wage cost of the contract.
+  (freeAgents || []).forEach((p) => {
+    const buyerWage = computeRealisticWage(p.overall, p.age, userTierId, p.potential);
+    listed.push({ player: { ...p, askingPrice: 0, wage: buyerWage }, seller: null, tierId: null });
   });
 
   const isRecommended = sortField === "recommended";
@@ -3037,9 +3064,12 @@ function MarketTab({ tiers, userClub, userTierId, onBuy, difficulty, matchday })
                 {player.position} · OVR {player.overall} · POT {player.potential} · age {player.age}
               </div>
               <div style={{ marginTop: 4 }}>
-                <TierBadge tierId={tierId} />
+                {tierId != null ? <TierBadge tierId={tierId} /> : (
+                  <span style={{ background: PALETTE.parchmentDim, color: PALETTE.inkSoft, padding: "2px 10px", borderRadius: 4, fontSize: 12, fontWeight: 700, ...display }}>FA</span>
+                )}
               </div>
-              <div style={{ fontSize: 12, color: PALETTE.inkSoft, marginTop: 4 }}>from {seller.name}</div>
+              <div style={{ fontSize: 12, color: PALETTE.inkSoft, marginTop: 4 }}>{seller ? `from ${seller.name}` : "FREE AGENT"}</div>
+              <div style={{ fontSize: 12, color: PALETTE.inkSoft, marginTop: 2 }}>Wage: ${player.wage.toLocaleString()}/season</div>
               {isRecommended && (
                 <div style={{ fontSize: 11.5, color: PALETTE.gold, marginTop: 2 }}>
                   ★ {isFallback ? "cheapest option that fits your current budget" : recommendationReason(player, userClub, xi)}
@@ -3057,11 +3087,11 @@ function MarketTab({ tiers, userClub, userTierId, onBuy, difficulty, matchday })
               )}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <span style={{ ...mono, fontWeight: 700 }}>${player.askingPrice.toLocaleString()}</span>
+              <span style={{ ...mono, fontWeight: 700 }}>{seller ? `$${player.askingPrice.toLocaleString()}` : "FREE / No Transfer Fee"}</span>
               {confirming ? (
                 <>
                   <button
-                    onClick={() => { onBuy(player.id, seller.id, tierId); setConfirmingBuyId(null); }}
+                    onClick={() => { onBuy(player.id, seller ? seller.id : null, tierId); setConfirmingBuyId(null); }}
                     style={{ padding: "6px 12px", borderRadius: 6, border: "none", cursor: "pointer", background: PALETTE.crimson, color: PALETTE.parchment, ...display, fontSize: 12, fontWeight: 700 }}
                   >
                     Confirm
@@ -3078,7 +3108,7 @@ function MarketTab({ tiers, userClub, userTierId, onBuy, difficulty, matchday })
                   onClick={() => {
                     if (!canAfford) return;
                     if (risky) { setConfirmingBuyId(player.id); return; }
-                    onBuy(player.id, seller.id, tierId);
+                    onBuy(player.id, seller ? seller.id : null, tierId);
                   }}
                   disabled={!canAfford}
                   style={{
@@ -4607,7 +4637,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     const events = [...usaResult.events, ...englandResult.events];
     const newPrizePools = [...usaResult.newPrizePools, ...englandResult.newPrizePools];
     const seasonAwards = userIsEngland ? computeSeasonAwards(englandTiers[state.userTierId - 4]) : usaResult.seasonAwards;
-    const windowResult = userIsEngland ? null : usaResult.windowResult;
+    const windowResult = userIsEngland ? englandResult.windowResult : usaResult.windowResult;
     const userPrize = userIsEngland ? englandResult.userPrize : usaResult.userPrize;
     const userRetirements = userIsEngland ? [] : usaResult.userRetirements;
     const userDraftPicks = userIsEngland ? [] : usaResult.userDraftPicks;
@@ -4728,14 +4758,58 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     // The world moves on its own now too — AI clubs trade with each other,
     // not just with the user. Runs once per rollover, every tier, before
     // anything board-related (doesn't depend on it either way).
-    const aiTransferLog = runAiToAiTransfers(newTiers, state.userClubId);
+    // Stage 3: called once per country's own 4-tier slice, NOT on the full
+    // 8-tier newTiers array — tier ids 3 (USL League Two) and 4 (Premier
+    // League) are numerically adjacent but are NOT the same pyramid, and
+    // runAiToAiTransfers now considers cross-tier candidates (see finance.js
+    // eligibleSellers). Slicing by country here is what keeps that
+    // cross-tier search from ever bridging the USA/England boundary,
+    // without any country-aware branch inside the transfer logic itself.
+    const usaTiersAfter = newTiers.slice(0, 4);
+    const englandTiersAfter = newTiers.slice(4, 8);
+    const aiTransferLog = [...runAiToAiTransfers(usaTiersAfter, state.userClubId), ...runAiToAiTransfers(englandTiersAfter, state.userClubId)];
+
+    // Stage 4 (Evolving Recruitment Philosophy): once-per-season, per-club
+    // check for a rare recruitmentStyle drift, run through the exact same
+    // "single country tiers slice, called once per country, no branching"
+    // convention as runAiToAiTransfers/runClubRecruitment above/below.
+    // Independent of everything else in this block — only ever touches
+    // club.recruitmentStyle.
+    evaluateRecruitmentStyleShift(usaTiersAfter);
+    evaluateRecruitmentStyleShift(englandTiersAfter);
+
+    // Stage 3 (Universal Recruitment Ecosystem), objectives 2/3/6/7: AI
+    // academy intake/promotion/exit and free-agent-pool signing, run once
+    // per country's own tiers slice through the exact same shared function
+    // (no branching by country) — see recruitment.js's module comment for
+    // why a single function called twice is "universal" here rather than
+    // one merged 8-tier call. The pool is threaded through sequentially
+    // (USA gets first look, then England, same order the two rollover
+    // functions above already ran in) so a player who left a club at the
+    // very start of this rollover can be signed by another AI club later in
+    // the same pass, with no double-booking possible (single-threaded JS,
+    // each call reassigns `recruitmentPool` before the next one runs).
+    let recruitmentPool = ageFreeAgentPool(state.freeAgents ?? []).concat(usaResult.freeAgents, englandResult.freeAgents);
+    const usaRecruitment = runClubRecruitment(usaTiersAfter, recruitmentPool, state.userClubId, state.difficulty);
+    recruitmentPool = usaRecruitment.freeAgents;
+    const englandRecruitment = runClubRecruitment(englandTiersAfter, recruitmentPool, state.userClubId, state.difficulty);
+    recruitmentPool = englandRecruitment.freeAgents;
+    // Objective 5: new players enter the WORLD, never a specific club — one
+    // shared call for the whole world, not one per country. Stage 4: volume
+    // is no longer a flat constant — computeWorldGenerationCount reads the
+    // real desired-vs-current world population (using `newTiers`, the full
+    // 8-tier world, and `recruitmentPool`, this season's true remaining
+    // pool after both countries' recruitment already ran) and generates
+    // only the shortfall, with a dead zone against trivial fluctuation. See
+    // playerGen.js / constants.js for the formula and its constants.
+    recruitmentPool = recruitmentPool.concat(generateWorldFreeAgents(computeWorldGenerationCount(newTiers, recruitmentPool)));
 
     // World records / news feed — a local scratch object rather than
     // mutating `state` directly (this handler builds its final state via
     // setState at the end, unlike mutateAndSave-style handlers elsewhere).
     const recordsScratch = { worldRecords: state.worldRecords ? { ...state.worldRecords } : { ...DEFAULT_WORLD_RECORDS }, newsFeed: state.newsFeed || [] };
     aiTransferLog.forEach((t) => {
-      recordsScratch.newsFeed = [{ season: state.seasonNumber, headline: `🔁 ${t.buyerName} sign ${t.age}-year-old ${t.playerName} (${t.position}, ${t.overall} OVR) from ${t.sellerName} for $${t.fee.toLocaleString()}.`, category: "transfer" }, ...recordsScratch.newsFeed].slice(0, 40);
+      recordsScratch.newsFeed = [{ season: state.seasonNumber, headline: `🔁 ${t.buyerName} sign ${t.age}-year-old ${t.playerName} (${t.position}, ${t.overall} OVR) from ${t.sellerName} for $${t.fee.toLocaleString()}${t.crossTier ? " — a cross-tier move" : ""}.`, category: "transfer" }, ...recordsScratch.newsFeed].slice(0, 40);
       checkTransferRecord(recordsScratch, t.playerName, t.fee, t.sellerName, t.buyerName, state.seasonNumber);
     });
 
@@ -4909,6 +4983,12 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     // unlisting them at the last minute the way an ordinary transfer
     // request can. They simply leave, for a modest fee, no exceptions.
     let departureNotices = [];
+    // Stage 2 (persistent player pool): the club is paid a fee here as if
+    // this were a sale, but there's no real buyer on the other end — the
+    // player still has to land somewhere rather than vanish, so they enter
+    // the shared free-agent pool alongside the fee, same as every other
+    // non-retirement departure.
+    let forcedDepartureFreeAgents = [];
     {
       const idxDep = newTiers[nextTierIdx].clubs.findIndex((c) => c.id === state.userClubId);
       if (idxDep >= 0) {
@@ -4920,6 +5000,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
           club.squad = club.squad.filter((p) => !leavingIds.has(p.id));
           club.budget += fee;
           departureNotices = leaving.map((p) => `${p.name}'s patience finally ran out — they forced through a move away from the club, no longer willing to wait it out.`);
+          forcedDepartureFreeAgents = leaving;
         }
       }
     }
@@ -5109,6 +5190,25 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       worldRecords: recordsScratch.worldRecords,
       newsFeed: recordsScratch.newsFeed,
       jobOffers,
+      // Stage 2 (persistent player pool): the existing pool ages/retires
+      // exactly once per season (same rollover checkpoint every other
+      // squad ages at), then this season's newly-departed non-retirement
+      // players (AI/user contract non-renewals, the USA post-draft trim,
+      // forced departures) join it. `prev.freeAgents ?? []` covers an old
+      // save from before this field existed — nothing else in this stage
+      // reads freeAgents, so a missing field here is the only compatibility
+      // concern.
+      // Stage 3: `recruitmentPool` already contains the aged existing pool,
+      // this season's USA + England departures, and the newly world-
+      // generated players, MINUS whoever AI clubs signed out of it during
+      // runClubRecruitment above — so this is the true remainder, not a
+      // fresh re-aggregation. forcedDepartureFreeAgents (computed later,
+      // user-club-only) is appended on top since it happens after
+      // recruitment already ran this pass.
+      freeAgents: [
+        ...recruitmentPool,
+        ...forcedDepartureFreeAgents,
+      ],
     }));
     const userClubForDeposit = state.tiers[state.userTierId].clubs.find((c) => c.id === state.userClubId);
     setRollover({ events, seasonNumber: state.seasonNumber, windowResult, userPrize, ownershipDeposit: ownershipDepositFor(state.userTierId, state.difficulty, userClubForDeposit, state.tiers[state.userTierId].clubs), userRetirements, userPayroll, mlsPlayoffResult, userMlsPlayoff, uslcPlayoffResult, userUslcPlayoff, userPromotionPlayoff, boardNotice, userDpRevenue, userParachutePayment, usOpenCup: cup, faCup: faCupSnapshot, eflCup: eflCupSnapshot, userUsOpenCup, userFaCup, userEflCup, seasonAwards });
@@ -5290,11 +5390,19 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     setDraftPicks((prev) => prev.filter((_, i) => i !== pickIndex));
   };
 
+  // Stage 3 (Universal Recruitment Ecosystem), objective 3: sellerId === null
+  // marks a Market entry sourced from state.freeAgents (the same pool AI
+  // clubs recruit from — see recruitment.js) rather than another club's
+  // squad. No transfer fee changes hands; the player's contract/wage are
+  // reinitialized exactly like recruitment.js does for an AI signing
+  // (computeRealisticWage, a fresh 2-4 year contract) — identity, stats, and
+  // age are preserved as-is.
   const handleBuy = (playerId, sellerId, sellerTierId) => {
     if (userClub.squad.length >= MAX_SQUAD_SIZE) {
       setInfoNotice(`Your squad is full (max ${MAX_SQUAD_SIZE}) — sell or release someone before buying.`);
       return;
     }
+    const isFreeAgent = sellerId == null;
     // Real salary cap check (MLS + Executive only, where DPs exist): a new
     // signing joins as a non-DP by default, so if their wage would push
     // the non-DP wage bill over the cap, they need an open Designated
@@ -5303,9 +5411,9 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     // the manager go figure out how to free one up manually first.
     let autoSignAsDp = false;
     if (state.userTierId === 0 && DIFFICULTY_MODES[state.difficulty]?.dps) {
-      const sourceTier = state.tiers[sellerTierId] ?? state.tiers.find((t) => t.clubs.some((c) => c.id === sellerId));
-      const seller = sourceTier?.clubs.find((c) => c.id === sellerId);
-      const p = seller?.squad.find((pl) => pl.id === playerId);
+      const p = isFreeAgent
+        ? (state.freeAgents || []).find((pl) => pl.id === playerId)
+        : (state.tiers[sellerTierId] ?? state.tiers.find((t) => t.clubs.some((c) => c.id === sellerId)))?.clubs.find((c) => c.id === sellerId)?.squad.find((pl) => pl.id === playerId);
       if (p) {
         const currentNonDpWages = effectivePayroll(userClub.squad, userClub.designatedPlayerIds);
         if (currentNonDpWages + p.wage > MLS_SALARY_CAP) {
@@ -5323,6 +5431,35 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
     mutateAndSave((next) => {
       const buyerTier = next.tiers[next.userTierId];
       const buyer = buyerTier.clubs.find((c) => c.id === next.userClubId);
+
+      if (isFreeAgent) {
+        const pool = next.freeAgents || [];
+        const p = pool.find((pl) => pl.id === playerId);
+        if (!p) return; // already signed by someone else (e.g. AI recruitment) between render and click
+        // Atomic: removed from next.freeAgents and pushed onto the buyer's
+        // squad in this same synchronous mutation — no window where the
+        // player is nowhere or in both places.
+        next.freeAgents = pool.filter((pl) => pl.id !== playerId);
+        const signed = {
+          ...p,
+          contractYearsLeft: randInt(2, 4),
+          wage: computeRealisticWage(p.overall, p.age, next.userTierId, p.potential),
+          wageSet: true,
+          transferListed: false,
+          askingPrice: null,
+          benchStreak: 0,
+          transferRequested: false,
+        };
+        buyer.squad.push(signed);
+        if (autoSignAsDp) {
+          buyer.designatedPlayerIds = [...(buyer.designatedPlayerIds || []), signed.id];
+        }
+        if (!next.newsFeed) next.newsFeed = [];
+        next.newsFeed = [{ season: next.seasonNumber, headline: `✍️ ${buyer.name} sign free agent ${signed.age}-year-old ${signed.name} (${signed.position}, ${signed.overall} OVR).`, category: "transfer" }, ...next.newsFeed].slice(0, 40);
+        next.userSigningsThisSeason = [...(next.userSigningsThisSeason || []), { position: signed.position, overall: signed.overall }];
+        return;
+      }
+
       const sourceTier = next.tiers[sellerTierId] ?? next.tiers.find((t) => t.clubs.some((c) => c.id === sellerId));
       const seller = sourceTier?.clubs.find((c) => c.id === sellerId);
       if (!seller) return;
@@ -5333,6 +5470,15 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
       seller.budget += fee;
       p.transferListed = false;
       p.askingPrice = null;
+      // Stage 7: recompute wage against the BUYER's tier at the moment of
+      // signing — the exact same computeRealisticWage call the free-agent
+      // branch above uses, and the exact same inputs MarketTab used to
+      // display this player's wage. A player's stored wage previously
+      // carried over from the seller unchanged, which is what let the
+      // Market's display (already showing the seller-tier wage) silently
+      // diverge from a buyer-tier figure; recomputing here keeps the two
+      // permanently identical instead of just coincidentally matching.
+      p.wage = computeRealisticWage(p.overall, p.age, next.userTierId, p.potential);
       // A fresh start at a new club — whatever bench frustration or
       // transfer-request history they had at their old club doesn't carry
       // over. Otherwise a player who'd built up bench streak elsewhere
@@ -5727,7 +5873,7 @@ function Dashboard({ state, setState, onNewGame, onSacked, onLeaveClub, managerH
         {tab === "tactics" && <TacticsTab club={userClub} matchday={currentWorldWeek ?? 1} pendingCompetitionId={pendingCupRoundIndex !== null ? "usOpenCup" : pendingEnglandCupKey === "fa" ? "faCup" : pendingEnglandCupKey === "efl" ? "eflCup" : state.userTierId} onChange={handleTacticsChange} tier={tier} onSetCaptain={handleSetCaptain} onSwapCustomXI={handleSwapCustomXI} />}
         {tab === "table" && <TableTab tier={tier} userClubId={userClub.id} seasonPlayoffs={seasonPlayoffs} revealedRounds={revealedRounds} onSimRound={handleSimRound} onSimRest={handleSimRestOfPostseason} />}
         {tab === "fixtures" && <FixturesTab tier={tier} userClubId={userClub.id} usOpenCup={state.usOpenCup} faCup={state.faCup} eflCup={state.eflCup} usOpenCupCalendar={state.usOpenCupCalendar} faCupCalendar={state.faCupCalendar} eflCupCalendar={state.eflCupCalendar} />}
-        {tab === "market" && <MarketTab tiers={state.tiers} userClub={userClub} userTierId={state.userTierId} onBuy={handleBuy} difficulty={state.difficulty} matchday={currentWorldWeek ?? 1} />}
+        {tab === "market" && <MarketTab tiers={state.tiers} userClub={userClub} userTierId={state.userTierId} onBuy={handleBuy} difficulty={state.difficulty} matchday={currentWorldWeek ?? 1} freeAgents={state.freeAgents} />}
         {tab === "facilities" && (
           <FacilitiesTab
             club={userClub}
@@ -6133,6 +6279,11 @@ function handlePickFromPreview(previewWorld, tierId, clubId, difficulty, setStat
     worldRecords: { ...DEFAULT_WORLD_RECORDS },
     jobOffers: [],
     newsFeed: [],
+    // World-level, shared pool of players who've left a club without
+    // retiring (contract non-renewal, forced departure, roster trims) —
+    // universal across USA and England, not split per-country. Nothing
+    // consumes this yet (Stage 2 only produces entries into it).
+    freeAgents: [],
     // Global world clock (calendar foundation) — a real, persisted value
     // separate from the season-relative `matchday` field on fixtures. See
     // engine/calendar.js's module comment for why these stay distinct.

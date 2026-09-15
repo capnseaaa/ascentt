@@ -156,6 +156,31 @@ export const MAX_SQUAD_SIZE = 32;
 
 export const MIN_SQUAD_SIZE = 16;
 
+// Stage 3 (Universal Recruitment Ecosystem): how many tiers away (by real
+// tier id, e.g. MLS=0 up through League Two=7) a transfer is allowed to
+// span. 1 = adjacent tiers only (e.g. USL Championship <-> MLS, or USL
+// Championship <-> USL League One) — a bounded, explainable default rather
+// than a full free-for-all across all 8 tiers. Every transfer/recruitment
+// function that uses this is only ever called with a SINGLE country's own
+// tiers array (see rolloverSeason/rolloverEnglandSeason and their App.jsx
+// call sites), so this distance check can never accidentally bridge the
+// USA/England boundary even though tier ids 3 and 4 are numerically
+// adjacent — the boundary is enforced structurally by which tiers array a
+// caller passes in, not by any country-aware branch in this logic.
+export const TRANSFER_MAX_TIER_DISTANCE = 1;
+
+// Healthy squad size for AI recruitment decisions (Stage 3) — a squad at or
+// above this is not considered to have a "real need" worth recruiting for.
+// Set a few players above MIN_SQUAD_SIZE (the hard disqualification floor)
+// so normal squad management targets a genuinely playable depth, not just
+// the bare legal minimum.
+export const HEALTHY_SQUAD_SIZE = MIN_SQUAD_SIZE + 3;
+
+// Age at which an academy prospect who was never promoted ages out of the
+// academy and exits to the free-agent pool instead of just sitting there
+// forever (Stage 2's ownership invariant extended to youth players).
+export const ACADEMY_EXIT_AGE = 21;
+
 export const DISQUALIFICATION_FUNDING_PER_PLAYER = [400_000, 120_000, 50_000, 15_000, 1_000_000, 150_000, 60_000, 15_000];
 
 export const US_OPEN_CUP_CHAMPION_PRIZE = 600_000;
@@ -351,6 +376,81 @@ export const ATTENDANCE_RATE_MAX = 0.98;
 // happiness at the point they're actually computed.
 export const MERCHANDISE_BASE_FRACTION = 0.03;
 export const SPONSORSHIP_BASE_FRACTION = 0.05;
+
+// ===================== STAGE 4: RECRUITMENT PHILOSOPHY DRIFT =====================
+// Per-season probability bounds for a club's recruitmentStyle changing,
+// keyed by how resistant that club is (club.recruitmentStability, 0 =
+// volatile through 1 = rock-solid). Deliberately much lower magnitude than
+// ACADEMY_INTAKE_CHANCE (0.35/season — meant to be a common, visible event)
+// or jobOfferChanceFor (0.15-0.35/season — meant to feel frequent). At the
+// MAX end (least stable club), the expected gap between changes is
+// 1/0.05 = 20 seasons — "occasionally, but not every few seasons for every
+// club." At the MIN end (most stable club), it's 1/0.006 ≈ 167 seasons —
+// effectively "almost never" within any realistic save length.
+export const RECRUITMENT_STYLE_CHANGE_CHANCE_MIN = 0.006;
+export const RECRUITMENT_STYLE_CHANGE_CHANCE_MAX = 0.05;
+
+// ===================== STAGE 4: DYNAMIC WORLD POPULATION =====================
+// The structural formula (desiredPopulation scales with tiers.length/club
+// count — see playerGen.computeDesiredWorldPopulation) is kept separate from
+// these tunable magnitudes, so a later balancing pass can retune the numbers
+// below without touching the formula's logic.
+//
+// WORLD_POPULATION_PER_CLUB approximates a realistic average squad size
+// across the whole pyramid (confirmed empirically: buildFullWorld's initial
+// average is ~19.6 across 184 clubs) — so this term alone roughly tracks
+// actual squad population, leaving WORLD_POPULATION_BUFFER as the part of
+// the target that actually represents desired FREE-AGENT depth (the
+// standing reserve of unattached players the world should carry at any
+// time), not squad-size padding.
+export const WORLD_POPULATION_PER_CLUB = 20;
+// Flat, not scaled per-club on purpose — this is a bounded standing
+// reserve of unattached players, not something that should balloon in
+// direct proportion to a much larger future world (a bigger pyramid needs
+// proportionally more ROSTERED players, per WORLD_POPULATION_PER_CLUB
+// above, but not a proportionally larger idle pool sitting unattached).
+export const WORLD_POPULATION_BUFFER = 500;
+// Dead-zone: only generate new world players when the shortfall exceeds
+// this many players — otherwise ordinary season-to-season noise (a few
+// extra retirements, a slow academy-exit week) would trigger a fresh
+// generation batch every single season, which is exactly the unconditional-
+// every-season behavior this stage replaces. Chosen as roughly 10% of
+// WORLD_POPULATION_BUFFER — large enough to absorb normal fluctuation,
+// small enough to still respond promptly to a genuine, sustained shortfall.
+export const WORLD_POPULATION_GENERATION_DEAD_ZONE = 50;
+
+// ===================== STAGE 5: ACADEMY-AWARE POPULATION ADJUSTMENT =====================
+// Stage 4's world-generation shortfall (above) only compared the counted
+// senior population against the target and generated the full gap
+// externally. It had no notion that recruitment.js's academy pipeline is
+// ALSO continuously feeding new players into that same counted population
+// every season, via two paths: runClubRecruitment's academy promotion
+// (youth -> club.squad) and academy exit-at-age (youth -> freeAgents). Since
+// neither path is external generation, Stage 4's formula kept generating a
+// full external shortfall on top of an already-growing academy inflow,
+// which QA measured compounding the world pool to ~1.7x its own target over
+// a long save. This constant lets computeWorldGenerationCount subtract a
+// grounded estimate of that inflow before generating externally, without
+// changing what "current population" counts (youth/academy players are
+// still never counted directly — see computeCurrentWorldPopulation).
+//
+// Rate-grounding: recruitment.js's own ACADEMY_INTAKE_CHANCE constant
+// (0.35/season, per academy-active club — i.e. academyEligible &&
+// academyStars > 0) is the only real per-club, per-season probability that
+// governs this pipeline's throughput. recruitment.js caps each club's
+// youth queue at ACADEMY_MAX_PROSPECTS and every prospect that enters
+// eventually leaves it — either promoted into the senior squad once it
+// clears ACADEMY_PROMOTE_MIN_AGE and a need exists, or exited to
+// freeAgents once it passes ACADEMY_EXIT_AGE without being promoted. With a
+// bounded queue, in-flow and out-flow reach the same long-run rate (the
+// queue can't absorb a permanent surplus), so the expected long-run rate at
+// which an academy-active club hands players INTO the counted senior
+// population (promotion + exit combined) approximates its own intake rate.
+// This constant mirrors that value directly rather than inventing a new
+// one; recruitment.js is Stage 3 architecture and intentionally left
+// untouched by Stage 5, so if ACADEMY_INTAKE_CHANCE is ever retuned there,
+// this should be updated to match.
+export const ACADEMY_EXPECTED_CONTRIBUTION_PER_CLUB = 0.35;
 
 export const STORAGE_KEY = "ascent_career_v1";
 
